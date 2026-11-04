@@ -61,6 +61,7 @@ pub(crate) use greeting::NpcGreetingRequest;
 #[cfg(test)]
 pub(crate) use kit::SoundKits;
 pub(crate) use message::MessageSounds;
+pub(crate) use money::CoinSound;
 pub(crate) use mixer::Mixer;
 pub(crate) use ui::{AutoEquipSound, LootPickupSound};
 pub(crate) use zone::ExplorationSounds;
