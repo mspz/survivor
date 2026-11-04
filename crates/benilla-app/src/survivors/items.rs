@@ -842,7 +842,9 @@ impl Inventory {
 pub(super) fn plugin(app: &mut App) {
     visuals::plugin(app);
     combat::plugin(app);
+    // Also registered by the sound plugin; registering here keeps headless apps working.
     app.init_resource::<Inventory>()
+        .add_message::<crate::sound::CoinSound>()
         .add_systems(
             Update,
             sync.before(super::combat_ui::input)
@@ -954,6 +956,7 @@ fn collect_drops(
     mut run: ResMut<Run>,
     hero: Query<&Transform, With<Hero>>,
     drops: Query<(Entity, &Transform, &ItemDrop)>,
+    mut coin: MessageWriter<crate::sound::CoinSound>,
 ) {
     let hero = hero.iter().next();
     for (e, tf, drop) in &drops {
@@ -965,6 +968,7 @@ fn collect_drops(
         match inventory.collect(drop.0.clone()) {
             Ok(()) => {
                 run.banner = Some((format!("Boss loot: {}", drop.0.name), 4.0));
+                coin.write(crate::sound::CoinSound);
                 commands.entity(e).despawn();
             }
             Err(error) => {
@@ -1448,6 +1452,7 @@ mod tests {
         world.insert_resource(Run::default());
         world.insert_resource(Rng(123));
         world.init_resource::<Messages<Loot>>();
+        world.init_resource::<Messages<crate::sound::CoinSound>>();
         world.resource_mut::<Messages<Loot>>().write(Loot {
             pos: Vec3::ZERO,
             xp: 1,

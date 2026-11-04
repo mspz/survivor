@@ -62,8 +62,10 @@ pub(super) fn category_text(
                 if let Some(owned)=owned {
                     let p=run.resolve_spell(owned.def,owned.level);
                     let damage=if owned.def.kind==data::Kind::Dot {format!("Damage over time: {:.1}/s",p.dot)}else{format!("Damage: {:.1}",p.dmg)};
-                    let crit=if owned.def.kind==data::Kind::Dot || p.tags.contains(Tags::GUARD) {"-".into()}else{format!("{:.1}%",p.crit*100.0)};
-                    rows.push(format!("{label}: {}\n{damage}\nCritical chance: {crit}\nCooldown: {:.2} s",owned.def.key.replace('_'," "),p.cooldown));
+                    let no_crit=owned.def.kind==data::Kind::Dot || p.tags.contains(Tags::GUARD);
+                    let crit=if no_crit {"-".into()}else{format!("{:.1}%",p.crit*100.0)};
+                    let crit_damage=if no_crit {"-".into()}else{format!("{:.0}%",p.crit_multiplier*100.0)};
+                    rows.push(format!("{label}: {}\n{damage}\nCritical chance: {crit}\nCritical damage: {crit_damage}\nCooldown: {:.2} s",owned.def.key.replace('_'," "),p.cooldown));
                 }
             }
             let melee=run.weapon_damage_range(data::ability("heroic_strike"));

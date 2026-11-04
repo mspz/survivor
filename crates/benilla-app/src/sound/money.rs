@@ -59,6 +59,43 @@ fn play_coin_on_coinage_change(
     }
 }
 
+/// A one-shot coin, written by game code that wants the gold sound without a coinage change
+/// (e.g. collecting a survivors boss item).
+#[derive(Message, Clone, Copy, Default)]
+pub(crate) struct CoinSound;
+
+/// Play the coin once per [`CoinSound`]; with a catalog missing the queue is dropped.
+fn play_coin_requests(
+    mut reqs: MessageReader<CoinSound>,
+    kits: Option<ResMut<SoundKits>>,
+    assets: Option<Res<WorldAssets>>,
+    mut out: NonSendMut<SoundOutput>,
+    config: Res<SoundConfig>,
+) {
+    if reqs.is_empty() {
+        return;
+    }
+    let (Some(mut kits), Some(assets)) = (kits, assets) else {
+        reqs.clear();
+        return;
+    };
+    for _ in reqs.read() {
+        if let Err(e) = kit::play_kit(
+            &mut kits,
+            &assets,
+            &mut out,
+            &config,
+            Vec3::ZERO,
+            KitRef::Name(COIN_SOUND),
+            None,
+            kit::SoundCategory::Sfx,
+        ) {
+            debug!("sound(money): coin request — {e:#}");
+        }
+    }
+}
+
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Update, play_coin_on_coinage_change);
+    app.add_message::<CoinSound>()
+        .add_systems(Update, (play_coin_on_coinage_change, play_coin_requests));
 }
