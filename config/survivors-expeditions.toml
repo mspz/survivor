@@ -1,0 +1,58 @@
+# Reloaded when starting a run. All multipliers are relative to the base values.
+version = 1
+end_multiplier = 2.0 # 200% health and damage at 15 minutes; capped thereafter.
+monster_health = 48.0
+monster_damage = 3.0
+boss_health = 900.0
+boss_damage = 10.0
+population_start = 14
+population_end = 220
+max_monsters = 400
+
+[[zones]] # 0-9: Elwynn Forest
+monster_quantity = 1.0
+monster_health = 1.0
+monster_damage = 1.0
+boss_quantity = 1
+boss_health = 1.0
+boss_damage = 1.0
+
+[[zones]] # 10-19: Westfall
+monster_quantity = 1.05
+monster_health = 1.6
+monster_damage = 1.35
+boss_quantity = 1
+boss_health = 1.8
+boss_damage = 1.4
+
+[[zones]] # 20-29: Redridge Mountains
+monster_quantity = 1.1
+monster_health = 2.5
+monster_damage = 1.8
+boss_quantity = 1
+boss_health = 3.2
+boss_damage = 1.9
+
+[[zones]] # 30-39: Duskwood
+monster_quantity = 1.15
+monster_health = 4.0
+monster_damage = 2.4
+boss_quantity = 1
+boss_health = 5.6
+boss_damage = 2.6
+
+[[zones]] # 40-49: Stranglethorn Vale
+monster_quantity = 1.2
+monster_health = 6.5
+monster_damage = 3.2
+boss_quantity = 1
+boss_health = 9.6
+boss_damage = 3.5
+
+[[zones]] # 50-59: Blasted Lands
+monster_quantity = 1.25
+monster_health = 10.0
+monster_damage = 4.3
+boss_quantity = 1
+boss_health = 16.0
+boss_damage = 4.7

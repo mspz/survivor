@@ -146,6 +146,24 @@ pub(super) fn spawn_object(
         .id()
 }
 
+/// Explosive Trap's original GameObjectDisplayInfo model. Type 6 enables WoW's
+/// closed/open state animation; a generic decorative object would never animate.
+pub(super) fn spawn_explosive_trap(commands: &mut Commands, serial: u64, pos: Vec3) -> Entity {
+    let entity = spawn_object(commands, serial, 3072, 1.0, pos);
+    commands
+        .entity(entity)
+        .insert(ObjectStore(ObjectFields::from_pairs(&[
+            (0, (HIGH_GAMEOBJECT | serial) as u32),
+            (1, ((HIGH_GAMEOBJECT | serial) >> 32) as u32),
+            (2, 0x21),
+            (4, 1.0f32.to_bits()),
+            (FIELD_GO_DISPLAY, 3072),
+            (FIELD_GO_STATE, GO_STATE_READY),
+            (FIELD_GO_TYPE, 6),
+        ])));
+    entity
+}
+
 /// Zero health: the animation selector plays Death and holds the corpse pose.
 pub(super) fn kill_unit(store: &mut ObjectStore) {
     store
@@ -203,6 +221,11 @@ pub(super) struct Marks {
 }
 
 impl Marks {
+    pub(super) fn active_debuffs(&self) -> impl Iterator<Item = (u32, f32)> + '_ {
+        self.slots.iter().copied().filter(|&(spell, seconds)| {
+            self.base >= 32 && spell != 0 && seconds > 0.0 && seconds.is_finite()
+        })
+    }
     pub fn buffs() -> Self {
         Self {
             base: 0,
@@ -299,6 +322,7 @@ impl Marks {
 /// The messages that make a local cast look like a server's.
 #[derive(SystemParam)]
 pub(super) struct Fx<'w> {
+    settings: Option<Res<'w, super::options::Settings>>,
     seq: ResMut<'w, PlaySeq>,
     casts: MessageWriter<'w, CastEvent>,
     gos: MessageWriter<'w, SpellGoTargets>,
@@ -310,6 +334,28 @@ pub(super) struct Fx<'w> {
 const MAX_VISUAL_HITS: usize = 12;
 
 impl Fx<'_> {
+    pub fn trigger_trap(
+        &mut self,
+        entity: Entity,
+        guid: u64,
+        store: &mut ObjectStore,
+        pos: Vec3,
+        fields: &mut MessageWriter<FieldChanged>,
+    ) {
+        store
+            .0
+            .merge(ObjectFields::from_pairs(&[(FIELD_GO_STATE, 0)]));
+        fields.write(FieldChanged {
+            entity,
+            guid,
+            kind: ObjectType::GameObject,
+            index: FIELD_GO_STATE,
+            old: GO_STATE_READY,
+            new: 0,
+        });
+        // 13813 places the trap; 13812 is its actual explosion (visual 7659).
+        self.cast(entity, 13812, &[], Some(pos));
+    }
     /// `SMSG_SPELL_GO`: the cast kit on the caster, and a missile or an impact at each hit.
     pub fn cast(&mut self, caster: Entity, spell: u32, hits: &[Entity], dest: Option<Vec3>) {
         let seq = self.seq.next();
@@ -359,6 +405,13 @@ impl Fx<'_> {
 
     /// A floating number over `anchor`, 0xAARRGGBB.
     pub fn number(&mut self, anchor: Entity, amount: f32, crit: bool, color: u32) {
+        if self
+            .settings
+            .as_deref()
+            .is_some_and(|s| !s.numbers(color == COLOR_HEAL, color == COLOR_HURT, crit))
+        {
+            return;
+        }
         let shown = amount.round().max(1.0) as i64;
         self.text.write(CombatTextSpawn {
             anchor,
@@ -373,3 +426,61 @@ pub(super) const COLOR_SPELL: u32 = 0xFFFF_DE00;
 pub(super) const COLOR_MELEE: u32 = 0xFFFF_FFFF;
 pub(super) const COLOR_HURT: u32 = 0xFFFF_3030;
 pub(super) const COLOR_HEAL: u32 = 0xFF30_FF30;
+
+#[cfg(test)]
+mod trap_tests {
+    use super::*;
+
+    #[test]
+    fn trap_uses_animated_wow_gameobject_and_explosion() {
+        let mut app = App::new();
+        app.init_resource::<PlaySeq>()
+            .add_message::<CastEvent>()
+            .add_message::<SpellGoTargets>()
+            .add_message::<SwingMessage>()
+            .add_message::<CombatTextSpawn>()
+            .add_message::<FieldChanged>();
+        let pos = Vec3::new(3.0, 5.0, 7.0);
+        let entity = {
+            let mut commands = app.world_mut().commands();
+            spawn_explosive_trap(&mut commands, 42, pos)
+        };
+        app.world_mut().flush();
+        let store = app.world().get::<ObjectStore>(entity).unwrap();
+        assert_eq!(store.0.gameobject_state(), Some(1));
+        assert_eq!(store.0.gameobject_type_id(), 6);
+        assert_eq!(
+            app.world().get::<NetEntity>(entity).unwrap().display_id,
+            Some(3072)
+        );
+        app.add_systems(
+            Update,
+            |mut fx: Fx,
+             mut fields: MessageWriter<FieldChanged>,
+             mut traps: Query<(Entity, &Guid, &Transform, &mut ObjectStore)>| {
+                for (e, guid, tf, mut store) in &mut traps {
+                    fx.trigger_trap(e, guid.0, &mut store, tf.translation, &mut fields);
+                }
+            },
+        );
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<ObjectStore>(entity)
+                .unwrap()
+                .0
+                .gameobject_state(),
+            Some(0)
+        );
+        let events = app.world().resource::<Messages<SpellGoTargets>>();
+        let mut cursor = events.get_cursor();
+        let go = cursor.read(events).next().unwrap();
+        assert_eq!(go.spell_id, 13812);
+        assert_eq!(go.dest, Some(pos));
+        let events = app.world().resource::<Messages<FieldChanged>>();
+        let mut cursor = events.get_cursor();
+        assert!(cursor.read(events).any(|event| event.entity == entity
+            && event.index == FIELD_GO_STATE
+            && event.new == 0));
+    }
+}

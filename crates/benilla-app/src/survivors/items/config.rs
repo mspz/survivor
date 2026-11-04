@@ -1,0 +1,1011 @@
+use super::*;
+pub(super) const DEFAULT_BASES: &str =
+    include_str!("../../../../../config/survivors-item-bases.toml");
+const DEFAULT_AFFIXES: &str = include_str!("../../../../../config/survivors-item-affixes.toml");
+#[cfg(test)]
+const DEFAULT_FILE: &str = concat!(
+    include_str!("../../../../../config/survivors-item-bases.toml"),
+    "\n",
+    include_str!("../../../../../config/survivors-item-affixes.toml")
+);
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::survivors) enum Tag {
+    Attack,
+    Spell,
+    Melee,
+    Projectile,
+    Area,
+    Chain,
+    Dot,
+    Duration,
+    Totem,
+    Trap,
+    Damage,
+    Physical,
+    Fire,
+    Cold,
+    Lightning,
+    Nature,
+    Arcane,
+    Holy,
+    Shadow,
+}
+impl Tag {
+    pub fn tags(self) -> Tags {
+        match self {
+            Self::Attack => Tags::ATTACK,
+            Self::Spell => Tags::SPELL,
+            Self::Melee => Tags::MELEE,
+            Self::Projectile => Tags::PROJECTILE,
+            Self::Area => Tags::AREA,
+            Self::Chain => Tags::CHAIN,
+            Self::Dot => Tags::DOT,
+            Self::Duration => Tags::DURATION,
+            Self::Totem => Tags::TOTEM,
+            Self::Trap => Tags::TRAP,
+            Self::Damage => Tags::DAMAGE,
+            Self::Physical => Tags::PHYSICAL,
+            Self::Fire => Tags::FIRE,
+            Self::Cold => Tags::COLD,
+            Self::Lightning => Tags::LIGHTNING,
+            Self::Nature => Tags::NATURE,
+            Self::Arcane => Tags::ARCANE,
+            Self::Holy => Tags::HOLY,
+            Self::Shadow => Tags::SHADOW,
+        }
+    }
+    pub fn label(self) -> String {
+        self.tags().labels()
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Base {
+    #[serde(default)]
+    pub base_damage: Option<weapons::DamageRange>,
+    #[serde(default)]
+    pub base_armour: Option<f32>,
+    #[serde(default)]
+    pub appearance: Option<Appearance>,
+    #[serde(default)]
+    pub equipment_type: EquipmentType,
+    #[serde(default)]
+    pub base_block: f32,
+    #[serde(default)]
+    pub base_block_max: Option<f32>,
+    pub id: String,
+    pub name: String,
+    pub slot: SlotKind,
+    pub icon: String,
+    pub weight: f64,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AffixDef {
+    id: String,
+    name: String,
+    kind: AffixKind,
+    group: String,
+    slots: Vec<SlotKind>,
+    effect: Effect,
+    min: f32,
+    max: f32,
+    weight: f64,
+    #[serde(default)]
+    tags: Vec<Tag>,
+    #[serde(default)]
+    proc: Option<ProcDef>,
+}
+impl AffixDef {
+    fn compatible_base(&self, base: &Base) -> bool {
+        self.slots.contains(&base.slot)
+            && self.effect.valid_equipment_type(base.equipment_type)
+            && !(matches!(
+                base.equipment_type,
+                EquipmentType::Wand | EquipmentType::Staff
+            ) && (matches!(
+                self.effect,
+                Effect::FlatDamage | Effect::AttackSpeed | Effect::LifeLeech
+            ) || self.tags.iter().any(|t| matches!(t, Tag::Attack))))
+            && !(matches!(
+                base.equipment_type,
+                EquipmentType::Bow | EquipmentType::MeleeOneHand | EquipmentType::TwoHand
+            ) && self.tags.iter().any(|t| matches!(t, Tag::Spell)))
+    }
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcDef {
+    kind: ProcKind,
+    cooldown: f32,
+    duration: f32,
+    power: f32,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RarityWeights {
+    normal: f64,
+    magic: f64,
+    epic: f64,
+    legendary: f64,
+}
+#[derive(Clone, Resource, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Config {
+    version: u32,
+    pub boss_drop_chance: f32,
+    rarities: RarityWeights,
+    pub(super) bases: Vec<Base>,
+    affixes: Vec<AffixDef>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BaseTable {
+    version: u32,
+    boss_drop_chance: f32,
+    rarities: RarityWeights,
+    bases: Vec<Base>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AffixTable {
+    affixes: Vec<AffixDef>,
+}
+impl Config {
+    pub fn builtin() -> Self {
+        Self::parse_parts(DEFAULT_BASES, DEFAULT_AFFIXES).expect("valid built-in item tables")
+    }
+    fn parse_parts(bases: &str, affixes: &str) -> Result<Self, String> {
+        let bases: BaseTable = toml::from_str(bases).map_err(|e| format!("Item bases: {e}"))?;
+        let affixes: AffixTable =
+            toml::from_str(affixes).map_err(|e| format!("Item affixes: {e}"))?;
+        Self {
+            version: bases.version,
+            boss_drop_chance: bases.boss_drop_chance,
+            rarities: bases.rarities,
+            bases: bases.bases,
+            affixes: affixes.affixes,
+        }
+        .validate()
+    }
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let c: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        c.validate()
+    }
+    fn validate(self) -> Result<Self, String> {
+        let mut c = self;
+        // Existing local tables predate appearance metadata; retain their loot settings.
+        let defaults: BaseTable = toml::from_str(DEFAULT_BASES).map_err(|e| e.to_string())?;
+        for base in &mut c.bases {
+            if base.appearance.is_none() {
+                base.appearance = defaults
+                    .bases
+                    .iter()
+                    .find(|b| b.id == base.id)
+                    .or_else(|| {
+                        defaults.bases.iter().find(|b| {
+                            b.slot == base.slot && b.equipment_type == base.equipment_type
+                        })
+                    })
+                    .and_then(|b| b.appearance);
+            }
+        }
+        let valid_weight = |v: f64| v.is_finite() && v >= 0.0;
+        if c.version != 1
+            || !c.boss_drop_chance.is_finite()
+            || !(0.0..=1.0).contains(&c.boss_drop_chance)
+            || c.rarities.legendary != 0.0
+            || !c.weights().iter().copied().all(valid_weight)
+            || !c.weights().iter().any(|w| *w > 0.0)
+            || c.bases.is_empty()
+            || c.affixes.is_empty()
+        {
+            return Err(
+                "Invalid version, drop chance or rarity weights (legendary must stay 0).".into(),
+            );
+        }
+        let mut ids = BTreeSet::new();
+        let mut groups = BTreeMap::new();
+        for a in &c.affixes {
+            if a.id.is_empty()
+                || a.name.is_empty()
+                || a.group.is_empty()
+                || !ids.insert(&a.id)
+                || a.slots.is_empty()
+                || !valid_weight(a.weight)
+                || !a.min.is_finite()
+                || !a.max.is_finite()
+                || a.min < 0.0
+                || a.max < a.min
+                || a.max > 1.0e6
+                || (a.effect == Effect::BlockChance && a.max > 1.0)
+                || (a.effect.discrete() && (a.min.fract() != 0.0 || a.max.fract() != 0.0))
+                || a.slots.iter().any(|slot| !a.effect.valid_slot(*slot))
+                || (a.effect.global() && !a.tags.is_empty())
+                || (a.effect == Effect::Proc
+                    && (a.max > 1.0
+                        || !a.proc.as_ref().is_some_and(|p| {
+                            p.cooldown.is_finite()
+                                && (0.2..=300.0).contains(&p.cooldown)
+                                && p.duration.is_finite()
+                                && (0.0..=120.0).contains(&p.duration)
+                                && p.power.is_finite()
+                                && (0.001..=10.0).contains(&p.power)
+                                && (matches!(p.kind, ProcKind::ClassSpell) || p.duration > 0.0)
+                        })))
+                || (a.effect != Effect::Proc && a.proc.is_some())
+            {
+                return Err(format!("Invalid affix {}", a.id));
+            }
+            if let Some(allocation) = groups.insert(&a.group, (a.kind, a.effect.primary())) {
+                if allocation != (a.kind, a.effect.primary()) {
+                    return Err(format!(
+                        "Affix group {} mixes naming kinds or primary and secondary stats",
+                        a.group
+                    ));
+                }
+            }
+        }
+        ids.clear();
+        for b in &c.bases {
+            if b.id.is_empty()
+                || b.name.is_empty()
+                || b.icon.is_empty()
+                || b.base_damage
+                    .is_some_and(|range| !range.valid() || !weapons::is_weapon(b.equipment_type))
+                || b.base_armour
+                    .is_some_and(|v| !v.is_finite() || !(0.0..=1.0e6).contains(&v))
+                || b.appearance.is_some_and(|a| !a.valid_for(b.slot))
+                || b.equipment_type == EquipmentType::Legacy
+                || !b.equipment_type.valid_slot(b.slot)
+                || !b.base_block.is_finite()
+                || !(0.0..=1.0).contains(&b.base_block)
+                || b.base_block_max.is_some_and(|max| {
+                    !max.is_finite()
+                        || max < b.base_block
+                        || max > 1.0
+                        || b.equipment_type != EquipmentType::Shield
+                })
+                || (b.equipment_type != EquipmentType::Shield && b.base_block != 0.0)
+                || !valid_weight(b.weight)
+                || !ids.insert(&b.id)
+            {
+                return Err(format!("Invalid base {}", b.id));
+            }
+            if b.weight == 0.0 {
+                continue;
+            }
+            // All enabled bases must be able to roll every enabled rarity without fallback.
+            let need = if c.rarities.epic > 0.0 {
+                2
+            } else if c.rarities.magic > 0.0 {
+                1
+            } else {
+                0
+            };
+            let pool: Vec<_> = c
+                .affixes
+                .iter()
+                .filter(|a| a.weight > 0.0 && a.compatible_base(b))
+                .collect();
+            for primary in [true, false] {
+                let required = if primary {
+                    if c.rarities.epic > 0.0 {
+                        2
+                    } else {
+                        1
+                    }
+                } else {
+                    need
+                };
+                let count = pool
+                    .iter()
+                    .filter(|a| a.effect.primary() == primary)
+                    .map(|a| &a.group)
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                if count < required
+                    || (primary
+                        && required == 2
+                        && !pool.iter().any(|a| {
+                            a.effect == Effect::Stamina
+                                && pool.iter().any(|b| {
+                                    b.effect.primary()
+                                        && b.effect != Effect::Stamina
+                                        && b.group != a.group
+                                })
+                        }))
+                {
+                    return Err(format!(
+                        "{} needs {required} compatible {} stat groups (two primary stats require stamina)",
+                        b.id, if primary { "primary" } else { "secondary" }
+                    ));
+                }
+            }
+            if pool.is_empty() {
+                return Err(format!("{} has no available affixes", b.id));
+            }
+            for class in super::super::data::CLASSES
+                .iter()
+                .filter(|c| b.equipment_type.can_drop(c.id))
+            {
+                if !pool.iter().any(|a| {
+                    a.effect.primary() && b.equipment_type.drop_primary_allowed(class.id, a.effect)
+                }) {
+                    return Err(format!(
+                        "{} has no compatible primary for {}",
+                        b.id, class.name
+                    ));
+                }
+                let offensive = pool.iter().any(|a| {
+                    a.effect.primary()
+                        && a.effect != Effect::Stamina
+                        && b.equipment_type.drop_primary_allowed(class.id, a.effect)
+                });
+                if c.rarities.epic > 0.0 && !offensive {
+                    return Err(format!(
+                        "{} has no offensive primary for {}",
+                        b.id, class.name
+                    ));
+                }
+            }
+        }
+        if !c.bases.iter().any(|b| b.weight > 0.0) {
+            return Err("No enabled item bases".into());
+        }
+        for class in super::super::data::CLASSES {
+            if !c
+                .bases
+                .iter()
+                .any(|b| b.weight > 0.0 && b.equipment_type.can_drop(class.id))
+            {
+                return Err(format!("No compatible base for {}", class.name));
+            }
+        }
+        Ok(c)
+    }
+    fn weights(&self) -> [f64; 3] {
+        [
+            self.rarities.normal,
+            self.rarities.magic,
+            self.rarities.epic,
+        ]
+    }
+    #[cfg(test)]
+    pub fn generate(&self, level: u32, rng: &mut Rng) -> Result<Item, String> {
+        self.generate_for_class(level, 1, rng)
+    }
+    pub fn generate_for_class(
+        &self,
+        level: u32,
+        class_id: u8,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        if !super::super::data::CLASSES.iter().any(|c| c.id == class_id) {
+            return Err("Unknown loot class".into());
+        }
+        let target = if rng.f32() < 0.8 {
+            class_id
+        } else {
+            let others: Vec<_> = super::super::data::CLASSES
+                .iter()
+                .filter(|c| c.id != class_id)
+                .collect();
+            others[rng.index(others.len())].id
+        };
+        self.generate_for_target(level, target, rng)
+    }
+    fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
+        let class = super::super::data::CLASSES
+            .iter()
+            .find(|c| c.id == class_id)
+            .ok_or("Unknown loot class")?;
+        let rarity = [Rarity::Normal, Rarity::Magic, Rarity::Epic]
+            [weighted_index(&self.weights(), rng.f32()).ok_or("No rarity available")?];
+        let weights: Vec<_> = self
+            .bases
+            .iter()
+            .map(|b| {
+                if b.equipment_type.can_drop(class_id) {
+                    b.weight
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let base =
+            &self.bases[weighted_index(&weights, rng.f32()).ok_or("No item base available")?];
+        let mut affixes: Vec<Affix> = Vec::new();
+        for index in 0..rarity.count() {
+            let primary = index < rarity.primary_count();
+            let stamina = rarity == Rarity::Epic && index == 0;
+            let pool: Vec<_> = self
+                .affixes
+                .iter()
+                .filter(|a| {
+                    a.compatible_base(base)
+                        && a.effect.primary() == primary
+                        && (!primary
+                            || base.equipment_type.drop_primary_allowed(class_id, a.effect))
+                        && (!stamina || a.effect == Effect::Stamina)
+                        && (!primary || !affixes.iter().any(|rolled| rolled.effect == a.effect))
+                        && !affixes.iter().any(|rolled| rolled.group == a.group)
+                })
+                .collect();
+            let weights: Vec<_> = pool.iter().map(|a| a.weight).collect();
+            let a = pool[weighted_index(&weights, rng.f32())
+                .ok_or("No compatible affix; check the item table")?];
+            let value = if a.effect.discrete() {
+                a.min + (rng.next_u64() % ((a.max - a.min) as u64 + 1)) as f32
+            } else {
+                ((rng.range(a.min, a.max) * 1000.0).round() / 1000.0).clamp(a.min, a.max)
+            };
+            affixes.push(Affix {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                kind: a.kind,
+                group: a.group.clone(),
+                effect: a.effect,
+                value,
+                tags: a.tags.clone(),
+                proc: a.proc.as_ref().map(|p| {
+                    let spell = if matches!(p.kind, ProcKind::ClassSpell) {
+                        let spells: Vec<_> = class
+                            .pool
+                            .iter()
+                            .filter(|&&key| combat::proc_spell(key).is_some())
+                            .collect();
+                        Some((*spells[rng.index(spells.len())]).to_owned())
+                    } else {
+                        None
+                    };
+                    ProcRoll {
+                        kind: p.kind,
+                        cooldown: p.cooldown,
+                        duration: p.duration,
+                        power: p.power,
+                        class: spell.as_ref().map(|_| class_id),
+                        spell,
+                    }
+                }),
+            });
+        }
+        let prefix = affixes
+            .iter()
+            .find(|a| a.kind == AffixKind::Prefix)
+            .map(|a| a.name.as_str());
+        let suffix = affixes
+            .iter()
+            .find(|a| a.kind == AffixKind::Suffix)
+            .map(|a| a.name.as_str());
+        let name = [prefix, Some(base.name.as_str()), suffix]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(Item {
+            base_damage: weapons::is_weapon(base.equipment_type).then(|| {
+                base.base_damage
+                    .unwrap_or_else(|| weapons::base_for(base.equipment_type, base.appearance))
+                    .scaled(level)
+            }),
+            base_armour: Some(armour::scaled_base(
+                base.base_armour
+                    .unwrap_or_else(|| armour::base_for(base.equipment_type, base.slot)),
+                level,
+            )),
+            appearance: base.appearance,
+            equipment_type: base.equipment_type,
+            base_block: base.base_block_max.map_or(base.base_block, |max| {
+                (rng.range(base.base_block, max) * 1000.0).round() / 1000.0
+            }),
+            loot_class: Some(class_id),
+            id: 0,
+            base: base.id.clone(),
+            name,
+            slot: base.slot,
+            icon: base.icon.clone(),
+            rarity,
+            level: level.max(1),
+            affixes,
+        })
+    }
+    fn read(path: &std::path::Path) -> Result<Self, String> {
+        let text = crate::local_state::read_to_string(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::parse(&text)
+    }
+    pub(super) fn appearance_for(&self, item: &Item, class: u8) -> Option<(Appearance, &str)> {
+        let base = self
+            .bases
+            .iter()
+            .find(|b| b.id == item.base)
+            .or_else(|| {
+                self.bases
+                    .iter()
+                    .find(|b| b.slot == item.slot && b.equipment_type == item.equipment_type)
+            })
+            .or_else(|| {
+                self.bases
+                    .iter()
+                    .find(|b| b.slot == item.slot && b.equipment_type.can_drop(class))
+            })?;
+        Some((base.appearance?, base.icon.as_str()))
+    }
+    fn split_legacy(text: &str) -> Result<(String, String), String> {
+        Self::parse(text)?;
+        let mut bases: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+        let affixes = bases.remove("affixes").ok_or("Missing legacy affixes")?;
+        let mut affix_table = toml::Table::new();
+        affix_table.insert("affixes".into(), affixes);
+        Ok((
+            toml::to_string_pretty(&bases).map_err(|e| e.to_string())?,
+            toml::to_string_pretty(&affix_table).map_err(|e| e.to_string())?,
+        ))
+    }
+    fn try_load() -> Result<Self, String> {
+        if let Some(path) = crate::webenv::var("WOW_ITEMS_CONFIG") {
+            return Self::read(std::path::Path::new(&path));
+        }
+        let bases = Self::load_table(
+            "survivors-item-bases.toml",
+            "WOW_ITEM_BASES_CONFIG",
+            DEFAULT_BASES,
+        )?;
+        let affixes = Self::load_table(
+            "survivors-item-affixes.toml",
+            "WOW_ITEM_AFFIXES_CONFIG",
+            DEFAULT_AFFIXES,
+        )?;
+        Self::parse_parts(&bases, &affixes)
+    }
+    fn load_table(name: &str, override_key: &str, defaults: &str) -> Result<String, String> {
+        if let Some(path) = crate::webenv::var(override_key) {
+            return crate::local_state::read_to_string(std::path::Path::new(&path))
+                .map_err(|e| format!("{path}: {e}"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = std::path::Path::new("config").join(name);
+            if path.exists() {
+                return crate::local_state::read_to_string(&path)
+                    .map_err(|e| format!("{}: {e}", path.display()));
+            }
+        }
+        if let Some(home) = crate::local_state::home() {
+            let path = home.join(name);
+            match crate::local_state::read_to_string(&path) {
+                Ok(text) => return Ok(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let content = match crate::local_state::read_to_string(
+                        &home.join("survivors-items.toml"),
+                    ) {
+                        Ok(text) => {
+                            let (bases, affixes) = Self::split_legacy(&text)?;
+                            if name == "survivors-item-bases.toml" {
+                                bases
+                            } else {
+                                affixes
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => defaults.to_owned(),
+                        Err(e) => return Err(e.to_string()),
+                    };
+                    crate::local_state::write_atomic(&path, &content).map_err(|e| e.to_string())?;
+                    return Ok(content);
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(defaults.to_owned())
+    }
+    pub fn load() -> Self {
+        Self::try_load().unwrap_or_else(|e| {
+            error!("Invalid item configuration: {e}; using built-in item table");
+            Self::builtin()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn split_tables_preserve_rolls_and_reject_fields_in_the_wrong_file() {
+        let split = Config::parse_parts(DEFAULT_BASES, DEFAULT_AFFIXES).unwrap();
+        let combined = Config::parse(DEFAULT_FILE).unwrap();
+        let (bases, affixes) = Config::split_legacy(DEFAULT_FILE).unwrap();
+        let migrated = Config::parse_parts(&bases, &affixes).unwrap();
+        let (mut a, mut b, mut c) = (Rng(123), Rng(123), Rng(123));
+        for _ in 0..100 {
+            let expected = toml::to_string(&combined.generate(20, &mut b).unwrap()).unwrap();
+            assert_eq!(
+                toml::to_string(&split.generate(20, &mut a).unwrap()).unwrap(),
+                expected
+            );
+            assert_eq!(
+                toml::to_string(&migrated.generate(20, &mut c).unwrap()).unwrap(),
+                expected
+            );
+        }
+        assert!(Config::parse_parts(DEFAULT_FILE, DEFAULT_AFFIXES).is_err());
+        assert!(Config::parse_parts(DEFAULT_BASES, DEFAULT_FILE).is_err());
+        assert!(Config::parse_parts(DEFAULT_AFFIXES, DEFAULT_BASES).is_err());
+    }
+    #[test]
+    fn split_tables_apply_base_settings_and_affix_ranges_independently() {
+        let bases = DEFAULT_BASES.replace("boss_drop_chance = 1.0", "boss_drop_chance = 0.25");
+        let affixes = DEFAULT_AFFIXES.replace("max = 40", "max = 41");
+        let config = Config::parse_parts(&bases, &affixes).unwrap();
+        assert_eq!(config.boss_drop_chance, 0.25);
+        assert_eq!(
+            config
+                .affixes
+                .iter()
+                .find(|a| a.id == "stamina")
+                .unwrap()
+                .max,
+            41.0
+        );
+        assert!(Config::parse_parts(
+            DEFAULT_BASES,
+            &DEFAULT_AFFIXES.replace("max = 40", "max = -1")
+        )
+        .is_err());
+    }
+    #[test]
+    fn targeted_loot_obeys_material_stat_rules_and_the_eighty_twenty_split() {
+        let config = Config::builtin();
+        let mut rng = Rng(89123);
+        let mut seen = BTreeSet::new();
+        for player in super::super::super::data::CLASSES {
+            let mut targets = BTreeMap::<u8, usize>::new();
+            for _ in 0..2_000 {
+                let item = config.generate_for_class(20, player.id, &mut rng).unwrap();
+                seen.insert(item.base.clone());
+                let target = item.loot_class.unwrap();
+                *targets.entry(target).or_default() += 1;
+                let allowed: &[u8] = match item.equipment_type {
+                    EquipmentType::Plate => &[1, 2],
+                    EquipmentType::Mail => &[1, 2, 3, 7],
+                    EquipmentType::Leather => &[3, 4, 7, 11],
+                    EquipmentType::Cloth => &[5, 8, 9, 11],
+                    EquipmentType::Shield => &[1, 2, 7],
+                    EquipmentType::Wand => &[2, 5, 7, 8, 9, 11],
+                    EquipmentType::Bow => &[1, 2, 3, 4, 7],
+                    EquipmentType::MeleeOneHand | EquipmentType::HybridOneHand => {
+                        &[1, 2, 3, 4, 7, 11]
+                    }
+                    EquipmentType::TwoHand => &[1, 2, 3, 7, 11],
+                    EquipmentType::Staff => &[2, 5, 7, 8, 9, 11],
+                    _ => &[1, 2, 3, 4, 5, 7, 8, 9, 11],
+                };
+                assert!(
+                    allowed.contains(&target),
+                    "{} {:?} {target}",
+                    player.name,
+                    item.equipment_type
+                );
+                for affix in &item.affixes {
+                    if item.equipment_type == EquipmentType::HybridOneHand
+                        && affix.effect == Effect::Intelligence
+                    {
+                        assert!([2, 7].contains(&target));
+                        assert!(["sword", "axe", "mace"].contains(&item.base.as_str()));
+                    }
+                    if matches!(
+                        item.equipment_type,
+                        EquipmentType::Bow | EquipmentType::MeleeOneHand | EquipmentType::TwoHand
+                    ) {
+                        if target != 2 {
+                            assert_ne!(affix.effect, Effect::Intelligence);
+                        }
+                    }
+                    if matches!(
+                        item.equipment_type,
+                        EquipmentType::Wand | EquipmentType::Staff
+                    ) {
+                        assert!(!matches!(
+                            affix.effect,
+                            Effect::Strength
+                                | Effect::Agility
+                                | Effect::FlatDamage
+                                | Effect::AttackSpeed
+                                | Effect::LifeLeech
+                        ));
+                        assert!(!affix.tags.iter().any(|t| matches!(t, Tag::Attack)));
+                    }
+                    match affix.effect {
+                        Effect::Stamina => {}
+                        Effect::Strength => assert!(
+                            target == 1
+                                && !matches!(
+                                    item.equipment_type,
+                                    EquipmentType::Leather | EquipmentType::Cloth
+                                )
+                        ),
+                        Effect::Agility => assert!(
+                            [3, 4, 7, 11].contains(&target)
+                                && !matches!(
+                                    item.equipment_type,
+                                    EquipmentType::Plate | EquipmentType::Cloth
+                                )
+                        ),
+                        Effect::Intelligence => assert!([2, 5, 7, 8, 9, 11].contains(&target)),
+                        Effect::BlockChance => {
+                            assert_eq!(item.equipment_type, EquipmentType::Shield)
+                        }
+                        _ => {}
+                    }
+                }
+                if item.rarity == Rarity::Epic {
+                    assert!(item.affixes.iter().any(|a| a.effect == Effect::Stamina));
+                }
+                if item.equipment_type == EquipmentType::Shield {
+                    assert!((0.25..=0.40).contains(&item.base_block));
+                }
+                assert!(item.valid_equipment());
+            }
+            assert!(
+                (1520..1680).contains(&targets[&player.id]),
+                "{} {targets:?}",
+                player.name
+            );
+            for other in super::super::super::data::CLASSES
+                .iter()
+                .filter(|c| c.id != player.id)
+            {
+                assert!(
+                    (15..90).contains(targets.get(&other.id).unwrap()),
+                    "{} {targets:?}",
+                    player.name
+                );
+            }
+        }
+        for id in [
+            "sword",
+            "axe",
+            "mace",
+            "sword_two_hand",
+            "axe_two_hand",
+            "mace_two_hand",
+            "staff",
+            "polearm",
+        ] {
+            assert!(seen.contains(id), "Base {id} never generated");
+        }
+    }
+    #[test]
+    fn one_handed_swords_axes_and_maces_can_roll_intelligence_for_paladins_and_shamans() {
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 0.0,
+            epic: 1.0,
+            legendary: 0.0,
+        };
+        let mut rng = Rng(771);
+        for id in ["sword", "axe", "mace"] {
+            for base in &mut config.bases {
+                base.weight = if base.id == id { 1.0 } else { 0.0 };
+            }
+            for (class, attack) in [
+                (1, Effect::Strength),
+                (2, Effect::Strength),
+                (3, Effect::Agility),
+                (4, Effect::Agility),
+                (7, Effect::Agility),
+                (11, Effect::Agility),
+            ] {
+                let (mut intelligence, mut attacks) = (0, 0);
+                for _ in 0..100 {
+                    let item = config.generate_for_target(20, class, &mut rng).unwrap();
+                    assert_eq!(item.base, id);
+                    assert_eq!(item.affixes[0].effect, Effect::Stamina);
+                    match item.affixes[1].effect {
+                        Effect::Intelligence => {
+                            assert!([2, 7].contains(&class));
+                            intelligence += 1;
+                        }
+                        effect => {
+                            assert_eq!(effect, attack);
+                            attacks += 1;
+                        }
+                    }
+                    assert!(item.valid_equipment());
+                }
+                assert_eq!(attacks > 0, class != 2);
+                assert_eq!(intelligence > 0, [2, 7].contains(&class));
+            }
+        }
+    }
+    #[test]
+    fn class_spell_procs_are_bound_at_drop_and_survive_saving_for_all_nine_classes() {
+        let mut config = Config::builtin();
+        let mut rng = Rng(42);
+        for base in &mut config.bases {
+            base.weight = if base.slot == SlotKind::Trinket {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        for affix in &mut config.affixes {
+            affix.weight =
+                if affix.effect.primary() || affix.id == "proc_class_spell" || affix.id == "armour"
+                {
+                    1.0
+                } else {
+                    0.0
+                };
+        }
+        config.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 0.0,
+            epic: 1.0,
+            legendary: 0.0,
+        };
+        for class in super::super::super::data::CLASSES {
+            let item = config.generate_for_target(20, class.id, &mut rng).unwrap();
+            let proc = item.affixes.iter().find_map(|a| a.proc.as_ref()).unwrap();
+            assert_eq!(proc.class, Some(class.id));
+            assert!(class.pool.contains(&proc.spell.as_deref().unwrap()));
+            assert!(proc.valid());
+            let inventory = Inventory::fixture(vec![item]);
+            let text = toml::to_string_pretty(&inventory.save).unwrap();
+            let loaded = Inventory::decode(&text).unwrap();
+            assert_eq!(
+                loaded.items[0]
+                    .affixes
+                    .iter()
+                    .find_map(|a| a.proc.as_ref())
+                    .unwrap()
+                    .class,
+                Some(class.id)
+            );
+        }
+    }
+    #[test]
+    fn new_effects_have_configured_pools_and_jewellery_proc_restrictions_are_enforced() {
+        let c = Config::builtin();
+        for id in [
+            "vampiric",
+            "life_on_kill",
+            "regeneration",
+            "movement_speed",
+            "damage_reduction",
+            "healing_effectiveness",
+            "boss_damage",
+            "full_life_damage",
+            "low_life_damage",
+            "bleed_chance",
+            "ignite_chance",
+            "chill_chance",
+            "knockback_chance",
+            "armour_penetration",
+            "pickup_radius",
+            "experience",
+            "luck",
+            "proc_class_spell",
+        ] {
+            assert!(
+                c.affixes.iter().any(|a| a.id == id && a.weight > 0.0),
+                "{id}"
+            );
+        }
+        assert!(Config::parse(
+            &DEFAULT_FILE.replace("effect = \"luck\"", "effect = \"life_leech\"")
+        )
+        .is_err());
+        assert!(Config::parse(
+            &DEFAULT_FILE.replace("slots = [\"trinket\"]", "slots = [\"ring\"]")
+        )
+        .is_err());
+        assert!(Config::parse(&DEFAULT_FILE.replace("duration = 5", "duration = 0")).is_err());
+    }
+    #[test]
+    fn rolls_obey_primary_secondary_counts_ranges_and_item_restrictions() {
+        let config = Config::builtin();
+        let mut rng = Rng(42);
+        let mut counts = [0; 3];
+        for _ in 0..10_000 {
+            let item = config.generate(20, &mut rng).unwrap();
+            counts[match item.rarity {
+                Rarity::Normal => 0,
+                Rarity::Magic => 1,
+                Rarity::Epic => 2,
+                Rarity::Legendary => panic!("legendary is disabled"),
+            }] += 1;
+            assert_eq!(item.affixes.len(), item.rarity.count());
+            if item.rarity == Rarity::Normal {
+                assert!(item.affixes[0].effect.primary());
+            }
+            assert!(item
+                .affixes
+                .iter()
+                .all(|a| !matches!(a.effect, Effect::Life | Effect::Damage | Effect::FlatDamage)));
+            let mut groups = BTreeSet::new();
+
+            for a in &item.affixes {
+                let def = config.affixes.iter().find(|d| d.id == a.id).unwrap();
+                assert!(def.slots.contains(&item.slot));
+                assert!((def.min..=def.max).contains(&a.value));
+                assert!(groups.insert(&a.group));
+
+                if matches!(a.effect, Effect::AttackSpeed | Effect::FlatDamage) {
+                    assert!(item.slot.weapon())
+                }
+            }
+            if item.rarity == Rarity::Magic {
+                assert_eq!(
+                    item.affixes.iter().filter(|a| a.effect.primary()).count(),
+                    1
+                );
+            }
+            if item.rarity == Rarity::Epic {
+                assert_eq!(
+                    item.affixes.iter().filter(|a| a.effect.primary()).count(),
+                    2
+                );
+                assert!(item.affixes.iter().any(|a| a.effect == Effect::Stamina));
+            }
+            if counts.iter().sum::<u32>() <= 50 {
+                let inventory = Inventory::fixture(vec![item]);
+                let text = toml::to_string(&inventory.save).unwrap();
+                assert_eq!(Inventory::decode(&text).unwrap().items.len(), 1);
+            }
+        }
+        assert!((5700..6300).contains(&counts[0]));
+        assert!((2700..3300).contains(&counts[1]));
+        assert!((800..1200).contains(&counts[2]));
+    }
+    #[test]
+    fn config_rejects_invalid_weights_weapon_mods_and_incomplete_affix_pools() {
+        assert!(Config::parse(&DEFAULT_FILE.replace(
+            "equipment_type = \"universal\"",
+            "equipment_type = \"legacy\""
+        ))
+        .is_err());
+        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 0", "legendary = 1")).is_err());
+        assert!(Config::parse(
+            &DEFAULT_FILE.replace("boss_drop_chance = 1.0", "boss_drop_chance = 2.0")
+        )
+        .is_err());
+        assert!(Config::parse(
+            &DEFAULT_FILE.replace("effect = \"stamina\"", "effect = \"flat_damage\"")
+        )
+        .is_err());
+        assert!(Config::parse(
+            &DEFAULT_FILE.replace("effect = \"stamina\"", "effect = \"strength\"")
+        )
+        .is_err());
+        assert!(Config::parse(&DEFAULT_FILE.replace("max = 40", "max = -1")).is_err());
+    }
+    #[test]
+    fn disabled_bases_and_affixes_never_roll_and_rarity_is_independent_of_pool_size() {
+        let mut config = Config::builtin();
+        let mut rng = Rng(42);
+        for base in &mut config.bases {
+            base.weight = if base.id == "ring" { 1.0 } else { 0.0 };
+        }
+        config.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 0.0,
+            epic: 1.0,
+            legendary: 0.0,
+        };
+        config
+            .affixes
+            .iter_mut()
+            .find(|a| a.id == "armour")
+            .unwrap()
+            .weight = 0.0;
+        for _ in 0..100 {
+            let item = config.generate(1, &mut rng).unwrap();
+            assert_eq!(item.base, "ring");
+            assert_eq!(item.rarity, Rarity::Epic);
+            assert!(item.affixes.iter().all(|a| a.id != "armour"));
+        }
+    }
+}

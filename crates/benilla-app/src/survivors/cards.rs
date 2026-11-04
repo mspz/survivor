@@ -1,7 +1,7 @@
 //! The level-up picker, as a survivors game deals it: three tall cards that flip up out of the
 //! deck one after another, tilt toward the cursor, lift under it and burst on the pick. Each card
 //! wears its rarity in WoW's item-quality colours, so what is better reads at a glance: a fresh
-//! spell is Rare, a rank up Uncommon, a rank that adds a target or reaches the top Epic.
+//! spell is Uncommon or Epic, a rank up Uncommon, a rank that adds a target or reaches the top Epic.
 
 use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
@@ -14,7 +14,6 @@ use super::{Phase, Rng, Run};
 /// WoW's item-quality colours (`ITEM_QUALITY_COLORS`).
 pub(super) const COMMON: Color = Color::srgb(1.0, 1.0, 1.0);
 pub(super) const UNCOMMON: Color = Color::srgb(0.118, 1.0, 0.0);
-pub(super) const RARE: Color = Color::srgb(0.0, 0.439, 0.867);
 pub(super) const EPIC: Color = Color::srgb(0.639, 0.208, 0.933);
 pub(super) const LEGENDARY: Color = Color::srgb(1.0, 0.502, 0.0);
 
@@ -28,7 +27,6 @@ const DEAL_SECS: f32 = 0.38;
 pub(super) enum Rarity {
     Common,
     Uncommon,
-    Rare,
     Epic,
     Legendary,
 }
@@ -38,7 +36,6 @@ impl Rarity {
         match self {
             Self::Common => COMMON,
             Self::Uncommon => UNCOMMON,
-            Self::Rare => RARE,
             Self::Epic => EPIC,
             Self::Legendary => LEGENDARY,
         }
@@ -48,7 +45,6 @@ impl Rarity {
         match self {
             Self::Common => "Common",
             Self::Uncommon => "Uncommon",
-            Self::Rare => "Rare",
             Self::Epic => "Epic",
             Self::Legendary => "Legendary",
         }
@@ -82,10 +78,10 @@ fn power(def: &data::AbilityDef) -> Option<f32> {
 }
 
 /// Where a new spell stands among its class's: the strongest third Epic, the weakest third
-/// Uncommon, the rest (and the defensive spells) Rare.
+/// Uncommon, the rest (and the defensive spells) Epic.
 fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
     let Some(mine) = power(def) else {
-        return Rarity::Rare;
+        return Rarity::Epic;
     };
     let mut all: Vec<f32> = run
         .class
@@ -100,7 +96,7 @@ fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
     } else if rank < 0.33 {
         Rarity::Uncommon
     } else {
-        Rarity::Rare
+        Rarity::Epic
     }
 }
 
@@ -108,6 +104,12 @@ fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
 /// Epic, a new spell by its power among the class's ([`spell_tier`]), a plain rank Uncommon.
 pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
     match choice {
+        Choice::NumericPassive(_, strength) => match strength {
+            1 => Rarity::Common,
+            2 => Rarity::Uncommon,
+            3 => Rarity::Epic,
+            _ => Rarity::Legendary,
+        },
         Choice::NewAbility(def) => spell_tier(def, run),
         Choice::Upgrade(k) => {
             let o = &run.abilities[k];
@@ -125,13 +127,17 @@ pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
                 Rarity::Uncommon
             }
         }
-        Choice::NewPassive(_) => Rarity::Uncommon,
-        Choice::UpPassive(k) => match run.passives[k].1 + 1 {
-            n if n == data::MAX_PASSIVE_LEVEL => Rarity::Epic,
-            n if n + 1 == data::MAX_PASSIVE_LEVEL => Rarity::Rare,
-            2 => Rarity::Common,
-            _ => Rarity::Uncommon,
-        },
+        Choice::NewPassive(p) if super::passives::legendary(p) => Rarity::Legendary,
+        Choice::UpPassive(k) if super::passives::legendary(run.passives[k].0) => Rarity::Legendary,
+        Choice::NewPassive(p) if matches!(p.effect, data::PassiveEffect::Stat(..)) => {
+            Rarity::Common
+        }
+        Choice::UpPassive(k)
+            if matches!(run.passives[k].0.effect, data::PassiveEffect::Stat(..)) =>
+        {
+            Rarity::Common
+        }
+        Choice::NewPassive(_) | Choice::UpPassive(_) => Rarity::Uncommon,
         Choice::Heal => Rarity::Common,
     }
 }
@@ -160,6 +166,13 @@ pub(super) struct Rays;
 #[derive(Resource, Default)]
 pub(super) struct PendingPick(Option<(usize, f32)>);
 
+impl PendingPick {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::survivors) fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
 const PICK_SECS: f32 = 0.28;
 
 /// The cards, rebuilt for each offer.
@@ -170,10 +183,19 @@ pub(super) fn deal_cards(
     spells: Option<Res<crate::ui_action::Spells>>,
     font: Res<HudFont>,
     rows: Query<Entity, With<hud::OfferRow>>,
+    mut subtitles: Query<&mut Text, With<hud::LevelUpSub>>,
     mut fills: ResMut<Assets<FillMaterial>>,
 ) {
     if !offer.is_changed() {
         return;
+    }
+    let label = match offer.choices().first() {
+        Some(Choice::NewAbility(_) | Choice::Upgrade(_)) => "Choose an active spell",
+        Some(Choice::Heal) => "Recovery",
+        _ => "Choose a passive",
+    };
+    for mut subtitle in &mut subtitles {
+        subtitle.0 = label.to_owned();
     }
     let Ok(row) = rows.single() else { return };
     commands.entity(row).despawn_related::<Children>();
@@ -409,6 +431,8 @@ pub(super) fn animate_cards(
     mut offer: ResMut<Offer>,
     mut rng: ResMut<Rng>,
     mut next: ResMut<NextState<Phase>>,
+    role: Option<Res<super::multiplayer::Role>>,
+    actions: Option<ResMut<super::multiplayer::GuestActions>>,
 ) {
     if *phase.get() != Phase::LevelUp {
         pending.0 = None;
@@ -500,7 +524,13 @@ pub(super) fn animate_cards(
         if *t >= PICK_SECS {
             let i = *i;
             pending.0 = None;
-            hud::pick(i, &mut run, &mut offer, &mut rng, &mut next);
+            if role.is_some_and(|r| *r == super::multiplayer::Role::Guest) {
+                if let Some(mut actions) = actions {
+                    actions.pick = Some(i);
+                }
+            } else {
+                hud::pick(i, &mut run, &mut offer, &mut rng, &mut next);
+            }
         }
     }
 }
@@ -509,6 +539,7 @@ pub(super) fn animate_cards(
 pub(super) fn choose_card(
     phase: Res<State<Phase>>,
     keys: Res<ButtonInput<KeyCode>>,
+    settings: Res<super::options::Settings>,
     cards: Query<(&Card, &Interaction), Changed<Interaction>>,
     offer: Res<Offer>,
     mut pending: ResMut<PendingPick>,
@@ -520,11 +551,15 @@ pub(super) fn choose_card(
         .iter()
         .find(|(c, i)| **i == Interaction::Pressed && c.t >= DEAL_SECS)
         .map(|(c, _)| c.index);
-    for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3]
-        .into_iter()
-        .enumerate()
+    for (i, action) in [
+        super::options::Action::Card1,
+        super::options::Action::Card2,
+        super::options::Action::Card3,
+    ]
+    .into_iter()
+    .enumerate()
     {
-        if keys.just_pressed(key) {
+        if settings.just_pressed(action, &keys) {
             pick = Some(i);
         }
     }

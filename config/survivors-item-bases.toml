@@ -1,0 +1,627 @@
+# Restart the game after edits. Base and rarity weights are relative; 0 disables an entry.
+# First choose loot class (80% player, 20% another class), then rarity, compatible base and affixes.
+# Common: 1 primary. Uncommon: 1 primary + 1 secondary. Epic: stamina + 1 other primary + 2 secondary.
+# An item cannot roll two affixes in the same group. Legendary is reserved: weight must be 0.
+# Stamina: 1 life/point. Strength/agility: 1% attack damage/point for eligible classes. Intelligence: 1% spell damage/healing/point.
+version = 1
+boss_drop_chance = 1.0
+
+# Les bases sont classees par emplacement, puis par type. Ajouter les variantes sous le groupe concerne.
+
+# ============================================================================
+# TETE (head)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_helm"
+name = "plate Helm"
+slot = "head"
+equipment_type = "plate"
+base_armour = 80
+icon = 'Interface\Icons\INV_Helmet_03'
+weight = 1
+appearance = { display_id = 1128, inventory_type = 1, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_helm"
+name = "mail Helm"
+slot = "head"
+equipment_type = "mail"
+base_armour = 56
+icon = 'Interface\Icons\INV_Helmet_03'
+weight = 1
+appearance = { display_id = 1131, inventory_type = 1, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_helm"
+name = "leather Helm"
+slot = "head"
+equipment_type = "leather"
+base_armour = 32
+icon = 'Interface\Icons\INV_Helmet_04'
+weight = 1
+appearance = { display_id = 1123, inventory_type = 1, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_helm"
+name = "cloth Helm"
+slot = "head"
+equipment_type = "cloth"
+base_armour = 16
+icon = 'Interface\Icons\INV_Helmet_04'
+weight = 1
+appearance = { display_id = 4626, inventory_type = 1, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# COU (neck)
+# ============================================================================
+
+# --- Accessoires ---
+[[bases]]
+id = "amulet"
+name = "Amulet"
+slot = "neck"
+equipment_type = "universal"
+icon = 'Interface\Icons\INV_Jewelry_Necklace_01'
+weight = 1
+
+# ============================================================================
+# EPAULES (shoulders)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_pauldrons"
+name = "plate Pauldrons"
+slot = "shoulders"
+equipment_type = "plate"
+base_armour = 60
+icon = 'Interface\Icons\INV_Shoulder_01'
+weight = 1
+appearance = { display_id = 29391, inventory_type = 3, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_pauldrons"
+name = "mail Pauldrons"
+slot = "shoulders"
+equipment_type = "mail"
+base_armour = 42
+icon = 'Interface\Icons\INV_Shoulder_07'
+weight = 1
+appearance = { display_id = 4884, inventory_type = 3, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_pauldrons"
+name = "leather Pauldrons"
+slot = "shoulders"
+equipment_type = "leather"
+base_armour = 24
+icon = 'Interface\Icons\INV_Shoulder_08'
+weight = 1
+appearance = { display_id = 1057, inventory_type = 3, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_pauldrons"
+name = "cloth Pauldrons"
+slot = "shoulders"
+equipment_type = "cloth"
+base_armour = 12
+icon = 'Interface\Icons\INV_Shoulder_02'
+weight = 1
+appearance = { display_id = 4904, inventory_type = 3, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# DOS (back)
+# ============================================================================
+
+# --- Accessoires ---
+[[bases]]
+id = "cloak"
+name = "Cloak"
+slot = "back"
+equipment_type = "universal"
+base_armour = 10
+icon = 'Interface\Icons\INV_Misc_Cape_16'
+weight = 1
+appearance = { display_id = 13984, inventory_type = 16, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# TORSE (chest)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_chest"
+name = "plate Chest"
+slot = "chest"
+equipment_type = "plate"
+base_armour = 100
+icon = 'Interface\Icons\INV_Chest_Plate01'
+weight = 1
+appearance = { display_id = 3413, inventory_type = 5, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_chest"
+name = "mail Chest"
+slot = "chest"
+equipment_type = "mail"
+base_armour = 70
+icon = 'Interface\Icons\INV_Chest_Chain'
+weight = 1
+appearance = { display_id = 977, inventory_type = 5, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_chest"
+name = "leather Chest"
+slot = "chest"
+equipment_type = "leather"
+base_armour = 40
+icon = 'Interface\Icons\INV_Shirt_05'
+weight = 1
+appearance = { display_id = 9906, inventory_type = 5, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_chest"
+name = "cloth Chest"
+slot = "chest"
+equipment_type = "cloth"
+base_armour = 20
+icon = 'Interface\Icons\INV_Chest_Cloth_23'
+weight = 1
+appearance = { display_id = 12647, inventory_type = 20, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# CHEMISE (shirt)
+# ============================================================================
+
+# --- Accessoires ---
+[[bases]]
+id = "shirt"
+name = "Shirt"
+slot = "shirt"
+equipment_type = "universal"
+icon = 'Interface\Icons\INV_Shirt_05'
+weight = 1
+appearance = { display_id = 9891, inventory_type = 4, item_class = 4, subclass = 0, material = 0, sheath = 0 }
+
+# ============================================================================
+# TABARD (tabard)
+# ============================================================================
+
+# --- Accessoires ---
+[[bases]]
+id = "tabard"
+name = "Tabard"
+slot = "tabard"
+equipment_type = "universal"
+icon = 'Interface\Icons\INV_Shirt_GuildTabard_01'
+weight = 1
+appearance = { display_id = 6255, inventory_type = 19, item_class = 4, subclass = 0, material = 0, sheath = 0 }
+
+# ============================================================================
+# POIGNETS (wrists)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_bracers"
+name = "plate Bracers"
+slot = "wrists"
+equipment_type = "plate"
+base_armour = 30
+icon = 'Interface\Icons\INV_Bracer_07'
+weight = 1
+appearance = { display_id = 4448, inventory_type = 9, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_bracers"
+name = "mail Bracers"
+slot = "wrists"
+equipment_type = "mail"
+base_armour = 21
+icon = 'Interface\Icons\INV_Bracer_07'
+weight = 1
+appearance = { display_id = 3622, inventory_type = 9, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_bracers"
+name = "leather Bracers"
+slot = "wrists"
+equipment_type = "leather"
+base_armour = 12
+icon = 'Interface\Icons\INV_Jewelry_Ring_03'
+weight = 1
+appearance = { display_id = 1980, inventory_type = 9, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_bracers"
+name = "cloth Bracers"
+slot = "wrists"
+equipment_type = "cloth"
+base_armour = 6
+icon = 'Interface\Icons\INV_Bracer_13'
+weight = 1
+appearance = { display_id = 3897, inventory_type = 9, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# MAINS (hands)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_gloves"
+name = "plate Gloves"
+slot = "hands"
+equipment_type = "plate"
+base_armour = 50
+icon = 'Interface\Icons\INV_Gauntlets_29'
+weight = 1
+appearance = { display_id = 28397, inventory_type = 10, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_gloves"
+name = "mail Gloves"
+slot = "hands"
+equipment_type = "mail"
+base_armour = 35
+icon = 'Interface\Icons\INV_Gauntlets_04'
+weight = 1
+appearance = { display_id = 976, inventory_type = 10, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_gloves"
+name = "leather Gloves"
+slot = "hands"
+equipment_type = "leather"
+base_armour = 20
+icon = 'Interface\Icons\INV_Gauntlets_05'
+weight = 1
+appearance = { display_id = 4685, inventory_type = 10, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_gloves"
+name = "cloth Gloves"
+slot = "hands"
+equipment_type = "cloth"
+base_armour = 10
+icon = 'Interface\Icons\INV_Gauntlets_06'
+weight = 1
+appearance = { display_id = 4242, inventory_type = 10, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# TAILLE (waist)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_belt"
+name = "plate Belt"
+slot = "waist"
+equipment_type = "plate"
+base_armour = 40
+icon = 'Interface\Icons\INV_Belt_01'
+weight = 1
+appearance = { display_id = 3418, inventory_type = 6, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_belt"
+name = "mail Belt"
+slot = "waist"
+equipment_type = "mail"
+base_armour = 28
+icon = 'Interface\Icons\INV_Belt_06'
+weight = 1
+appearance = { display_id = 9895, inventory_type = 6, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_belt"
+name = "leather Belt"
+slot = "waist"
+equipment_type = "leather"
+base_armour = 16
+icon = 'Interface\Icons\INV_Belt_01'
+weight = 1
+appearance = { display_id = 3582, inventory_type = 6, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_belt"
+name = "cloth Belt"
+slot = "waist"
+equipment_type = "cloth"
+base_armour = 8
+icon = 'Interface\Icons\INV_Belt_01'
+weight = 1
+appearance = { display_id = 275, inventory_type = 6, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# JAMBES (legs)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_leggings"
+name = "plate Leggings"
+slot = "legs"
+equipment_type = "plate"
+base_armour = 80
+icon = 'Interface\Icons\INV_Pants_04'
+weight = 1
+appearance = { display_id = 3414, inventory_type = 7, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_leggings"
+name = "mail Leggings"
+slot = "legs"
+equipment_type = "mail"
+base_armour = 56
+icon = 'Interface\Icons\INV_Pants_03'
+weight = 1
+appearance = { display_id = 687, inventory_type = 7, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_leggings"
+name = "leather Leggings"
+slot = "legs"
+equipment_type = "leather"
+base_armour = 32
+icon = 'Interface\Icons\INV_Pants_02'
+weight = 1
+appearance = { display_id = 9913, inventory_type = 7, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_leggings"
+name = "cloth Leggings"
+slot = "legs"
+equipment_type = "cloth"
+base_armour = 16
+icon = 'Interface\Icons\INV_Pants_01'
+weight = 1
+appearance = { display_id = 9924, inventory_type = 7, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# PIEDS (feet)
+# ============================================================================
+
+# --- Plaque ---
+[[bases]]
+id = "plate_boots"
+name = "plate Boots"
+slot = "feet"
+equipment_type = "plate"
+base_armour = 50
+icon = 'Interface\Icons\INV_Boots_Plate_08'
+weight = 1
+appearance = { display_id = 28396, inventory_type = 8, item_class = 4, subclass = 4, material = 0, sheath = 0 }
+
+# --- Mailles ---
+[[bases]]
+id = "mail_boots"
+name = "mail Boots"
+slot = "feet"
+equipment_type = "mail"
+base_armour = 35
+icon = 'Interface\Icons\INV_Boots_01'
+weight = 1
+appearance = { display_id = 233, inventory_type = 8, item_class = 4, subclass = 3, material = 0, sheath = 0 }
+
+# --- Cuir ---
+[[bases]]
+id = "leather_boots"
+name = "leather Boots"
+slot = "feet"
+equipment_type = "leather"
+base_armour = 20
+icon = 'Interface\Icons\INV_Boots_05'
+weight = 1
+appearance = { display_id = 9915, inventory_type = 8, item_class = 4, subclass = 2, material = 0, sheath = 0 }
+
+# --- Tissu ---
+[[bases]]
+id = "cloth_boots"
+name = "cloth Boots"
+slot = "feet"
+equipment_type = "cloth"
+base_armour = 10
+icon = 'Interface\Icons\INV_Boots_09'
+weight = 1
+appearance = { display_id = 9929, inventory_type = 8, item_class = 4, subclass = 1, material = 0, sheath = 0 }
+
+# ============================================================================
+# ANNEAUX (ring)
+# ============================================================================
+
+# --- Accessoires ---
+[[bases]]
+id = "ring"
+name = "Ring"
+slot = "ring"
+equipment_type = "universal"
+icon = 'Interface\Icons\INV_Jewelry_Ring_01'
+weight = 1
+
+# ============================================================================
+# BIJOUX (trinket)
+# ============================================================================
+
+# --- Accessoires ---
+[[bases]]
+id = "trinket"
+name = "Trinket"
+slot = "trinket"
+equipment_type = "universal"
+icon = 'Interface\Icons\INV_Misc_Orb_01'
+weight = 1
+
+# ============================================================================
+# MAIN DROITE (main_hand)
+# ============================================================================
+
+# --- Epees a une main ---
+[[bases]]
+id = "sword"
+name = "One-handed Sword"
+slot = "main_hand"
+equipment_type = "hybrid_one_hand"
+base_damage = { min = 6, max = 10 }
+icon = 'Interface\Icons\INV_Sword_04'
+weight = 1
+appearance = { display_id = 1542, inventory_type = 13, item_class = 2, subclass = 7, material = 1, sheath = 3 }
+
+# --- Haches a une main ---
+[[bases]]
+id = "axe"
+name = "One-handed Axe"
+slot = "main_hand"
+equipment_type = "hybrid_one_hand"
+base_damage = { min = 6, max = 10 }
+icon = 'Interface\Icons\INV_Axe_01'
+weight = 1
+appearance = { display_id = 453, inventory_type = 13, item_class = 2, subclass = 0, material = 1, sheath = 3 }
+
+# --- Masses a une main ---
+[[bases]]
+id = "mace"
+name = "One-handed Mace"
+slot = "main_hand"
+equipment_type = "hybrid_one_hand"
+base_damage = { min = 6, max = 10 }
+icon = 'Interface\Icons\INV_Mace_03'
+weight = 1
+appearance = { display_id = 5194, inventory_type = 13, item_class = 2, subclass = 4, material = 1, sheath = 3 }
+
+# --- Dagues ---
+[[bases]]
+id = "dagger"
+name = "Dagger"
+slot = "main_hand"
+equipment_type = "melee_one_hand"
+base_damage = { min = 4, max = 7 }
+icon = 'Interface\Icons\INV_Weapon_ShortBlade_05'
+weight = 1
+appearance = { display_id = 6442, inventory_type = 13, item_class = 2, subclass = 15, material = 1, sheath = 3 }
+
+# --- Epees a deux mains ---
+[[bases]]
+id = "sword_two_hand"
+name = "Two-handed Sword"
+slot = "main_hand"
+equipment_type = "two_hand"
+base_damage = { min = 12, max = 20 }
+icon = 'Interface\Icons\INV_Sword_04'
+weight = 1
+appearance = { display_id = 1627, inventory_type = 17, item_class = 2, subclass = 8, material = 1, sheath = 1 }
+
+# --- Haches a deux mains ---
+[[bases]]
+id = "axe_two_hand"
+name = "Two-handed Axe"
+slot = "main_hand"
+equipment_type = "two_hand"
+base_damage = { min = 12, max = 20 }
+icon = 'Interface\Icons\INV_Axe_01'
+weight = 1
+appearance = { display_id = 1458, inventory_type = 17, item_class = 2, subclass = 1, material = 1, sheath = 1 }
+
+# --- Masses a deux mains ---
+[[bases]]
+id = "mace_two_hand"
+name = "Two-handed Mace"
+slot = "main_hand"
+equipment_type = "two_hand"
+base_damage = { min = 12, max = 20 }
+icon = 'Interface\Icons\INV_Hammer_15'
+weight = 1
+appearance = { display_id = 8690, inventory_type = 17, item_class = 2, subclass = 5, material = 1, sheath = 1 }
+
+# --- Armes d'hast ---
+[[bases]]
+id = "polearm"
+name = "Polearm"
+slot = "main_hand"
+equipment_type = "two_hand"
+base_damage = { min = 12, max = 20 }
+icon = 'Interface\Icons\INV_Spear_06'
+weight = 1
+appearance = { display_id = 869, inventory_type = 17, item_class = 2, subclass = 6, material = 1, sheath = 1 }
+
+# --- Batons de caster a deux mains ---
+[[bases]]
+id = "staff"
+name = "Two-handed Caster Staff"
+slot = "main_hand"
+equipment_type = "staff"
+base_damage = { min = 7, max = 12 }
+icon = 'Interface\Icons\INV_Staff_08'
+weight = 1
+appearance = { display_id = 472, inventory_type = 17, item_class = 2, subclass = 10, material = 2, sheath = 2 }
+
+# ============================================================================
+# MAIN GAUCHE (off_hand)
+# ============================================================================
+
+# --- Boucliers ---
+[[bases]]
+id = "shield"
+name = "Shield"
+slot = "off_hand"
+equipment_type = "shield"
+base_armour = 100
+base_block = 0.25
+base_block_max = 0.40
+icon = 'Interface\Icons\INV_Shield_09'
+weight = 1
+appearance = { display_id = 18730, inventory_type = 14, item_class = 4, subclass = 6, material = 2, sheath = 4 }
+
+# ============================================================================
+# A DISTANCE (ranged)
+# ============================================================================
+
+# --- Arcs ---
+[[bases]]
+id = "bow"
+name = "Bow"
+slot = "ranged"
+equipment_type = "bow"
+base_damage = { min = 8, max = 14 }
+icon = 'Interface\Icons\INV_Weapon_Bow_05'
+weight = 1
+appearance = { display_id = 2786, inventory_type = 15, item_class = 2, subclass = 2, material = 2, sheath = 0 }
+
+# --- Baguettes ---
+[[bases]]
+id = "wand"
+name = "Wand"
+slot = "ranged"
+equipment_type = "wand"
+base_damage = { min = 3, max = 6 }
+icon = 'Interface\Icons\INV_Wand_02'
+weight = 1
+appearance = { display_id = 5291, inventory_type = 26, item_class = 2, subclass = 19, material = 2, sheath = 0 }
+
+[rarities]
+normal = 60
+magic = 30
+epic = 10
+legendary = 0

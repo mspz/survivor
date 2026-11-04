@@ -68,7 +68,7 @@ pub(super) fn from_env() -> Option<Auto> {
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(name))
         .unwrap_or(0);
-    let map = crate::webenv::var("WOW_SURVIVORS_MAP").map_or(0, |m| {
+    let map = crate::webenv::var("WOW_SURVIVORS_MAP").map_or(data::CAMPAIGN[0], |m| {
         let m = m.trim().to_ascii_lowercase();
         m.parse::<usize>()
             .ok()
@@ -77,7 +77,7 @@ pub(super) fn from_env() -> Option<Auto> {
                 data::MAPS
                     .iter()
                     .position(|d| d.name.to_ascii_lowercase().contains(&m))
-                    .unwrap_or(0)
+                    .unwrap_or(data::CAMPAIGN[0])
             })
     });
     let shots = std::env::var_os("WOW_SURVIVORS_SHOTS").map(std::path::PathBuf::from);

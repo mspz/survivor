@@ -34,17 +34,45 @@ minutes. **No server, no login, no account** — fully offline and self-containe
 
 ### In this build
 
-- **A character-create pick screen** built from the client's own glue art: eight races, both
-  genders, every class the race can be, and **sixteen zones**, from the starting zones to
-  Naxxramas and the Gates of Ahn'Qiraj. Each zone fights with its own creatures and bosses, taken
-  from the zone's real spawns. Your pick is remembered across reloads.
+- **Human expedition campaign:** six zones cover levels 0–9 through 50–59, from Elwynn
+  Forest to the Blasted Lands. Enemy health and damage grow to 200% over each run.
+  Tune monster and boss population, health and damage in
+  [config/survivors-expeditions.toml](config/survivors-expeditions.toml);
+  see [docs/EXPEDITIONS.md](docs/EXPEDITIONS.md).
+
+- **Character sheet and live damage meter:** press **C** for a Classic-style paper doll with
+  a live hero preview, 19 equipment slots, general stats and tag-aware per-spell bonuses.
+  **B** opens paginated bags; bosses drop random equipment with prefixes and suffixes.
+  See [docs/ITEMS.md](docs/ITEMS.md) and [config/survivors-items.toml](config/survivors-items.toml).
+  **F6** toggles a movable meter that tracks effective DPS over a five-second rolling window,
+  attributing hits, DoTs, ground effects, reflected damage and totems to their original spells.
+
+- **Build-aware, endlessly stacking passives:** run rewards offer generic bonuses or useful modifiers for skills
+  you already own, including projectiles, chain, fork, melee targets, damage schools and echoes.
+  Passives have no gameplay rank cap or six-slot limit; XP boosts remain useful throughout a run.
+  Talent branches use the same engine and display their rank milestones. The v3 layout refunds older allocations while preserving character XP.
+
+- **A shared spell engine:** all 73 auto-cast abilities and 9 mobility skills have gameplay and damage-school tags. Compatible
+  modifier sources can change projectiles, chains, forks, melee targets, area and repeat chance;
+  combat values and tooltips use the same resolver. See [the engine API](docs/SPELL_ENGINE.md).
+
+- **Persistent characters and a Stormwind sanctuary:** create up to ten named characters with
+  their own race, class, level, talent allocation and zone unlocks. Enter the world in Stormwind,
+  select one of sixteen expeditions from the sanctuary, then return after victory or defeat.
+  Character selection is separate from creation; logging out preserves the character.
+- **Classic-style talents in game:** three class-locked specializations, each with 19 nodes,
+  four columns, seven tiers, prerequisites, five-rank talents and single-rank keystones. Spend
+  up to 51 points on your character. The frame, backgrounds, icons and rank borders come from
+  the installed client. Spend/reset in Stormwind, inspect during expeditions. All branch bonuses
+  use the shared spell engine; tooltips show current/next bonuses and affected skills.
+  The first created character inherits legacy XP/unlocks; old talent allocations are refunded.
 - **Level-up cards** that deal in, tilt toward the cursor and lift on hover. Their WoW item-quality
   colour says how strong a pick is, and each card lists exactly what changes, like
   `Damage 20 » 26` or `Targets 2 » 3`.
 - **A class movement spell on F** from level 5, aimed at the cursor: Blink, Charge, Sprint, Dash,
   Fade, Ghost Wolf, Aspect of the Cheetah, Blessing of Freedom, Howl of Terror.
-- **A camera you can free:** locked top-down by default with the hero facing the cursor. **C**
-  unlocks it to swing and tilt, and the wheel zooms from over the shoulder out to 70 yards.
+- **A third-person camera:** left-drag to look around, right-drag to turn the hero,
+  A/D to turn and Q/E to strafe. Adjust mouse sensitivity in the pause menu; the wheel zooms out to 70 yards.
 - A light sharpen-and-colour pass over the picture (**G** toggles it).
 
 ## Play it
@@ -71,7 +99,7 @@ Run `make` (or `make help`) to list every target.
 ## Controls
 
 See [CONTROLS.md](CONTROLS.md). The short version: **WASD** to move, **Space** to jump, **F**
-for your class's movement spell, the **mouse wheel** to zoom, **C** to unlock the camera, **Esc**
+for your class's movement spell, the **mouse wheel** to zoom, **Esc**
 to pause, **1/2/3** to pick a level-up card.
 
 ## The game data (not in this repo)

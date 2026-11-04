@@ -1,4 +1,4 @@
-//! The hero: its body, WASD movement over the terrain, the top-down camera, and its health.
+//! The hero: its body, third-person movement, camera, and health.
 
 use benilla_world::view::WorldCamera;
 use benilla_world::world_point::WorldPoint;
@@ -6,12 +6,13 @@ use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 use super::data::{self, ClassDef};
+use super::options::{Action, Settings};
 use super::units::{self, flat, wow_to_bevy, yaw_toward, Fx, Marks, UnitSpec};
 use super::{Phase, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
 use crate::net::{FieldChanged, Guid, ObjectStore};
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 pub(super) struct Hero {
     /// Vertical velocity in yards/second while airborne; 0 on the ground.
     pub(super) vy: f32,
@@ -30,25 +31,13 @@ const JUMP_SPEED: f32 = 7.955_547;
 const GRAVITY: f32 = 19.291_105;
 
 /// Radians of orbit per raw mouse unit while right-dragging.
-const ORBIT_RATE: f32 = 0.008;
+pub(super) const ORBIT_RATE: f32 = 0.008;
 /// Elevation clamp (radians): ~10°..~83° above the horizon, so the camera never dives underground.
 const PITCH_MIN: f32 = 0.18;
 const PITCH_MAX: f32 = 1.45;
-/// The locked view's tilt.
-const FIXED_PITCH: f32 = 61.0 * std::f32::consts::PI / 180.0;
 /// Wheel zoom range, yards from the hero's shoulders.
 const ZOOM_MIN: f32 = 1.5;
 const ZOOM_MAX: f32 = 70.0;
-
-/// Whether the camera is locked; `C` toggles it.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum CamMode {
-    /// Locked top-down (58°), laptop-friendly — the original feel.
-    #[default]
-    Fixed,
-    /// Unlocked: a mouse drag swings and tilts it around the hero.
-    Orbit,
-}
 
 #[derive(Resource)]
 pub(super) struct CamRig {
@@ -58,17 +47,38 @@ pub(super) struct CamRig {
     pub yaw: f32,
     /// Elevation above the horizon (radians), clamped so the camera never dives underground.
     pub pitch: f32,
-    pub mode: CamMode,
+    pub sensitivity: f32,
 }
 
 impl Default for CamRig {
     fn default() -> Self {
         Self {
-            dist: 30.0,
+            dist: 12.0,
             orbit: 0.6,
             yaw: 0.0,
-            pitch: FIXED_PITCH,
-            mode: CamMode::Fixed,
+            pitch: 0.30,
+            sensitivity: load_sensitivity(),
+        }
+    }
+}
+
+fn load_sensitivity() -> f32 {
+    crate::local_state::home()
+        .and_then(|h| crate::local_state::read_to_string(&h.join("survivors-mouse.txt")).ok())
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(1.0)
+        .clamp(0.1, 3.0)
+}
+
+impl CamRig {
+    pub(super) fn adjust_sensitivity(&mut self, delta: f32) {
+        self.sensitivity = ((self.sensitivity + delta) * 10.0).round().clamp(1.0, 30.0) / 10.0;
+        if let Some(home) = crate::local_state::home() {
+            let _ = crate::local_state::write_atomic(
+                &home.join("survivors-mouse.txt"),
+                &self.sensitivity.to_string(),
+            );
         }
     }
 }
@@ -93,13 +103,14 @@ pub(super) fn follow_map(
     }
 }
 
-/// The hero in the class trainer's look, weapons drawn.
+/// The selected face is retained; the inventory supplies the worn appearance.
 pub(super) fn spawn_hero(
     commands: &mut Commands,
     class: &'static ClassDef,
     display: u32,
     race: u8,
     sex: u8,
+    level: u32,
     serial: u64,
     pos: Vec3,
 ) -> Entity {
@@ -113,18 +124,26 @@ pub(super) fn spawn_hero(
             serial,
             display,
             scale: 1.0,
-            level: 60,
+            level,
             faction: units::FACTION_FRIENDLY,
             bytes0,
-            weapons: class.weapons,
+            weapons: &[],
             sheath: class.sheath,
         },
         pos,
         0.0,
     );
-    commands
-        .entity(e)
-        .insert((Hero { vy: 0.0, air: 0.0 }, Marks::buffs()));
+    commands.entity(e).insert((
+        Hero { vy: 0.0, air: 0.0 },
+        Marks::buffs(),
+        super::items::visuals::HeroLook {
+            display,
+            race,
+            sex,
+            class: class.id,
+        },
+        Visibility::Hidden,
+    ));
     e
 }
 
@@ -139,8 +158,8 @@ pub(super) fn daylight(debug: Option<ResMut<benilla_world::dev_state::DebugState
     }
 }
 
-/// The ground under the mouse cursor, `None` with the cursor off the window. The locked camera's
-/// hero faces it, and the aimed mobility spells (Blink, Charge) go toward it.
+/// The ground under the mouse cursor, `None` with the cursor off the window.
+/// Aimed mobility spells (Blink, Charge) go toward it.
 #[derive(Resource, Default)]
 pub(super) struct AimPoint(pub(super) Option<Vec3>);
 
@@ -187,59 +206,33 @@ pub(super) fn aim_cursor(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drive_hero(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    phase: Res<State<Phase>>,
+    input: Res<super::session::ServerInput>,
+    session: Res<super::session::LocalSession>,
     run: Res<Run>,
     selection: Res<Selection>,
-    rig: Res<CamRig>,
-    aim: Res<AimPoint>,
     world: WorldPoint,
-    auto: Option<Res<super::auto::Auto>>,
     mut player: ResMut<crate::player::Player>,
     mut hero: Query<(&mut Transform, &mut MovementState, &mut Hero)>,
 ) {
+    let command = input.for_client(session.id());
+    let interactive = command.active;
     let focus = match hero.single_mut() {
         Ok((mut tf, mut mv, mut hm)) => {
             let dt = time.delta_secs();
-            let mut dir = Vec3::ZERO;
-            if let Some(auto) = auto
-                .as_deref()
-                .filter(|_| *phase.get() == Phase::Playing && run.dead_t.is_none())
-            {
-                dir = super::auto::steer(auto);
-            } else if *phase.get() == Phase::Playing && run.dead_t.is_none() {
-                if keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]) {
-                    dir.z -= 1.0;
-                }
-                if keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]) {
-                    dir.z += 1.0;
-                }
-                if keys.any_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]) {
-                    dir.x -= 1.0;
-                }
-                if keys.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
-                    dir.x += 1.0;
-                }
-                // In orbit mode WASD is camera-relative; in fixed mode it stays world-relative.
-                if rig.mode == CamMode::Orbit {
-                    let (sy, cy) = rig.yaw.sin_cos();
-                    dir = Vec3::new(dir.x * cy + dir.z * sy, 0.0, dir.z * cy - dir.x * sy);
-                }
+            if let Some(facing) = command.facing {
+                tf.rotation = Quat::from_rotation_y(yaw_toward(facing));
+            } else {
+                tf.rotate_y(command.turn * 2.5 * dt);
             }
+            let forward = tf.rotation * Vec3::NEG_Z;
+            let dir = command.direction
+                + forward * command.axes.y
+                + forward.cross(Vec3::Y) * command.axes.x;
             let mut pos = tf.translation;
-            // Locked, the hero faces the cursor and WASD moves him under it, so he backpedals and
-            // strafes as a player does; unlocked (or driven), he faces where he runs.
-            let face = (rig.mode == CamMode::Fixed
-                && auto.is_none()
-                && *phase.get() == Phase::Playing
-                && run.dead_t.is_none())
-            .then(|| aim.0.map(|a| flat(a - pos)))
-            .flatten()
-            .filter(|d| d.length() > 0.5)
-            .map(|d| d.normalize());
+            let face = (!command.automatic).then_some(forward);
             if let Some(look) = face {
                 let target = Quat::from_rotation_y(yaw_toward(look));
-                tf.rotation = tf.rotation.slerp(target, (dt * 20.0).min(1.0));
+                tf.rotation = target;
             }
             if dir != Vec3::ZERO && dt > 0.0 {
                 let dir = dir.normalize();
@@ -270,9 +263,9 @@ pub(super) fn drive_hero(
                 pos.z = held.z;
             }
             let ground = world.terrain_height_under(pos).unwrap_or(pos.y);
-            let playing = *phase.get() == Phase::Playing && run.dead_t.is_none();
+            let playing = interactive && run.dead_t.is_none();
             // Space hops: lift off the terrain, then gravity brings the hero back down.
-            if playing && keys.just_pressed(KeyCode::Space) && hm.vy == 0.0 && hm.air == 0.0 {
+            if playing && command.jump && hm.vy == 0.0 && hm.air == 0.0 {
                 hm.vy = JUMP_SPEED;
             }
             if playing && (hm.vy != 0.0 || hm.air > 0.0) {
@@ -300,8 +293,10 @@ pub(super) fn drive_hero(
         }
         Err(_) => {
             let mut p = arena(selection.stage_def());
-            if let Some(h) = world.terrain_height_under(p) {
-                p.y = h;
+            if !selection.in_hub {
+                if let Some(h) = world.terrain_height_under(p) {
+                    p.y = h;
+                }
             }
             p
         }
@@ -330,37 +325,37 @@ pub(super) fn drop_stray_buttons(
     }
 }
 
-/// A slow orbit at the menu; in play, top-down until `C` unlocks it to swing and tilt.
+/// A stationary character-selection camera at the menu; third person in play.
 pub(super) fn place_camera(
     time: Res<Time<Real>>,
     phase: Res<State<Phase>>,
+    selection: Res<Selection>,
+    roster: Res<super::characters::Roster>,
     mut rig: ResMut<CamRig>,
     mut wheel: MessageReader<MouseWheel>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     keys: Res<ButtonInput<KeyCode>>,
+    settings: Res<Settings>,
     player: Res<crate::player::Player>,
     world: WorldPoint,
     hero: Query<&Transform, (With<Hero>, Without<WorldCamera>)>,
     mut cams: Query<&mut Transform, With<WorldCamera>>,
 ) {
-    // `C` unlocks the camera to swing and tilt; locking it again snaps back to the top-down view,
-    // so world-relative WASD lines up with the screen again.
-    if keys.just_pressed(KeyCode::KeyC) {
-        rig.mode = match rig.mode {
-            CamMode::Fixed => CamMode::Orbit,
-            CamMode::Orbit => {
-                rig.yaw = 0.0;
-                rig.pitch = FIXED_PITCH;
-                CamMode::Fixed
-            }
-        };
-    }
+    let interactive = matches!(*phase.get(), Phase::Playing | Phase::Hub)
+        && !selection.talents_open
+        && !selection.sheet_open
+        && !selection.bags_open
+        && !selection.ui_captured
+        && !roster.expeditions;
     // With no hero yet, the focus `drive_hero` grounded.
     let focus = hero.single().map_or(player.pos, |t| t.translation);
     // Multiplicative, so a notch moves as far by eye close in as far out; all the way down to an
     // over-the-shoulder view.
     for w in wheel.read() {
+        if !interactive {
+            continue;
+        }
         let notches = match w.unit {
             MouseScrollUnit::Line => w.y,
             MouseScrollUnit::Pixel => w.y * 0.02,
@@ -368,18 +363,36 @@ pub(super) fn place_camera(
         rig.dist = (rig.dist * (1.0 - 0.12 * notches).clamp(0.5, 1.5)).clamp(ZOOM_MIN, ZOOM_MAX);
     }
     let (eye, look) = if *phase.get() == Phase::Menu {
-        rig.orbit += time.delta_secs() * 0.2;
-        let d = 7.0;
+        let angle = std::f32::consts::PI + rig.orbit;
+        let d = 4.8;
         (
-            focus + Vec3::new(rig.orbit.sin() * d, 2.4, rig.orbit.cos() * d),
+            focus + Vec3::new(angle.sin() * d, 1.8, angle.cos() * d),
             focus + Vec3::Y * 1.1,
         )
     } else {
         // Unlocked, either mouse button drags the camera around the hero, as in WoW.
-        if rig.mode == CamMode::Orbit && mouse.any_pressed([MouseButton::Left, MouseButton::Right])
+        if interactive && mouse.any_pressed([MouseButton::Left, MouseButton::Right]) {
+            rig.yaw -= motion.delta.x * ORBIT_RATE * rig.sensitivity;
+            rig.pitch = (rig.pitch + motion.delta.y * ORBIT_RATE * rig.sensitivity)
+                .clamp(PITCH_MIN, PITCH_MAX);
+        } else if interactive
+            && [
+                Action::Forward,
+                Action::Back,
+                Action::TurnLeft,
+                Action::TurnRight,
+            ]
+            .iter()
+            .any(|&a| settings.pressed(a, &keys))
         {
-            rig.yaw -= motion.delta.x * ORBIT_RATE;
-            rig.pitch = (rig.pitch + motion.delta.y * ORBIT_RATE).clamp(PITCH_MIN, PITCH_MAX);
+            if let Ok(hero) = hero.single() {
+                let facing = hero.rotation * Vec3::NEG_Z;
+                let target = yaw_toward(facing);
+                let delta = (target - rig.yaw + std::f32::consts::PI)
+                    .rem_euclid(std::f32::consts::TAU)
+                    - std::f32::consts::PI;
+                rig.yaw += delta * (time.delta_secs() * 8.0).min(1.0);
+            }
         }
         let (sy, cy) = rig.yaw.sin_cos();
         let (sp, cp) = rig.pitch.sin_cos();
@@ -403,14 +416,48 @@ pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
     if run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
-    let mut dmg = (raw - run.stats().armor).max(1.0);
-    if run.shield_t > 0.0 && run.shield > 0.0 {
-        let absorbed = dmg.min(run.shield);
-        run.shield -= absorbed;
-        dmg -= absorbed;
+    let shield = if run.shield_t > 0.0 { run.shield } else { 0.0 };
+    let raw = raw
+        * (1.0 - run.damage_reduction())
+        * if super::talent_runtime::active(run, super::talent_design::Mechanic::FeralGuard) {
+            0.85
+        } else {
+            1.0
+        };
+    let (dmg, absorbed) = super::spell_engine::mitigate(raw, 0.0, shield, false);
+    run.shield -= absorbed;
+    if shield > 0.0
+        && run.shield <= 0.0
+        && super::talent_runtime::active(run, super::talent_design::Mechanic::Shieldburst)
+    {
+        run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
     run.hp -= dmg;
     dmg
+}
+
+/// Shields block an incoming melee blow before armour or absorption is consumed.
+pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
+    if raw > 0.0
+        && roll < (run.equipment.block + super::talent_runtime::block_chance(run)).clamp(0.0, 0.75)
+    {
+        run.talent_runtime.blocked = true;
+        if super::talent_runtime::active(run, super::talent_design::Mechanic::Block) {
+            if run.class.id == 2 {
+                let max = run.stats().max_hp;
+                let amount =
+                    super::procs::resolve(run, "proc_holy_heal", max * 0.03, 0.0, 0.0, 0.0, 1).dmg;
+                run.heal(amount);
+            }
+            for ability in &mut run.abilities {
+                if ability.def.key == "thunder_clap" {
+                    ability.cd = (ability.cd - 1.0).max(0.0);
+                }
+            }
+        }
+        return 0.0;
+    }
+    hurt_hero(run, raw)
 }
 
 /// The clock, regeneration, the timed buffs and their visuals, death and victory.
@@ -421,15 +468,26 @@ pub(super) fn hero_vitals(
     mut hero: Query<(Entity, &Guid, &mut ObjectStore, &mut Marks), With<Hero>>,
     mut fields: MessageWriter<FieldChanged>,
     mut fx: Fx,
+    players: Option<Res<super::multiplayer::Companions>>,
+    selection: Option<Res<super::Selection>>,
 ) {
     let dt = time.delta_secs();
     let stats = run.stats();
+    let practice = selection.as_deref().is_some_and(super::training::active);
     let Ok((entity, guid, mut store, mut marks)) = hero.single_mut() else {
         return;
     };
     if let Some(t) = run.dead_t.as_mut() {
         *t += dt;
-        if *t > 3.0 {
+        let finished = *t > 3.0;
+        run.elapsed += dt;
+        let others_alive = players
+            .as_ref()
+            .is_some_and(|players| players.0.values().any(|p| p.run.dead_t.is_none()));
+        if !practice && run.elapsed >= data::VICTORY_SECS {
+            run.won = true;
+            next.set(Phase::GameOver);
+        } else if finished && (run.owner.is_some() || !others_alive) {
             next.set(Phase::GameOver);
         }
         return;
@@ -444,7 +502,23 @@ pub(super) fn hero_vitals(
         heal += run.heal_rate * dt.min(run.heal_t);
         run.heal_t = (run.heal_t - dt).max(0.0);
     }
-    run.hp = (run.hp + heal).min(stats.max_hp);
+    run.heal(heal);
+    store.0.merge_diff(
+        benilla_protocol::messages::ObjectFields::from_pairs(&[
+            (22, run.hp.max(0.0).ceil() as u32),
+            (28, stats.max_hp.ceil() as u32),
+        ]),
+        |index, old, new| {
+            fields.write(FieldChanged {
+                entity,
+                guid: guid.0,
+                kind: benilla_protocol::messages::ObjectType::Unit,
+                index,
+                old,
+                new,
+            });
+        },
+    );
 
     // The buffs show as their own state kits: the shield bubble, the immunity glow, the orbs.
     let mut shown: Vec<u32> = Vec::new();
@@ -477,7 +551,7 @@ pub(super) fn hero_vitals(
         units::kill_unit(&mut store);
         marks.clear();
         marks.flush(entity, guid.0, &mut store, &mut fields);
-    } else if run.elapsed >= data::VICTORY_SECS {
+    } else if !practice && run.elapsed >= data::VICTORY_SECS {
         run.won = true;
         // A last flourish before the results.
         fx.cast(entity, 642, &[entity], None);
@@ -525,7 +599,9 @@ mod tests {
     }
 
     fn left_held(world: &World) -> bool {
-        world.resource::<ButtonInput<MouseButton>>().pressed(MouseButton::Left)
+        world
+            .resource::<ButtonInput<MouseButton>>()
+            .pressed(MouseButton::Left)
     }
 
     #[test]
@@ -533,10 +609,16 @@ mod tests {
         let mut world = held_left();
         world.run_system_once(drop_stray_buttons).unwrap();
         assert!(left_held(&world), "nothing happened: the drag goes on");
-        world.write_message(WindowFocused { window: Entity::PLACEHOLDER, focused: true });
+        world.write_message(WindowFocused {
+            window: Entity::PLACEHOLDER,
+            focused: true,
+        });
         world.run_system_once(drop_stray_buttons).unwrap();
         assert!(left_held(&world), "gaining focus is no release");
-        world.write_message(WindowFocused { window: Entity::PLACEHOLDER, focused: false });
+        world.write_message(WindowFocused {
+            window: Entity::PLACEHOLDER,
+            focused: false,
+        });
         world.run_system_once(drop_stray_buttons).unwrap();
         assert!(!left_held(&world));
     }
@@ -544,7 +626,9 @@ mod tests {
     #[test]
     fn a_held_button_is_dropped_when_the_pointer_leaves_the_page() {
         let mut world = held_left();
-        world.write_message(CursorLeft { window: Entity::PLACEHOLDER });
+        world.write_message(CursorLeft {
+            window: Entity::PLACEHOLDER,
+        });
         world.run_system_once(drop_stray_buttons).unwrap();
         assert!(!left_held(&world));
     }

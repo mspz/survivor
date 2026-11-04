@@ -1,0 +1,167 @@
+# Multiplicateur final = classe * sort * tous les tags correspondants. 1.0 = normal, 1.2 = +20%, 0.8 = -20%.
+# Affecte les degats directs, DoT, soins et absorption. Pas les cooldowns ni les portees.
+version = 1
+# Tous les tags correspondants se multiplient avec la classe et le sort.
+[tags]
+attack = 1.0
+spell = 1.2
+melee = 1.0
+projectile = 1.0
+area = 0.5
+chain = 1.0
+dot = 3.0
+duration = 1.0
+totem = 1.0
+trap = 1.0
+aura = 1.0
+guard = 1.0
+heal = 1.0
+damage = 1.0
+utility = 1.0
+movement = 1.0
+physical = 1.0
+fire = 1.0
+cold = 1.0
+lightning = 1.0
+nature = 1.0
+arcane = 1.0
+holy = 1.0
+shadow = 1.0
+
+
+[classes.warrior]
+multiplier = 1.0
+
+[classes.warrior.spells]
+rend = 1.0
+overpower = 1.0
+cleave = 1.0
+heroic_strike = 1.0
+whirlwind = 1.0
+thunder_clap = 1.0
+sweeping_strikes = 1.0
+demoralizing_shout = 1.0
+execute = 1.0
+mortal_strike = 1.0
+retaliation = 1.0
+
+[classes.paladin]
+multiplier = 1.2
+
+[classes.paladin.spells]
+holy_light = 1.0
+seal_of_righteousness = 1.0
+hammer_of_wrath = 1.0
+consecration = 1.0
+holy_shock = 1.0
+exorcism = 1.0
+holy_wrath = 1.0
+hammer_of_justice = 1.0
+divine_shield = 1.0
+judgement = 1.0
+
+[classes.hunter]
+multiplier = 1.0
+
+[classes.hunter.spells]
+raptor_strike = 1.0
+wing_clip = 1.0
+arcane_shot = 1.0
+multi_shot = 1.0
+serpent_sting = 1.0
+volley = 1.0
+explosive_trap = 1.0
+concussive_shot = 1.0
+aimed_shot = 1.0
+
+[classes.rogue]
+multiplier = 1.0
+
+[classes.rogue.spells]
+backstab = 1.0
+hemorrhage = 1.0
+sinister_strike = 1.0
+eviscerate = 1.0
+blade_flurry = 1.0
+rupture = 1.0
+gouge = 1.0
+kidney_shot = 1.0
+
+[classes.priest]
+multiplier = 1.0
+
+[classes.priest.spells]
+mind_flay = 1.0
+renew = 1.0
+smite = 1.0
+shadow_word_pain = 1.0
+holy_fire = 1.0
+mind_blast = 1.0
+holy_nova = 1.0
+psychic_scream = 1.0
+power_word_shield = 1.0
+
+[classes.shaman]
+multiplier = 1.0
+
+[classes.shaman.spells]
+stormstrike = 1.0
+lesser_healing_wave = 1.0
+lightning_bolt = 1.0
+chain_lightning = 1.0
+earth_shock = 1.0
+flame_shock = 1.0
+frost_shock = 1.0
+searing_totem = 1.0
+magma_totem = 1.0
+lightning_shield = 1.0
+
+[classes.mage]
+multiplier = 1.0
+
+[classes.mage.spells]
+scorch = 1.0
+ice_barrier = 1.0
+frostbolt = 1.0
+fireball = 1.0
+arcane_missiles = 1.0
+frost_nova = 1.0
+arcane_explosion = 1.0
+blizzard = 1.0
+flamestrike = 1.0
+fire_blast = 1.0
+cone_of_cold = 1.0
+blast_wave = 1.0
+pyroblast = 1.0
+
+[classes.warlock]
+multiplier = 1.0
+
+[classes.warlock.spells]
+drain_life = 1.0
+siphon_life = 1.0
+shadow_bolt = 1.0
+corruption = 1.0
+curse_of_agony = 1.0
+immolate = 1.0
+rain_of_fire = 1.0
+hellfire = 1.0
+death_coil = 1.0
+searing_pain = 1.0
+shadowburn = 1.0
+
+[classes.druid]
+multiplier = 1.0
+
+[classes.druid.spells]
+claw = 1.0
+swipe = 1.0
+regrowth = 1.0
+wrath = 1.0
+moonfire = 1.0
+starfire = 1.0
+hurricane = 1.0
+insect_swarm = 1.0
+entangling_roots = 1.0
+thorns = 1.0
+rejuvenation = 1.0

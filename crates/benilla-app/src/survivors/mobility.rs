@@ -10,7 +10,6 @@ use super::{Phase, Run};
 use benilla_world::world_point::WorldPoint;
 
 pub(super) const LEARN_LEVEL: u32 = 5;
-pub(super) const KEY: KeyCode = KeyCode::KeyF;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum Move {
@@ -33,6 +32,32 @@ pub(super) struct Mobility {
     pub cooldown: f32,
     pub secs: f32,
     pub desc: &'static str,
+}
+
+impl Mobility {
+    pub(super) fn describe(&self, p: &super::spell_engine::ResolvedMobility) -> String {
+        match self.kind {
+            Move::Blink(_) => self.desc.to_owned(),
+            Move::Charge(r) => format!(
+                "Charge an enemy within {r:.0} yards, stunning it for {:.1} sec.",
+                p.duration
+            ),
+            Move::Haste(x) => format!(
+                "Run {:.0}% faster for {:.1} sec.",
+                (x - 1.0) * 100.0,
+                p.duration
+            ),
+            Move::Vanish(x) => format!(
+                "Enemies lose you and you run {:.0}% faster for {:.1} sec.",
+                (x - 1.0) * 100.0,
+                p.duration
+            ),
+            Move::Scatter(_) => format!(
+                "Fear enemies within {:.1} yards for {:.1} sec.",
+                p.radius, p.duration
+            ),
+        }
+    }
 }
 
 /// One per class, indexed by class id.
@@ -173,25 +198,27 @@ impl Run {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn cast_mobility(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    input: Res<super::session::ServerInput>,
+    session: Res<super::session::LocalSession>,
     phase: Res<State<Phase>>,
     mut run: ResMut<Run>,
     world: WorldPoint,
     mut hero: Query<(Entity, &mut Transform), With<Hero>>,
     mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Hero>>,
     selection: Res<super::Selection>,
-    aim: Res<hero::AimPoint>,
     mut fx: Fx,
 ) {
+    let command = input.for_client(session.id());
     let dt = time.delta_secs();
     let m = &mut run.mobile;
     m.cd = (m.cd - dt).max(0.0);
     m.haste_t = (m.haste_t - dt).max(0.0);
     m.vanish_t = (m.vanish_t - dt).max(0.0);
-    if *phase.get() != Phase::Playing || run.dead_t.is_some() || !keys.just_pressed(KEY) {
+    if *phase.get() != Phase::Playing || run.dead_t.is_some() || !command.mobility {
         return;
     }
     let Some(def) = run.mobility() else { return };
+    let p = super::spell_engine::resolve_mobility(def, run.spell_modifiers.entries());
     if run.mobile.cd > 0.0 {
         return;
     }
@@ -202,7 +229,7 @@ pub(super) fn cast_mobility(
     let facing = tf.rotation * Vec3::NEG_Z;
     let facing = flat(facing).normalize_or(Vec3::NEG_Z);
     // Aimed at the cursor where there is one, else straight ahead.
-    let cursor = aim.0.filter(|a| flat(*a - pos).length() > 0.5);
+    let cursor = command.aim.filter(|a| flat(*a - pos).length() > 0.5);
     let toward = cursor.map_or(facing, |a| flat(a - pos).normalize());
     // Keep any jump inside the battleground's leash.
     let map = selection.map_def();
@@ -237,7 +264,7 @@ pub(super) fn cast_mobility(
             let to = match target {
                 Some((e, at, _)) => {
                     if let Ok((_, _, mut en)) = enemies.get_mut(e) {
-                        en.stun_t = en.stun_t.max(def.secs);
+                        en.stun_t = en.stun_t.max(p.duration);
                     }
                     let dir = flat(at - pos).normalize_or(facing);
                     tf.rotation = Quat::from_rotation_y(super::units::yaw_toward(dir));
@@ -257,22 +284,22 @@ pub(super) fn cast_mobility(
         Move::Haste(x) => {
             fx.cast(me, def.spell, &[me], None);
             run.mobile.haste = x;
-            run.mobile.haste_t = def.secs;
+            run.mobile.haste_t = p.duration;
         }
         Move::Vanish(x) => {
             fx.cast(me, def.spell, &[me], None);
             run.mobile.haste = x;
-            run.mobile.haste_t = def.secs;
-            run.mobile.vanish_t = def.secs;
+            run.mobile.haste_t = p.duration;
+            run.mobile.vanish_t = p.duration;
         }
-        Move::Scatter(r) => {
+        Move::Scatter(_) => {
             fx.cast(me, def.spell, &[me], None);
             for (_, t, mut en) in &mut enemies {
-                if !en.dead && !en.boss && hero::reach(pos, t.translation) <= r {
-                    en.fear_t = en.fear_t.max(def.secs);
+                if !en.dead && !en.boss && hero::reach(pos, t.translation) <= p.radius {
+                    en.fear_t = en.fear_t.max(p.duration);
                 }
             }
         }
     }
-    run.mobile.cd = def.cooldown;
+    run.mobile.cd = p.cooldown;
 }

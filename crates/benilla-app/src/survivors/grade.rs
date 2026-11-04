@@ -62,13 +62,10 @@ impl FullscreenMaterial for Grade {
 }
 
 /// Whether the grade is wanted; the camera's `amount` eases toward it.
-#[derive(Resource)]
-struct GradeOn(bool);
 
 pub(super) fn plugin(app: &mut App) {
-    let on = crate::webenv::var("WOW_GRADE").is_none_or(|v| v != "0");
     app.add_plugins(FullscreenMaterialPlugin::<Grade>::default())
-        .insert_resource(GradeOn(on))
+        .init_resource::<super::options::Settings>()
         .add_systems(Update, (attach, toggle, drive).chain());
 }
 
@@ -81,15 +78,25 @@ fn attach(
     }
 }
 
-fn toggle(keys: Res<ButtonInput<KeyCode>>, mut on: ResMut<GradeOn>) {
-    if keys.just_pressed(KeyCode::KeyG) {
-        on.0 = !on.0;
+fn toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    phase: Res<State<super::Phase>>,
+    mut settings: ResMut<super::options::Settings>,
+) {
+    if *phase.get() != super::Phase::Paused
+        && settings.just_pressed(super::options::Action::Grade, &keys)
+    {
+        settings.grade = !settings.grade;
+        settings.save();
     }
 }
-
 /// Eases `amount` over a quarter second.
-fn drive(time: Res<Time<Real>>, on: Res<GradeOn>, mut grades: Query<&mut Grade>) {
-    let target = if on.0 { 1.0 } else { 0.0 };
+fn drive(
+    time: Res<Time<Real>>,
+    settings: Res<super::options::Settings>,
+    mut grades: Query<&mut Grade>,
+) {
+    let target = if settings.grade { 1.0 } else { 0.0 };
     let k = 1.0 - (-time.delta_secs() * 12.0).exp();
     for mut g in &mut grades {
         g.amount += (target - g.amount) * k;

@@ -8,8 +8,8 @@
 use bevy::prelude::*;
 use bevy::ui_render::ui_material::MaterialNode;
 
-use super::hud::{looks_for, rgb, start_run, HudFont, MenuRoot};
-use super::{data, Phase, Rng, Run, Selection};
+use super::hud::{looks_for, rgb, HudFont, MenuRoot};
+use super::{data, Phase, Rng, Selection};
 use crate::char_select::race_name;
 use crate::glue::art::{class_tc, race_tc, tc_rect, GlueArt, DIM, GOLD, NAME_EDGE};
 use crate::glue::backdrop::{backdrop_border, tiled_bg_node};
@@ -58,59 +58,8 @@ pub(super) struct RaceFace(u8);
 #[derive(Component)]
 pub(super) struct PickName;
 
-/// The saved pick, `benilla-config/survivors-pick.txt` (`localStorage` on the page):
-/// `class race sex map`, restored at the menu so a reload keeps the last hero and zone.
-fn pick_path() -> Option<std::path::PathBuf> {
-    crate::local_state::home().map(|h| h.join("survivors-pick.txt"))
-}
-
-fn save_pick(sel: &Selection) {
-    let (Some(class), Some(&(_, race, sex))) = (sel.class, sel.look.and_then(|i| sel.looks.get(i)))
-    else {
-        return;
-    };
-    if let Some(path) = pick_path() {
-        let _ =
-            crate::local_state::write_atomic(&path, &format!("{class} {race} {sex} {}", sel.map));
-    }
-}
-
-/// Restore the saved pick once the creature data can resolve its looks; a stale or missing file
-/// leaves the default.
-pub(super) fn restore_pick(
-    creatures: Option<Res<crate::entities::Creatures>>,
-    mut selection: ResMut<Selection>,
-    mut done: Local<bool>,
-) {
-    if *done {
-        return;
-    }
-    let Some(creatures) = creatures.as_deref() else {
-        return;
-    };
-    *done = true;
-    let Some(text) = pick_path().and_then(|p| crate::local_state::read_to_string(&p).ok()) else {
-        return;
-    };
-    let v: Vec<usize> = text
-        .split_whitespace()
-        .filter_map(|t| t.parse().ok())
-        .collect();
-    let [class, race, sex, map] = v[..] else {
-        return;
-    };
-    if map < data::MAPS.len() {
-        selection.map = map;
-        selection.stage = map;
-        selection.version += 1;
-    }
-    if class < data::CLASSES.len() {
-        let all = all_looks(creatures);
-        if let Some(l) = find(&all[class], Some(race as u8), Some(sex as u8)) {
-            set(&mut selection, &all, class, l);
-        }
-    }
-}
+#[derive(Component)]
+pub(super) struct ZoneLockLabel(usize);
 
 /// Every class's looks, `(display, race, sex)`, indexed like [`data::CLASSES`].
 fn all_looks(creatures: &crate::entities::Creatures) -> Vec<Vec<(u32, u8, u8)>> {
@@ -157,7 +106,11 @@ pub(super) fn build_menu(
                 abs(1.0, 3.0, 7.0, 256.0, 128.0),
             ));
         }
-        zone_frame(ui, &art, f);
+        ui.spawn(Node {
+            display: Display::None,
+            ..default()
+        })
+        .with_children(|hidden| zone_frame(hidden, &art, f));
 
         // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,100).
         ui.spawn(Node {
@@ -197,7 +150,7 @@ pub(super) fn build_menu(
                 &art,
                 f,
                 MenuAction::Enter,
-                "Enter World",
+                "Create character",
                 200.0,
                 60.0,
                 GlueBtnKind::Normal,
@@ -400,15 +353,14 @@ fn tower(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
 /// character-row per zone, lowest level first.
 fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
     let px = Val::Px;
-    let mut order: Vec<(usize, u32, u32)> = (0..data::MAPS.len())
+    let order: Vec<(usize, u32, u32)> = data::CAMPAIGN
+        .iter()
+        .copied()
         .map(|i| {
-            let levels = data::roster(i).enemies.iter().map(|e| e.level);
-            let lo = levels.clone().min().unwrap_or(1);
-            let hi = levels.max().unwrap_or(lo);
+            let (lo, hi) = data::campaign_levels(i).unwrap();
             (i, lo, hi)
         })
         .collect();
-    order.sort_by_key(|&(i, lo, _)| (lo, data::MAPS[i].name));
 
     ui.spawn(Node {
         position_type: PositionType::Absolute,
@@ -461,6 +413,7 @@ fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
                 .spawn((
                     MenuAction::Map(i),
                     Button,
+                    GlueDisabled(false),
                     LockHighlight::default(),
                     Node {
                         position_type: PositionType::Absolute,
@@ -472,6 +425,22 @@ fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
                     },
                 ))
                 .with_children(|b| {
+                    b.spawn((
+                        ZoneLockLabel(i),
+                        Text::new(""),
+                        TextFont {
+                            font: f.clone(),
+                            font_size: 11.0,
+                            ..default()
+                        },
+                        TextColor(DIM),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: px(0.0),
+                            bottom: px(0.0),
+                            ..default()
+                        },
+                    ));
                     if let Some(hi) = &art.select_highlight {
                         b.spawn((
                             Hilight,
@@ -525,11 +494,10 @@ pub(super) fn menu_clicks(
     phase: Res<State<Phase>>,
     creatures: Option<Res<crate::entities::Creatures>>,
     mut selection: ResMut<Selection>,
-    mut run: ResMut<Run>,
+    mut roster: ResMut<super::characters::Roster>,
     mut rng: ResMut<Rng>,
-    mut next: ResMut<NextState<Phase>>,
 ) {
-    if *phase.get() != Phase::Menu {
+    if *phase.get() != Phase::Menu || !roster.creating {
         return;
     }
     let Some(creatures) = creatures.as_deref() else {
@@ -550,15 +518,13 @@ pub(super) fn menu_clicks(
     let (race, sex) = (cur.map(|c| c.0), cur.map_or(0, |c| c.1));
     match action {
         MenuAction::Map(i) => {
-            if selection.map != i {
+            if selection.allows_map(i) && selection.map != i {
                 selection.map = i;
                 selection.version += 1;
             }
         }
         MenuAction::Enter => {
-            if start_run(&mut run, &mut selection) {
-                next.set(Phase::Playing);
-            }
+            roster.confirm = true;
         }
         MenuAction::Randomize => {
             let picks: Vec<(usize, usize)> = all
@@ -601,7 +567,6 @@ pub(super) fn menu_clicks(
             }
         }
     }
-    save_pick(&selection);
 }
 
 /// The screen's per-frame state: the locked highlights, hover labels, which races and classes
@@ -609,6 +574,7 @@ pub(super) fn menu_clicks(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn refresh_menu_ui(
     selection: Res<Selection>,
+    mut zone_labels: Query<(&ZoneLockLabel, &mut Text), Without<PickName>>,
     creatures: Option<Res<crate::entities::Creatures>>,
     art: Res<GlueArt>,
     mut buttons: Query<(
@@ -625,6 +591,16 @@ pub(super) fn refresh_menu_ui(
     mut name: Query<(&mut Text, &mut TextColor), With<PickName>>,
     mut cache: Local<(Option<u32>, bool, Vec<Vec<(u32, u8, u8)>>)>,
 ) {
+    for (zone, mut text) in &mut zone_labels {
+        let label = if selection.allows_map(zone.0) {
+            ""
+        } else {
+            "Locked"
+        };
+        if text.0 != label {
+            text.0 = label.to_owned();
+        }
+    }
     let have = creatures.is_some();
     if cache.0 != Some(selection.version) || cache.1 != have {
         *cache = (
@@ -653,7 +629,11 @@ pub(super) fn refresh_menu_ui(
             }
         }
         if let Some(mut disabled) = disabled {
-            let off = *action == MenuAction::Enter && cur.is_none();
+            let off = match *action {
+                MenuAction::Map(i) => !selection.allows_map(i),
+                MenuAction::Enter => cur.is_none() || !selection.allows_map(selection.map),
+                _ => false,
+            };
             if disabled.0 != off {
                 disabled.0 = off;
             }

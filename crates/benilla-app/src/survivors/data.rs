@@ -1,7 +1,7 @@
 //! The mode's tables: classes, abilities, passives, enemies and the wave clock. Spell ids name
 //! `Spell.dbc` rows only for their icon, name and visual chain; every number here is the mode's.
 
-/// A weapon on the hero's virtual item slots: `(slot, display, class, subclass, material, inv,
+/// A weapon on a local NPC's virtual item slots: `(slot, display, class, subclass, material, inv,
 /// sheath)`, the creature form of `UNIT_VIRTUAL_ITEM_SLOT_DISPLAY` and `_INFO`.
 pub(crate) type Weapon = (u16, u32, u8, u8, u8, u8, u8);
 
@@ -16,7 +16,6 @@ pub(crate) struct ClassDef {
     pub pool: &'static [&'static str],
     /// Class-trainer `CreatureDisplayInfo` ids, deduped by race and sex at the menu.
     pub looks: &'static [u32],
-    pub weapons: &'static [Weapon],
     /// The sheath state the hero fights in: 1 melee, 2 ranged.
     pub sheath: u8,
 }
@@ -73,6 +72,7 @@ pub(crate) enum Effect {
     Execute(f32),
 }
 
+#[derive(Clone)]
 pub(crate) struct AbilityDef {
     pub key: &'static str,
     pub spell: u32,
@@ -123,6 +123,213 @@ macro_rules! ability {
 }
 
 pub(crate) static ABILITIES: &[AbilityDef] = &[
+    AbilityDef {
+        damage: 18.0,
+        range: 3.5,
+        cooldown: 1.0,
+        ..ab("claw", 1082, Kind::Melee)
+    },
+    AbilityDef {
+        damage: 40.0,
+        duration: 0.0,
+        cooldown: 5.0,
+        ..ab("flash_heal", 2061, Kind::Heal)
+    },
+    AbilityDef {
+        damage: 0.0,
+        radius: 12.0,
+        range: 12.0,
+        cooldown: 6.0,
+        ..ab("taunt", 355, Kind::Nova)
+    },
+    AbilityDef {
+        dot: 8.0,
+        duration: 6.0,
+        cooldown: 4.0,
+        range: 20.0,
+        ..ab("deadly_poison", 2818, Kind::Dot)
+    },
+    // Additional Vanilla skills; spell ids drive the local DBC icon and visual chains.
+    ability!(
+        "rend",
+        772,
+        Melee {
+            damage: 4.0,
+            dot: 5.0,
+            duration: 9.0,
+            cooldown: 5.0,
+            range: 6.0,
+            mark: 772
+        }
+    ),
+    ability!(
+        "overpower",
+        7384,
+        Melee {
+            damage: 32.0,
+            cooldown: 4.5,
+            range: 6.0
+        }
+    ),
+    ability!(
+        "holy_light",
+        635,
+        Heal {
+            damage: 70.0,
+            duration: 1.0,
+            cooldown: 14.0
+        }
+    ),
+    ability!(
+        "seal_of_righteousness",
+        20154,
+        Aura {
+            damage: 9.0,
+            cooldown: 1.8,
+            radius: 6.0
+        }
+    ),
+    ability!(
+        "raptor_strike",
+        2973,
+        Melee {
+            damage: 30.0,
+            cooldown: 3.0,
+            range: 6.0
+        }
+    ),
+    ability!(
+        "wing_clip",
+        2974,
+        Melee {
+            damage: 8.0,
+            cooldown: 6.0,
+            range: 6.0,
+            effect: Effect::Slow(0.5, 5.0),
+            mark: 2974
+        }
+    ),
+    ability!(
+        "backstab",
+        53,
+        Melee {
+            damage: 38.0,
+            cooldown: 3.0,
+            range: 6.0
+        }
+    ),
+    ability!(
+        "hemorrhage",
+        16511,
+        Melee {
+            damage: 18.0,
+            dot: 4.0,
+            duration: 6.0,
+            cooldown: 4.0,
+            range: 6.0,
+            mark: 16511
+        }
+    ),
+    ability!(
+        "mind_flay",
+        15407,
+        Dot {
+            dot: 12.0,
+            duration: 3.0,
+            cooldown: 5.0,
+            range: 20.0,
+            effect: Effect::Slow(0.5, 3.0),
+            mark: 15407
+        }
+    ),
+    ability!(
+        "renew",
+        139,
+        Heal {
+            damage: 60.0,
+            duration: 12.0,
+            cooldown: 16.0
+        }
+    ),
+    ability!(
+        "stormstrike",
+        17364,
+        Melee {
+            damage: 36.0,
+            cooldown: 6.0,
+            range: 6.0
+        }
+    ),
+    ability!(
+        "lesser_healing_wave",
+        8004,
+        Heal {
+            damage: 48.0,
+            duration: 1.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "scorch",
+        2948,
+        Strike {
+            damage: 22.0,
+            cooldown: 2.0,
+            range: 24.0
+        }
+    ),
+    ability!(
+        "ice_barrier",
+        11426,
+        Shield {
+            damage: 90.0,
+            duration: 15.0,
+            cooldown: 22.0
+        }
+    ),
+    ability!(
+        "drain_life",
+        689,
+        Dot {
+            dot: 10.0,
+            duration: 5.0,
+            cooldown: 7.0,
+            range: 20.0,
+            effect: Effect::Drain(0.3),
+            mark: 689
+        }
+    ),
+    ability!(
+        "siphon_life",
+        18265,
+        Dot {
+            dot: 5.0,
+            duration: 12.0,
+            cooldown: 8.0,
+            range: 24.0,
+            effect: Effect::Drain(0.2),
+            mark: 18265
+        }
+    ),
+    ability!(
+        "swipe",
+        779,
+        Melee {
+            damage: 16.0,
+            cooldown: 2.5,
+            range: 6.0,
+            count: 3
+        }
+    ),
+    ability!(
+        "regrowth",
+        8936,
+        Heal {
+            damage: 85.0,
+            duration: 8.0,
+            cooldown: 15.0
+        }
+    ),
     // --- Mage ---
     ability!(
         "frostbolt",
@@ -882,13 +1089,12 @@ pub(crate) fn ability(key: &str) -> &'static AbilityDef {
     ABILITIES
         .iter()
         .find(|a| a.key == key)
+        .or_else(|| super::procs::find(key).map(|s| &s.def))
         .unwrap_or_else(|| panic!("survivors: no ability {key:?}"))
 }
 
 pub(crate) const MAX_ABILITY_LEVEL: u8 = 8;
-pub(crate) const MAX_PASSIVE_LEVEL: u8 = 5;
 pub(crate) const MAX_ABILITIES: usize = 6;
-pub(crate) const MAX_PASSIVES: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Stat {
@@ -904,88 +1110,197 @@ pub(crate) enum Stat {
     Crit,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum PassiveEffect {
+    Stat(Stat, f32),
+    Modifier(super::spell_engine::Filter, super::spell_engine::Change),
+}
+
 pub(crate) struct PassiveDef {
     pub key: &'static str,
     pub name: &'static str,
-    /// Icon source, and a state visual on the hero where the spell has one.
     pub spell: u32,
-    pub stat: Stat,
-    pub per_level: f32,
+    pub effect: PassiveEffect,
 }
-
+const fn generic(
+    key: &'static str,
+    name: &'static str,
+    spell: u32,
+    stat: Stat,
+    amount: f32,
+) -> PassiveDef {
+    PassiveDef {
+        key,
+        name,
+        spell,
+        effect: PassiveEffect::Stat(stat, amount),
+    }
+}
+const fn tagged(
+    key: &'static str,
+    name: &'static str,
+    spell: u32,
+    tags: super::spell_engine::Tags,
+    change: super::spell_engine::Change,
+) -> PassiveDef {
+    PassiveDef {
+        key,
+        name,
+        spell,
+        effect: PassiveEffect::Modifier(super::spell_engine::Filter::requiring(tags), change),
+    }
+}
+use super::spell_engine::{Change as C, Tags as T};
 pub(crate) static PASSIVES: &[PassiveDef] = &[
-    PassiveDef {
-        key: "might",
-        name: "Blessing of Might",
-        spell: 19740,
-        stat: Stat::Might,
-        per_level: 0.10,
-    },
-    PassiveDef {
-        key: "fortitude",
-        name: "Power Word: Fortitude",
-        spell: 1243,
-        stat: Stat::MaxHp,
-        per_level: 0.20,
-    },
-    PassiveDef {
-        key: "pack",
-        name: "Aspect of the Pack",
-        spell: 13159,
-        stat: Stat::Speed,
-        per_level: 0.10,
-    },
-    PassiveDef {
-        key: "renew",
-        name: "Renew",
-        spell: 139,
-        stat: Stat::Regen,
-        per_level: 0.5,
-    },
-    PassiveDef {
-        key: "intellect",
-        name: "Arcane Intellect",
-        spell: 1459,
-        stat: Stat::Haste,
-        per_level: 0.08,
-    },
-    PassiveDef {
-        key: "amplify",
-        name: "Amplify Magic",
-        spell: 1008,
-        stat: Stat::Area,
-        per_level: 0.10,
-    },
-    PassiveDef {
-        key: "detect",
-        name: "Detect Lesser Invisibility",
-        spell: 132,
-        stat: Stat::Magnet,
-        per_level: 0.40,
-    },
-    PassiveDef {
-        key: "wisdom",
-        name: "Blessing of Wisdom",
-        spell: 19742,
-        stat: Stat::Growth,
-        per_level: 0.08,
-    },
-    PassiveDef {
-        key: "wild",
-        name: "Mark of the Wild",
-        spell: 1126,
-        stat: Stat::Armor,
-        per_level: 1.0,
-    },
-    PassiveDef {
-        key: "kings",
-        name: "Blessing of Kings",
-        spell: 20217,
-        stat: Stat::Crit,
-        per_level: 0.05,
-    },
+    tagged(
+        "crit_multi",
+        "Deadly Precision",
+        20217,
+        T::DAMAGE,
+        C::CriticalMultiplier(0.10),
+    ),
+    generic("fortitude", "Fortitude", 1243, Stat::MaxHp, 0.15),
+    generic("pack", "Fleet Footed", 13159, Stat::Speed, 0.08),
+    generic("renew", "Regeneration", 139, Stat::Regen, 0.5),
+    generic("detect", "Magnetism", 132, Stat::Magnet, 0.30),
+    generic("wisdom", "Fast Learner", 19742, Stat::Growth, 0.10),
+    generic("wild", "Thick Skin", 1126, Stat::Armor, 1.0),
+    tagged(
+        "might",
+        "Battle Power",
+        19740,
+        T::DAMAGE,
+        C::IncreasedDamage(0.08),
+    ),
+    tagged(
+        "intellect",
+        "Quick Casting",
+        1459,
+        T::DAMAGE,
+        C::IncreasedCooldownRecovery(0.08),
+    ),
+    tagged(
+        "amplify",
+        "Expanding Destruction",
+        1008,
+        T::AREA,
+        C::IncreasedArea(0.20),
+    ),
+    tagged(
+        "kings",
+        "Precision",
+        20217,
+        T::DAMAGE,
+        C::CriticalChance(0.03),
+    ),
+    tagged(
+        "physical",
+        "Physical Mastery",
+        78,
+        T::PHYSICAL,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "fire",
+        "Fire Affinity",
+        133,
+        T::FIRE,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "cold",
+        "Frost Affinity",
+        116,
+        T::COLD,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "lightning",
+        "Lightning Affinity",
+        403,
+        T::LIGHTNING,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "nature",
+        "Nature Affinity",
+        5176,
+        T::NATURE,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "arcane",
+        "Arcane Affinity",
+        1449,
+        T::ARCANE,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "holy",
+        "Holy Affinity",
+        585,
+        T::HOLY,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "shadow",
+        "Shadow Affinity",
+        686,
+        T::SHADOW,
+        C::IncreasedDamage(0.12),
+    ),
+    tagged(
+        "attack",
+        "Weapon Training",
+        845,
+        T::ATTACK,
+        C::IncreasedDamage(0.10),
+    ),
+    tagged(
+        "spell",
+        "Spellcraft",
+        1459,
+        T::SPELL,
+        C::IncreasedDamage(0.10),
+    ),
+    tagged(
+        "projectiles",
+        "Multiple Projectiles",
+        7268,
+        T::PROJECTILE,
+        C::AdditionalProjectiles(1),
+    ),
+    tagged("chains", "Ricochet", 421, T::DAMAGE, C::AdditionalChains(1)),
+    tagged(
+        "fork",
+        "Forking Projectiles",
+        2643,
+        T::PROJECTILE,
+        C::Fork(1),
+    ),
+    tagged(
+        "melee_targets",
+        "Sweeping Blows",
+        845,
+        T::MELEE,
+        C::AdditionalMeleeTargets(1),
+    ),
+    tagged(
+        "dot",
+        "Lingering Pain",
+        172,
+        T::DOT,
+        C::IncreasedDotDamage(0.15),
+    ),
+    tagged("recast", "Echo", 7268, T::DAMAGE, C::RecastChance(0.04)),
+    tagged(
+        "duration",
+        "Lasting Magic",
+        139,
+        T::DURATION,
+        C::IncreasedDuration(0.10),
+    ),
 ];
-
 pub(crate) static CLASSES: &[ClassDef] = &[
     ClassDef {
         id: 1,
@@ -994,6 +1309,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 1,
         start: "cleave",
         pool: &[
+            "rend",
+            "overpower",
             "cleave",
             "heroic_strike",
             "whirlwind",
@@ -1009,7 +1326,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             2614, 2620, 2658, 3053, 3054, 3055, 3280, 3287, 3343, 3399, 3431, 3743, 3793, 3794,
             4242, 4556, 6071, 11037,
         ],
-        weapons: &[(0, 7483, 2, 7, 1, 13, 3), (1, 1706, 4, 6, 1, 14, 4)],
         sheath: 1,
     },
     ClassDef {
@@ -1019,6 +1335,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "hammer_of_wrath",
         pool: &[
+            "holy_light",
+            "seal_of_righteousness",
             "hammer_of_wrath",
             "consecration",
             "holy_shock",
@@ -1031,7 +1349,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         looks: &[
             1299, 1499, 1622, 3087, 3088, 3089, 3284, 3289, 3346, 3393, 7356,
         ],
-        weapons: &[(0, 8011, 2, 4, 2, 13, 3), (1, 1705, 4, 6, 1, 14, 4)],
         sheath: 1,
     },
     ClassDef {
@@ -1041,6 +1358,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "arcane_shot",
         pool: &[
+            "raptor_strike",
+            "wing_clip",
             "arcane_shot",
             "multi_shot",
             "serpent_sting",
@@ -1054,7 +1373,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             3299, 3309, 3310, 3312, 3395, 3558, 3744, 3810, 3811, 4239, 4241, 4372, 4560, 7538,
             10245,
         ],
-        weapons: &[(0, 7480, 2, 6, 1, 17, 2), (2, 6235, 2, 2, 2, 15, 0)],
         sheath: 2,
     },
     ClassDef {
@@ -1064,6 +1382,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 3,
         start: "sinister_strike",
         pool: &[
+            "backstab",
+            "hemorrhage",
             "sinister_strike",
             "eviscerate",
             "blade_flurry",
@@ -1075,7 +1395,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             1297, 1327, 1328, 1507, 1580, 1603, 1704, 1725, 1886, 2231, 2243, 2252, 2631, 2639,
             2659, 3100, 3101, 3113, 3351, 3407, 3436, 3749, 4360, 5146, 5528, 13171,
         ],
-        weapons: &[(0, 7492, 2, 7, 1, 13, 3), (1, 6443, 2, 15, 1, 13, 3)],
         sheath: 1,
     },
     ClassDef {
@@ -1085,6 +1404,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "smite",
         pool: &[
+            "mind_flay",
+            "renew",
             "smite",
             "shadow_word_pain",
             "holy_fire",
@@ -1098,7 +1419,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             2626, 3066, 3085, 3086, 3282, 3283, 3344, 3401, 3429, 4068, 4690, 4711, 10473, 10723,
             11044, 11048, 11053,
         ],
-        weapons: &[(0, 1926, 2, 10, 2, 17, 2)],
         sheath: 1,
     },
     ClassDef {
@@ -1108,6 +1428,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "lightning_bolt",
         pool: &[
+            "stormstrike",
+            "lesser_healing_wave",
             "lightning_bolt",
             "chain_lightning",
             "earth_shock",
@@ -1120,7 +1442,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         looks: &[
             1360, 1878, 2082, 2102, 2123, 3746, 3816, 4231, 4552, 10180, 13341,
         ],
-        weapons: &[(0, 7477, 2, 4, 2, 13, 3), (1, 1705, 4, 6, 1, 14, 4)],
         sheath: 1,
     },
     ClassDef {
@@ -1130,6 +1451,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "frostbolt",
         pool: &[
+            "scorch",
+            "ice_barrier",
             "frostbolt",
             "fireball",
             "arcane_missiles",
@@ -1147,7 +1470,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             4522, 4523, 4524, 4526, 4665, 5001, 6058, 6060, 6072, 7669, 10171, 10214, 10215, 10216,
             10548, 10733, 12849,
         ],
-        weapons: &[(0, 1927, 2, 10, 2, 17, 2)],
         sheath: 1,
     },
     ClassDef {
@@ -1157,6 +1479,8 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "shadow_bolt",
         pool: &[
+            "drain_life",
+            "siphon_life",
             "shadow_bolt",
             "corruption",
             "curse_of_agony",
@@ -1171,7 +1495,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             1324, 1325, 1326, 1469, 1581, 1604, 1884, 1930, 2637, 2646, 2675, 3115, 3116, 3122,
             3271, 3286, 3291, 3345, 3607, 3745, 4567,
         ],
-        weapons: &[(0, 5542, 2, 10, 2, 17, 2)],
         sheath: 1,
     },
     ClassDef {
@@ -1181,6 +1504,9 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "wrath",
         pool: &[
+            "swipe",
+            "claw",
+            "regrowth",
             "wrath",
             "moonfire",
             "starfire",
@@ -1194,7 +1520,6 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             1706, 1732, 2106, 2115, 2121, 2250, 2255, 2261, 3300, 3301, 3302, 3819, 3820, 7357,
             10738, 12053,
         ],
-        weapons: &[(0, 22391, 2, 10, 2, 17, 2)],
         sheath: 1,
     },
 ];
@@ -1314,7 +1639,7 @@ pub(crate) const XP_RATE: f32 = 2.0;
 
 /// How far through the run, 0 at the start and 1 at [`VICTORY_SECS`].
 pub(crate) fn progress(elapsed: f32) -> f32 {
-    (elapsed / VICTORY_SECS).max(0.0)
+    (elapsed / VICTORY_SECS).clamp(0.0, 1.0)
 }
 
 /// The pool of roster indices at a point in the run, from a roster `tiers` long.
@@ -1327,31 +1652,14 @@ pub(crate) fn wave_pool(elapsed: f32, tiers: usize) -> [usize; 3] {
     [lo, lo + 1, lo + 2]
 }
 
-/// How many enemies the spawner keeps alive at a point in the run.
-pub(crate) fn target_alive(elapsed: f32) -> usize {
-    ((14.0 + progress(elapsed) * 225.0) as usize).min(220)
-}
-
-/// Enemy health grows on top of the tiers, so a late kill takes several spells.
-pub(crate) fn hp_scale(elapsed: f32) -> f32 {
-    1.0 + progress(elapsed) * 0.75
-}
-
-/// Enemy damage grows the same way.
-pub(crate) fn damage_scale(elapsed: f32) -> f32 {
-    1.0 + progress(elapsed) * 0.9
-}
-
-/// The experience to go from `level` to the next: Vampire Survivors' curve, cheap early.
+/// Run XP: preserve the first ten levels, then stretch the old level-50 cost to level 100.
+/// This is independent of the character's persistent meta-progression.
 pub(crate) fn xp_to_next(level: u32) -> f32 {
-    let l = level as f32;
-    if level < 20 {
-        5.0 + (l - 1.0) * 10.0
-    } else if level < 40 {
-        195.0 + (l - 20.0) * 13.0
-    } else {
-        455.0 + (l - 40.0) * 16.0
-    }
+    let steps = f64::from(level.saturating_sub(1));
+    let steps = steps.min(9.0) + (steps - 9.0).max(0.0) * (40.0 / 90.0);
+    (5.0 + 10.0 * (1.06_f64.powf(steps) - 1.0) / 0.06)
+        .round()
+        .min(f64::from(f32::MAX)) as f32
 }
 
 /// A creature on a battleground's roster: who it is, its pace and its size. Its health, damage
@@ -1404,6 +1712,19 @@ pub(crate) struct MapDef {
     bosses: &'static [Foe],
 }
 
+// Stormwind's trade district, shared offline sanctuary for every race. Coordinates match the
+// existing Stormwind capture fixture in capture/scenarios.rs; no server population is simulated.
+pub(crate) static HUB: MapDef = MapDef {
+    name: "Stormwind City",
+    zone: "Sanctuary",
+    map: 0,
+    center: [-8833.38, 628.63, 94.01],
+    leash: 250.0,
+    victory: "",
+    foes: &[],
+    bosses: &[],
+};
+pub(crate) const TRAINING_MAP: usize = MAPS.len() - 1;
 pub(crate) static MAPS: &[MapDef] = &[
     MapDef {
         name: "The Barrens",
@@ -1417,8 +1738,8 @@ pub(crate) static MAPS: &[MapDef] = &[
         bosses: &[],
     },
     MapDef {
-        name: "The Dark Portal",
-        zone: "Blasted Lands",
+        name: "Blasted Lands",
+        zone: "The Dark Portal",
         map: 0,
         // The basin before the Portal, ringed by cliffs.
         center: [-11840.0, -3197.0, -30.0],
@@ -1526,8 +1847,8 @@ pub(crate) static MAPS: &[MapDef] = &[
         ],
     },
     MapDef {
-        name: "Gurubashi Arena",
-        zone: "Stranglethorn Vale",
+        name: "Stranglethorn Vale",
+        zone: "Gurubashi Arena",
         map: 0,
         // The arena floor; the stands ring it.
         center: [-13205.0, 272.0, 22.0],
@@ -1947,6 +2268,16 @@ pub(crate) static MAPS: &[MapDef] = &[
             foe("Kel'Thuzad", 15945, 63, 4.4, 2.1),
         ],
     },
+    MapDef {
+        name: "Training Grounds",
+        zone: "TEST_ characters",
+        map: 1,
+        center: [-950.0, -2700.0, 92.0],
+        leash: 420.0,
+        victory: "",
+        foes: &[],
+        bosses: &[],
+    },
 ];
 
 /// A battleground's horde and bosses with their numbers.
@@ -1957,8 +2288,9 @@ pub(crate) struct Roster {
 
 static ROSTERS: std::sync::LazyLock<Vec<Roster>> = std::sync::LazyLock::new(|| {
     MAPS.iter()
-        .map(|m| {
-            if m.foes.is_empty() {
+        .enumerate()
+        .map(|(index, m)| {
+            let mut roster = if m.foes.is_empty() {
                 Roster {
                     enemies: ENEMIES.to_vec(),
                     bosses: BOSSES.to_vec(),
@@ -1968,13 +2300,33 @@ static ROSTERS: std::sync::LazyLock<Vec<Roster>> = std::sync::LazyLock::new(|| {
                     enemies: ladder(m.foes, ENEMIES),
                     bosses: ladder(m.bosses, BOSSES),
                 }
+            };
+            if let Some(tier) = CAMPAIGN.iter().position(|&i| i == index) {
+                let low = tier as u32 * 10;
+                let count = roster.enemies.len().saturating_sub(1).max(1);
+                for (i, enemy) in roster.enemies.iter_mut().enumerate() {
+                    enemy.level = (low + (i * 9 / count) as u32).max(1);
+                }
+                for boss in &mut roster.bosses {
+                    boss.level = low + 9;
+                }
             }
+            roster
         })
         .collect()
 });
 
 pub(crate) fn roster(map: usize) -> &'static Roster {
     &ROSTERS[map.min(ROSTERS.len() - 1)]
+}
+
+/// Stable map IDs preserve existing character saves while defining the human campaign.
+pub(crate) const CAMPAIGN: &[usize] = &[5, 11, 13, 12, 4, 1];
+pub(crate) fn campaign_levels(map: usize) -> Option<(u32, u32)> {
+    CAMPAIGN.iter().position(|&i| i == map).map(|tier| {
+        let low = tier as u32 * 10;
+        (low, low + 9)
+    })
 }
 
 /// Number a roster off a tuned ladder: each creature takes the health, damage and experience at
