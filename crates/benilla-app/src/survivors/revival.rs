@@ -63,6 +63,7 @@ fn revive(run: &mut Run) {
     run.shield_t = 0.0;
     run.heal_t = 0.0;
     run.heal_rate = 0.0;
+    run.heal_credit = None;
     run.thorns_t = 0.0;
     run.thorns_dot = None;
     run.recasts = Default::default();

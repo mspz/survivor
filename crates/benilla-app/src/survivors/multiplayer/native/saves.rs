@@ -345,6 +345,8 @@ mod tests {
             ..default()
         };
         let snapshot = wire::Snapshot {
+            chest: default(),
+            party: vec![],
             run_id: 9,
             loot: vec![(1, toml::to_string(&item).unwrap())],
             tick: 1,

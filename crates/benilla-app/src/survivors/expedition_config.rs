@@ -44,6 +44,12 @@ pub(super) struct Zone {
     boss_damage: f32,
 }
 impl Config {
+    #[cfg(test)]
+    pub(super) fn without_resistances(mut self) -> Self {
+        self.monster_resistance_per_level = Default::default();
+        self.boss_resistance_per_level = Default::default();
+        self
+    }
     pub(super) fn parse(text: &str) -> Result<Self, String> {
         let c: Self = toml::from_str(text).map_err(|e| e.to_string())?;
         let valid = |v: f32| v.is_finite() && v > 0.0 && v <= 1000.0;

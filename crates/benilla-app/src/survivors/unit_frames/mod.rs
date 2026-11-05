@@ -6,9 +6,13 @@ use super::{
 use crate::net::ObjectStore;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+mod party;
 mod picking;
 mod portraits;
 mod ui;
+
+#[derive(Component)]
+pub(in crate::survivors) struct PartyPlayer;
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize)]
 pub(in crate::survivors) struct Status {
@@ -30,6 +34,10 @@ pub(super) fn plugin(app: &mut App) {
     app.init_resource::<Target>()
         .add_plugins(portraits::plugin)
         .add_systems(Startup, ui::setup.after(hud::setup_hud))
+        .add_systems(
+            Update,
+            party::refresh.after(sync_status).after(hud::show_panels),
+        )
         .add_systems(
             Update,
             sync_status
@@ -162,6 +170,9 @@ pub(in crate::survivors) fn sync_status(
             add_debuff(&mut status.debuffs, 355, taunt.until - run.elapsed);
         }
         commands.entity(entity).insert(status);
+        if hero.is_some() || owner.is_some() {
+            commands.entity(entity).insert(PartyPlayer);
+        }
     }
 }
 

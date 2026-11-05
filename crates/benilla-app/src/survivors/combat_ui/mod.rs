@@ -14,6 +14,7 @@ mod preview;
 mod sheet;
 pub(super) mod skin;
 pub(super) use meter::Meter;
+pub(super) use meter_panel::{PartyDamage, PartyRow};
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.2);
 const GREY: Color = Color::srgb(0.65, 0.65, 0.65);
 const METER_WIDTH: f32 = 280.0;
@@ -42,6 +43,7 @@ pub(super) struct View {
     meter_scroll: f32,
     details_scroll: f32,
     meter_selected: Option<String>,
+    meter_tab: meter_panel::Tab,
     drag: Option<Drag>,
     /// The character sheet shows the Runes tab instead of the paper doll.
     rune_page: bool,
@@ -63,6 +65,7 @@ impl Default for View {
             meter_scroll: 0.0,
             details_scroll: 0.0,
             meter_selected: None,
+            meter_tab: default(),
             drag: None,
             rune_page: false,
             delete_armed: None,

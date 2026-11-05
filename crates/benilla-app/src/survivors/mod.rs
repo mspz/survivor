@@ -41,6 +41,7 @@ mod reward_config;
 mod runes;
 mod server;
 mod session;
+mod shared_chest;
 mod spell_engine;
 mod starter_spells;
 mod talent_design;

@@ -85,6 +85,14 @@ pub(super) struct Dying(f32);
 #[derive(Resource, Default)]
 pub(super) struct Spawner {
     timer: f32,
+    center: usize,
+}
+impl Spawner {
+    fn next_center(&mut self, centers: &[Vec3]) -> Vec3 {
+        let position = centers[self.center % centers.len()];
+        self.center = self.center.wrapping_add(1);
+        position
+    }
 }
 
 /// An enemy died here, worth this much.
@@ -234,18 +242,25 @@ pub(super) fn spawn_enemies(
         return;
     }
     let Ok(h) = hero.single() else { return };
-    let hpos = if run.dead_t.is_some() {
-        let Some((position, _)) = remotes.iter().find(|(_, owner)| {
-            players
-                .as_ref()
-                .is_some_and(|p| p.0.get(&owner.0).is_some_and(|p| p.run.dead_t.is_none()))
-        }) else {
-            return;
-        };
-        position.translation
-    } else {
-        h.translation
-    };
+    let mut centers = Vec::new();
+    if run.hp > 0.0 && run.dead_t.is_none() {
+        centers.push(h.translation);
+    }
+    let mut guests: Vec<_> = remotes
+        .iter()
+        .filter(|(_, owner)| {
+            players.as_ref().is_some_and(|p| {
+                p.0.get(&owner.0)
+                    .is_some_and(|p| p.run.hp > 0.0 && p.run.dead_t.is_none())
+            })
+        })
+        .map(|(tf, owner)| (owner.0, tf.translation))
+        .collect();
+    guests.sort_by_key(|(owner, _)| *owner);
+    centers.extend(guests.into_iter().map(|(_, position)| position));
+    if centers.is_empty() {
+        return;
+    }
     let elapsed = run.elapsed;
     run.expedition_players = players.as_ref().map_or(1, |p| p.0.len().saturating_add(1));
     run.expedition_map = selection.map;
@@ -255,6 +270,7 @@ pub(super) fn spawn_enemies(
 
     let due_bosses = ((elapsed / data::BOSS_EVERY_SECS) as u32).min(roster.bosses.len() as u32);
     while run.bosses < due_bosses {
+        let hpos = spawner.next_center(&centers);
         let def = &roster.bosses[run.bosses as usize];
         let a = rng.range(0.0, std::f32::consts::TAU);
         let pos = ground(
@@ -282,7 +298,9 @@ pub(super) fn spawn_enemies(
             .min(run.expeditions.max_monsters.saturating_sub(alive));
         ring_spawned = n;
         for i in 0..n {
-            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            let hpos = centers[i % centers.len()];
+            let count = (n + centers.len() - 1 - i % centers.len()) / centers.len();
+            let a = (i / centers.len()) as f32 / count as f32 * std::f32::consts::TAU;
             let pos = ground(
                 &world,
                 hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 26.0,
@@ -305,6 +323,7 @@ pub(super) fn spawn_enemies(
     }
     let n = (((target - alive) as f32) / 6.0).ceil().min(4.0) as usize;
     for _ in 0..n {
+        let hpos = spawner.next_center(&centers);
         let def = &roster.enemies[pool[rng.index(pool.len())]];
         let a = rng.range(0.0, std::f32::consts::TAU);
         let r = rng.range(34.0, 42.0);
@@ -570,13 +589,21 @@ pub(super) fn move_enemies(
                 1.0
             };
             target_run.legendary.events.attacker = Some(ent);
+            target_run.taken_source = e.def.name;
             let taken = hero::hurt_hero_with_block(target_run, raw, roll);
             target_run.legendary.events.attacker = None;
             fx.swing(ent, hero_e, taken);
             if taken > 0.0 {
-                fx.number(hero_e, taken, false, COLOR_HURT);
+                fx.number(target_run.owner, hero_e, taken, false, COLOR_HURT);
             }
-            if target_run.thorns_t > 0.0 && target_run.legendary.has(220) {
+            if target_run.thorns_t > 0.0
+                && target_run.legendary.has(220)
+                && super::procs::ready(
+                    target_run,
+                    "thorns",
+                    super::spell_engine::Tags::NATURE | super::spell_engine::Tags::SPELL,
+                )
+            {
                 let amount = target_run.thorns * target_run.stats().might;
                 if target_run.legendary.effects.allies.len() > 1 {
                     target_run.legendary.effects.heals.push((
@@ -595,7 +622,14 @@ pub(super) fn move_enemies(
                         GemKind::Heal(amount),
                     );
                 }
-            } else if target_run.thorns_t > 0.0 {
+            } else if target_run.thorns_t > 0.0
+                && !target_run.legendary.has(220)
+                && super::procs::ready(
+                    target_run,
+                    "thorns",
+                    super::spell_engine::Tags::NATURE | super::spell_engine::Tags::SPELL,
+                )
+            {
                 let source = data::ABILITIES
                     .iter()
                     .find(|def| def.spell == target_run.thorns_spell)
@@ -608,6 +642,10 @@ pub(super) fn move_enemies(
                 );
                 hit.direct_dot = target_run.thorns_dot;
                 hit.owner = target_run.owner;
+                hit.triggered = true;
+                hit.proc_admitted = true;
+                hit.origin = super::items::legendary::events::Origin::Talent;
+                hit.cast_id = super::procs::parent(target_run, 0);
                 hits.write(hit);
             }
         }
@@ -721,7 +759,7 @@ fn grant_pickup_xp(run: &mut Run, xp: u64) {
     bank_levels(run);
 }
 
-/// XP is collected immediately in magnet range and shared once with every connected player.
+/// XP, meat and magnets are collected without travelling; XP is shared with the party.
 pub(super) fn collect_gems(
     mut commands: Commands,
     time: Res<Time>,
@@ -762,13 +800,17 @@ pub(super) fn collect_gems(
             }
             continue;
         }
+        let instant = matches!(g.kind, GemKind::Heal(_) | GemKind::Vacuum);
+        if instant && flat(d).length() > stats.magnet {
+            continue;
+        }
         if !g.pulled && flat(d).length() <= stats.magnet * pickup {
             g.pulled = true;
         }
         if !g.pulled {
             continue;
         }
-        if dist < 0.9 {
+        if instant || dist < 0.9 {
             match g.kind {
                 GemKind::Xp(_) => unreachable!("XP is collected without travelling"),
                 GemKind::Heal(hp) => {
@@ -880,6 +922,35 @@ mod pickup_tests {
             ))
             .id()
     }
+    #[test]
+    fn meat_and_magnets_are_collected_without_travel_only_inside_pickup_range() {
+        let mut world = world();
+        world.resource_mut::<Run>().hp = 1.0;
+        let radius = world.resource::<Run>().stats().magnet;
+        let near = Vec3::X * (radius * 0.9) + Vec3::Y;
+        let far = Vec3::Z * (radius + 10.0) + Vec3::Y;
+        let meat = gem(&mut world, GemKind::Heal(10.0), near);
+        let magnet = gem(&mut world, GemKind::Vacuum, -near);
+        let distant_meat = gem(&mut world, GemKind::Heal(10.0), far);
+        let distant_magnet = gem(&mut world, GemKind::Vacuum, -far);
+        let xp = gem(&mut world, GemKind::Xp(1), Vec3::X * 10_000.0);
+        world.run_system_once(collect_gems).unwrap();
+        assert!(world.get_entity(meat).is_err());
+        assert!(world.get_entity(magnet).is_err());
+        assert!(world.get_entity(xp).is_err());
+        assert!(world.resource::<Run>().hp > 1.0);
+        assert_eq!(world.resource::<Run>().xp, data::XP_RATE);
+        for (entity, position) in [(distant_meat, far), (distant_magnet, -far)] {
+            assert_eq!(
+                world.get::<Transform>(entity).unwrap().translation,
+                position
+            );
+            assert!(!world.get::<Gem>(entity).unwrap().pulled);
+        }
+        world.run_system_once(collect_gems).unwrap();
+        assert_eq!(world.resource::<Run>().xp, data::XP_RATE);
+    }
+
     #[test]
     fn an_old_shield_fragment_cannot_unlock_a_later_broken_shield() {
         let mut world = world();

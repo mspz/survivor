@@ -19,6 +19,7 @@ pub(in crate::survivors) enum Family {
 }
 #[derive(Clone, Default)]
 pub(in crate::survivors) struct Meta {
+    pub parent: u64,
     pub family: Family,
     pub held: f32,
     pub nails: u8,
@@ -189,6 +190,9 @@ pub(in crate::survivors) fn install(
     mut dot: Dot,
 ) {
     dot.meta.started = run.elapsed;
+    if dot.meta.parent == 0 {
+        dot.meta.parent = run.proc_runtime.parent;
+    }
     dot.meta.family = family(&dot);
     if run.legendary.has(94) {
         dot.meta.family = Family::Burn;
@@ -334,7 +338,7 @@ pub(in crate::survivors) fn tick(
     }
     let damage = dot.dps + dot.meta.held;
     dot.meta.held = 0.0;
-    if run.legendary.has(72) && dot.skill == "shadow_word_pain" {
+    if dot.origin == Origin::Skill && run.legendary.has(72) && dot.skill == "shadow_word_pain" {
         if let Some(next) = neighbour(run, target, pos) {
             let moved = dot.clone();
             run.legendary.periodic.transfers.push((next, moved));
@@ -345,7 +349,7 @@ pub(in crate::survivors) fn tick(
     damage
 }
 pub(in crate::survivors) fn expired(run: &mut Run, target: Entity, dot: &Dot, pos: Vec3) {
-    if dot.meta.transferred {
+    if dot.meta.transferred || dot.origin != Origin::Skill {
         return;
     }
     let fam = family(dot);
@@ -696,14 +700,14 @@ pub(in crate::survivors) fn tick_world(
                     );
                 } else {
                     let count = targets.len().max(1) as f32;
-                    for (target, _) in targets {
+                    if !targets.is_empty() {
                         events::queue(
                             run,
                             f.unique,
                             f.pos,
-                            Some(*target),
                             None,
-                            Shape::Guided(1, 0.0),
+                            None,
+                            Shape::Circle(f.radius),
                             f.damage / count,
                             f.school,
                             0.0,

@@ -20,6 +20,7 @@ pub(super) struct EquippedProc {
 }
 #[derive(Clone)]
 struct Event {
+    cast: u64,
     skill: &'static str,
     tags: Tags,
     equipped: Vec<(u64, usize)>,
@@ -89,6 +90,7 @@ pub(in crate::survivors) fn record_hit_from(
             .map(|p| (p.item, p.index))
             .collect();
         run.item_runtime.events.push(Event {
+            cast,
             skill,
             tags,
             equipped,
@@ -182,9 +184,9 @@ pub(in crate::survivors) fn tick(
             {
                 continue;
             }
-            run.item_runtime
-                .cooldowns
-                .insert(key, now + proc.roll.cooldown);
+            let cooldown =
+                super::super::procs::cooldown(&run, event.skill, event.tags, proc.roll.cooldown);
+            run.item_runtime.cooldowns.insert(key, now + cooldown);
             let change = match proc.roll.kind {
                 ProcKind::Damage => Some(Change::IncreasedDamage(proc.roll.power)),
                 ProcKind::CritChance => Some(Change::CriticalChance(proc.roll.power)),
@@ -211,7 +213,7 @@ pub(in crate::survivors) fn tick(
                     2.0,
                 ));
             } else if let Some(def) = proc.roll.spell.as_deref().and_then(proc_spell) {
-                casts.push((def, proc.roll.power));
+                casts.push((def, proc.roll.power, event.cast));
             }
         }
     }
@@ -237,7 +239,12 @@ pub(in crate::survivors) fn tick(
         })
         .collect();
     foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
-    for (def, power) in casts {
+    for (def, power, parent) in casts {
+        let parent = if parent == 0 {
+            super::super::procs::fresh(&mut run)
+        } else {
+            parent
+        };
         let level = run
             .abilities
             .iter()
@@ -301,6 +308,8 @@ pub(in crate::survivors) fn tick(
             let mut hit =
                 super::super::abilities::hit_for(def, &params, link.target.e, damage, crit);
             hit.triggered = true;
+            hit.proc_admitted = true;
+            hit.cast_id = parent;
             hit.origin = super::legendary::events::Origin::Item;
             hit.dot *= link.scale;
             if area {

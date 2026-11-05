@@ -30,6 +30,7 @@ pub(super) struct Runtime {
     bursts: Vec<Burst>,
 }
 struct Burst {
+    parent: u64,
     chain: u64,
     pos: Vec3,
     damage: f32,
@@ -123,7 +124,7 @@ fn hit_tags(m: M) -> Tags {
         }
 }
 fn accepts(run: &Run, h: &Hit, m: M, tags: Tags) -> bool {
-    active(run, m) && h.proc_chain & chain_bit(m) == 0 && tags.contains(hit_tags(m))
+    h.can_proc() && active(run, m) && tags.contains(hit_tags(m))
 }
 fn meter_source(run: &Run, m: M) -> Option<&'static str> {
     if !active(run, m) {
@@ -229,7 +230,11 @@ pub(super) fn block_chance(run: &Run) -> f32 {
     }
 }
 pub(super) fn refreshed_shield(run: &mut Run, capacity: f32) {
-    if run.shield > 0.0 && run.shield_t > 0.0 && active(run, M::Shieldburst) {
+    if run.shield > 0.0
+        && run.shield_t > 0.0
+        && active(run, M::Shieldburst)
+        && run.legendary.events.shield_origin == super::items::legendary::events::Origin::Skill
+    {
         run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
     run.talent_runtime.shield_capacity = capacity;
@@ -269,7 +274,9 @@ pub(super) fn on_hit(
     rng: &mut Rng,
     pending: &mut PendingHits,
 ) {
-    if h.damage <= 0.0 || (run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty())
+    if !h.can_proc()
+        || h.damage <= 0.0
+        || (run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty())
     {
         return;
     }
@@ -294,7 +301,20 @@ pub(super) fn on_hit(
     let poison = accepts(run, h, M::Poison, t);
     let arcane = accepts(run, h, M::Moonfire, t);
     let plague = accepts(run, h, M::ShadowPlague, t) || accepts(run, h, M::Plague, t) || arcane;
-    if (poison || plague) && en.hp > 0.0 {
+    if (poison || plague)
+        && en.hp > 0.0
+        && procs::ready(
+            run,
+            if poison {
+                "proc_poison"
+            } else if arcane {
+                "proc_lunar_flare"
+            } else {
+                "proc_plague"
+            },
+            t,
+        )
+    {
         let key = if poison {
             "proc_poison"
         } else if arcane {
@@ -345,7 +365,7 @@ pub(super) fn on_hit(
             },
         );
     }
-    if accepts(run, h, M::Freeze, t) {
+    if accepts(run, h, M::Freeze, t) && procs::ready(run, "proc_frostbite", t) {
         let duration = procs::resolve(run, "proc_frostbite", 0.0, 0.0, 3.0, 0.0, 1).duration;
         en.slow = 0.6;
         en.slow_t = duration;
@@ -363,21 +383,25 @@ pub(super) fn on_hit(
     } else {
         0.0
     };
-    run.talent_runtime.healing += procs::resolve(
-        run,
-        "proc_holy_heal",
-        h.damage.min(en.max_hp) * healing,
-        0.0,
-        0.0,
-        0.0,
-        1,
-    )
-    .dmg;
+    if healing > 0.0 && procs::ready(run, "proc_holy_heal", t) {
+        run.talent_runtime.healing += procs::resolve(
+            run,
+            "proc_holy_heal",
+            h.damage.min(en.max_hp) * healing,
+            0.0,
+            0.0,
+            0.0,
+            1,
+        )
+        .dmg;
+    }
     let now = run.elapsed;
     let mut extra = |key, damage, splash, source, mechanic| {
         let mut hit = Hit::direct(key, h.target, damage, false);
         hit.owner = h.owner;
+        hit.cast_id = h.cast_id;
         hit.triggered = true;
+        hit.proc_admitted = true;
         hit.origin = if h.origin == super::items::legendary::events::Origin::Item {
             h.origin
         } else {
@@ -388,7 +412,7 @@ pub(super) fn on_hit(
         hit.meter_source = source;
         pending.0.push((now + 0.01, hit));
     };
-    if accepts(run, h, M::Seal, t) {
+    if accepts(run, h, M::Seal, t) && procs::ready_milestone(run, M::Seal, t) {
         for donor in super::items::legendary::milestones::sources(run, M::Seal) {
             let key = if donor == 7 {
                 "flame_shock"
@@ -411,6 +435,7 @@ pub(super) fn on_hit(
     }
     if accepts(run, h, M::Splash, t) {
         run.talent_runtime.bursts.push(Burst {
+            parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::Splash),
             pos,
             damage: h.damage * 0.4,
@@ -429,6 +454,7 @@ pub(super) fn on_hit(
         && accepts(run, h, M::HolyJudgement, t)
     {
         run.talent_runtime.bursts.push(Burst {
+            parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::HolyJudgement),
             pos,
             damage: h.damage * 0.5,
@@ -442,7 +468,10 @@ pub(super) fn on_hit(
             spread_source: None,
         });
     }
-    if accepts(run, h, M::Windfury, t) && rng.f32() < 0.2 {
+    if accepts(run, h, M::Windfury, t)
+        && rng.f32() < 0.2
+        && procs::ready_milestone(run, M::Windfury, t)
+    {
         extra(
             h.skill,
             h.damage * 0.5,
@@ -458,7 +487,10 @@ pub(super) fn on_hit(
             M::Windfury,
         );
     }
-    if accepts(run, h, M::Execution, t) && run.talent_runtime.streak >= 10 {
+    if accepts(run, h, M::Execution, t)
+        && run.talent_runtime.streak >= 10
+        && procs::ready_milestone(run, M::Execution, t)
+    {
         extra(
             h.skill,
             h.damage * 2.0,
@@ -500,6 +532,7 @@ pub(super) fn on_hit(
             _ => (7.0, 64),
         };
         run.talent_runtime.bursts.push(Burst {
+            parent: h.cast_id,
             chain: h.proc_chain | chain_bit(mechanic),
             pos,
             damage: h.damage * factor,
@@ -515,7 +548,10 @@ pub(super) fn on_hit(
     }
 }
 pub(super) fn periodic_leech(run: &mut Run, tags: Tags, damage: f32) {
-    if active(run, M::ShadowDrain) && tags.contains(Tags::SHADOW) {
+    if active(run, M::ShadowDrain)
+        && tags.contains(Tags::SHADOW)
+        && procs::ready(run, "proc_shadow_leech", tags)
+    {
         let amount = procs::resolve(run, "proc_shadow_leech", damage * 0.12, 0.0, 0.0, 0.0, 1).dmg;
         run.heal(amount);
     }
@@ -553,6 +589,7 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
         || freeze;
     if spread || explode {
         run.talent_runtime.bursts.push(Burst {
+            parent: run.proc_runtime.parent,
             chain: 0,
             pos,
             damage: if explode {
@@ -672,6 +709,9 @@ pub(super) fn tick(
             burst.radius,
             burst.targets,
         );
+        if !procs::ready(&mut run, skill, p.tags) {
+            continue;
+        }
         if skill == "proc_starfall" && run.legendary.has(88) {
             let mut targets: Vec<_> = enemies
                 .iter()
@@ -694,6 +734,7 @@ pub(super) fn tick(
                 hit.owner = owner;
                 hit.origin = super::items::legendary::events::Origin::Talent;
                 hit.triggered = true;
+                hit.proc_admitted = true;
                 hit.proc_resolved = true;
                 hit.tags = Some(p.tags);
                 hit.direct_dot = p.direct_dot.map(|mut dot| {
@@ -701,6 +742,7 @@ pub(super) fn tick(
                     dot
                 });
                 hit.proc_chain = burst.chain;
+                hit.cast_id = burst.parent;
                 hit.meter_source = burst.meter_source;
                 pending.0.push((now + dist / 25.0, hit));
             }
@@ -754,10 +796,13 @@ pub(super) fn tick(
                 let mut hit = Hit::direct(skill, entity, damage, crit);
                 hit.owner = owner;
                 hit.triggered = true;
+                hit.proc_admitted = true;
                 hit.proc_resolved = true;
                 hit.direct_dot = p.direct_dot;
                 hit.tags = Some(p.tags);
                 hit.proc_chain = burst.chain;
+                hit.cast_id = burst.parent;
+                hit.origin = super::items::legendary::events::Origin::Talent;
                 hit.meter_source = burst.meter_source;
                 let spell = data::ability(burst.skill).spell;
                 for repeat in 0..repeats {
@@ -1169,6 +1214,7 @@ pub(super) fn support(
     };
     let mut sources = vec![];
     struct Source {
+        owner: Option<u64>,
         pos: Vec3,
         rate: (f32, f32),
         pulse: (f32, f32),
@@ -1215,6 +1261,7 @@ pub(super) fn support(
         );
         let buff = super::healer_buffs::source(run);
         Source {
+            owner: run.owner,
             pos,
             rate: (rate.dmg, rate.radius),
             pulse: (pulse.dmg, pulse.radius),
@@ -1234,22 +1281,38 @@ pub(super) fn support(
             }
         }
     }
-    fn receive(run: &mut Run, pos: Vec3, dt: f32, sources: &[Source]) {
+    let mut credits = Vec::new();
+    fn receive(
+        run: &mut Run,
+        pos: Vec3,
+        dt: f32,
+        sources: &[Source],
+        credits: &mut Vec<(Option<u64>, f32)>,
+    ) {
         for source in sources {
             let distance = units::flat(source.pos - pos).length();
             let in_range = |(amount, radius)| if distance <= radius { amount } else { 0.0 };
             let amount = run.stats().max_hp * (in_range(source.rate) * dt + in_range(source.pulse))
                 + in_range(source.flat);
-            run.heal(amount);
+            credits.push((source.owner, run.recover(amount)));
         }
         super::healer_buffs::receive(run, pos, dt, sources.iter().map(|s| (s.pos, &s.buff)));
     }
-    receive(&mut run, tf.translation, dt, &sources);
+    receive(&mut run, tf.translation, dt, &sources, &mut credits);
     if let Some(players) = players.as_deref_mut() {
         for (tf, owner) in &remotes {
             if let Some(p) = players.0.get_mut(&owner.0) {
-                receive(&mut p.run, tf.translation, dt, &sources);
+                receive(&mut p.run, tf.translation, dt, &sources, &mut credits);
             }
+        }
+    }
+    for (owner, amount) in credits {
+        if let Some(source) =
+            super::multiplayer::player_run(&mut run, players.as_deref_mut(), owner)
+        {
+            source
+                .healing_meter
+                .record_hit("party_healing", source.elapsed, amount, false, true);
         }
     }
 }
@@ -1516,13 +1579,12 @@ mod tests {
         let mut rng = Rng(42);
         for skill in data::ABILITIES
             .iter()
-            .filter(|s| tags::for_spell(s).contains(Tags::DAMAGE))
+            .filter(|s| !s.key.starts_with("proc_") && tags::for_spell(s).contains(Tags::DAMAGE))
         {
             let mut poison = run(3, 0, &[8]);
             let mut enemy = enemy();
             let mut pending = PendingHits::default();
-            let mut h = Hit::direct(skill.key, Entity::from_bits(1), 10.0, false);
-            h.triggered = true; // Also covers compatible impacts produced by another spell proc.
+            let h = Hit::direct(skill.key, Entity::from_bits(1), 10.0, false);
             on_hit(
                 &mut poison,
                 &h,
@@ -1551,7 +1613,31 @@ mod tests {
         }
     }
     #[test]
-    fn distinct_procs_can_chain_but_cannot_cycle_back_to_a_previous_milestone() {
+    fn proc_rules_all_proc_origins_are_rejected_as_milestone_sources() {
+        use super::super::items::legendary::events::Origin;
+        for (origin, triggered, key) in [
+            (Origin::Talent, false, "fireball"),
+            (Origin::Item, false, "fireball"),
+            (Origin::Legendary, false, "fireball"),
+            (Origin::Skill, true, "fireball"),
+            (Origin::Skill, false, "proc_fireburst"),
+        ] {
+            let mut run = run(3, 0, &[8]);
+            let mut en = enemy();
+            let mut pending = PendingHits::default();
+            let mut rng = Rng::default();
+            let mut hit = Hit::direct(key, Entity::from_bits(1), 100.0, false);
+            hit.origin = origin;
+            hit.triggered = triggered;
+            on_hit(&mut run, &hit, &mut en, Vec3::ZERO, &mut rng, &mut pending);
+            assert!(en.dots.is_empty());
+            assert!(pending.0.is_empty());
+            assert!(run.talent_runtime.bursts.is_empty());
+        }
+    }
+
+    #[test]
+    fn distinct_procs_cannot_trigger_other_milestones() {
         assert!((M::Grove as u32) < 64);
         let mut paladin = run(1, 2, &[8, 12]);
         let mut enemy = enemy();
@@ -1579,11 +1665,10 @@ mod tests {
             &mut pending,
         );
         assert!(pending.0.is_empty(), "Seal recursively triggered itself");
-        let splash = paladin.talent_runtime.bursts.pop().unwrap();
-        assert_eq!(splash.chain, chain_bit(M::Seal) | chain_bit(M::Splash));
-        let mut child = Hit::direct("proc_splash", root.target, splash.damage, false);
+        assert!(paladin.talent_runtime.bursts.is_empty());
+        let mut child = Hit::direct("proc_splash", root.target, 10.0, false);
         child.triggered = true;
-        child.proc_chain = splash.chain;
+        child.proc_chain = chain_bit(M::Splash);
         on_hit(
             &mut paladin,
             &child,
@@ -1628,7 +1713,8 @@ mod tests {
         let mut rng = Rng::default();
         let mut pending = PendingHits::default();
         // A SPELL + PHYSICAL definition proves this condition does not require ATTACK.
-        let mut h = Hit::direct("proc_bloodburst", Entity::from_bits(1), 10.0, false);
+        let mut h = Hit::direct("cleave", Entity::from_bits(1), 10.0, false);
+        h.tags = Some(Tags::SPELL | Tags::PHYSICAL | Tags::DAMAGE);
         on_hit(
             &mut poison,
             &h,
@@ -1703,6 +1789,7 @@ mod tests {
         assert_eq!(enemy.dots[0].dps, 18.0);
         enemy.dots[0].tick = 0.25;
         enemy.dots[0].left = 2.0;
+        run.elapsed += 0.5;
         on_hit(
             &mut run,
             &hit,
@@ -1772,7 +1859,7 @@ mod tests {
                 meter_source: None,
                 tags: None,
                 item_source: None,
-                origin: crate::survivors::items::legendary::events::Origin::Talent,
+                origin: crate::survivors::items::legendary::events::Origin::Skill,
                 meta: Default::default(),
                 dps: 5.0,
                 left: 4.0,
@@ -1802,6 +1889,22 @@ mod tests {
         enemy.root_t = 1.0;
         assert_eq!(before_hit(&mut frost, &h, &enemy), 1.6);
     }
+    #[test]
+    fn proc_rules_triggered_shields_cannot_trigger_break_or_refresh_bursts() {
+        let mut run = run(4, 0, &[8, 12, 18]);
+        run.hp = 100.0;
+        run.shield = 40.0;
+        run.shield_t = 5.0;
+        run.talent_runtime.shield_capacity = 40.0;
+        run.legendary.events.shield_origin = super::super::items::legendary::events::Origin::Talent;
+        super::super::hero::hurt_hero(&mut run, 100.0);
+        assert_eq!(run.shield, 0.0);
+        assert_eq!(run.talent_runtime.shield_burst, 0.0);
+        run.shield = 30.0;
+        refreshed_shield(&mut run, 50.0);
+        assert_eq!(run.talent_runtime.shield_burst, 0.0);
+    }
+
     #[test]
     fn shield_break_and_refresh_queue_one_explosion_and_tanks_block() {
         let mut run = run(4, 0, &[8, 12, 18]);

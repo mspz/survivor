@@ -409,6 +409,18 @@ pub(in crate::survivors) fn plan(
     if run.legendary.casting.plans.len() >= 256 {
         return;
     }
+    if origin != Origin::Skill {
+        if !crate::survivors::procs::ready_effect(run, "legendary_copy", Some(unique), p.tags) {
+            return;
+        }
+        if p.cast_id == 0 {
+            p.cast_id = if run.proc_runtime.parent == 0 {
+                crate::survivors::procs::fresh(run)
+            } else {
+                run.proc_runtime.parent
+            };
+        }
+    }
     let splash = if matches!(def.kind, Kind::Bolt | Kind::Strike) {
         p.radius
     } else {
@@ -1108,6 +1120,7 @@ pub(in crate::survivors) fn tick(
             };
             if plan.origin != Origin::Skill {
                 hit.triggered = true;
+                hit.proc_admitted = true;
                 hit.proc_resolved = true;
                 hit.proc_chain = u64::MAX;
             }

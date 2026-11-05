@@ -186,5 +186,9 @@ is added to hit damage before increased/more multipliers. Flat life and armour f
 `on_hit.rs` resolves target-health bonuses, armour penetration and tag-gated leech/ailment chances.
 Item buffs use a separate replaceable engine source; trinket spell casts reuse targeting and hit
 resolution, carry a triggered flag to prevent proc chains and keep normal skill cooldowns intact.
+All proc sources share this non-recursive rule, including talent, legendary and reflected
+damage and their periodic snapshots. Procs have an owner-local 0.5-second minimum ICD
+before cooldown reduction; existing longer ICDs remain. Area proc copies share the parent
+cast's victim set, including delayed impacts, so overlapping explosions cannot shotgun.
 
 Talent progress is scoped to the active character, not the roster. `talents.rs` defines 19 nodes per specialization, seven tiers and three linked milestones. `talent_design.rs` authors the 27 identities and their 81 milestones; `talent_runtime.rs` owns each player's stateful mechanics. All three trees are shown together. V4 saves refund previous layouts while keeping XP. The sanctuary applies previews immediately; starting an expedition copies the build and replaces all three talent modifier sources. Talents are read-only during an expedition. See [TALENTS.md](TALENTS.md).

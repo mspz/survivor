@@ -18,6 +18,9 @@ mod item_level;
 pub(super) mod legendary;
 mod starter;
 mod tooltip;
+mod trade;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::survivors) use trade::TradeAccount;
 pub(super) mod visuals;
 pub(super) mod weapons;
 pub(super) use config::Config;
@@ -445,6 +448,14 @@ pub(super) struct Item {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Save {
+    #[serde(default)]
+    trade_identity: String,
+    #[serde(default)]
+    trade_sequence: u64,
+    #[serde(default)]
+    pending_deposits: Vec<super::shared_chest::Transfer>,
+    #[serde(default)]
+    received_trades: BTreeSet<String>,
     version: u32,
     #[serde(default)]
     starter_granted: bool,
@@ -462,6 +473,10 @@ impl Default for Save {
     fn default() -> Self {
         Self {
             version: 1,
+            trade_identity: String::new(),
+            trade_sequence: 0,
+            pending_deposits: vec![],
+            received_trades: default(),
             starter_granted: false,
             titan_grip: false,
             next_id: 1,
@@ -1081,6 +1096,7 @@ pub(super) fn plugin(app: &mut App) {
     combat::plugin(app);
     // Also registered by the sound plugin; registering here keeps headless apps working.
     app.init_resource::<Inventory>()
+        .add_message::<ChestOpened>()
         .add_message::<crate::sound::CoinSound>()
         .add_systems(
             Update,
@@ -1113,7 +1129,7 @@ pub(super) fn plugin(app: &mut App) {
                 ),
         );
 }
-fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {
+pub(super) fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {
     inventory.class = roster
         .current()
         .and_then(|c| super::data::CLASSES.get(c.class))
@@ -1160,7 +1176,11 @@ fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<R
     inventory.apply(&mut run);
 }
 #[derive(Component)]
-struct ItemDrop(Item);
+pub(super) struct ItemDrop(Item);
+#[derive(Message)]
+pub(super) struct ChestOpened {
+    pub level: u32,
+}
 // Elwynn's small wooden treasure chest: GameObjectDisplayInfo -> Chest01.mdx.
 const BOSS_CHEST_DISPLAY: u32 = 10;
 pub(in crate::survivors) fn drops_chest(boss: bool, boss_chance: f32, roll: f32) -> bool {
@@ -1174,7 +1194,7 @@ pub(in crate::survivors) fn chest_item_level(monster_level: u32, boss: bool) -> 
         monster_level.clamp(1, MAX_ITEM_LEVEL)
     }
 }
-fn chest_drops(
+pub(super) fn chest_drops(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
     mut inventory: ResMut<Inventory>,
@@ -1211,7 +1231,7 @@ fn chest_drops(
         }
     }
 }
-fn collect_drops(
+pub(super) fn collect_drops(
     mut commands: Commands,
     phase: Res<State<Phase>>,
     mut inventory: ResMut<Inventory>,
@@ -1219,16 +1239,37 @@ fn collect_drops(
     hero: Query<&Transform, With<Hero>>,
     drops: Query<(Entity, &Transform, &ItemDrop)>,
     mut coin: MessageWriter<crate::sound::CoinSound>,
+    players: Option<Res<super::multiplayer::Companions>>,
+    positions: Query<&Transform>,
+    mut opened: Option<MessageWriter<ChestOpened>>,
 ) {
     let hero = hero.iter().next();
+    let guest_positions: Vec<_> = players
+        .as_deref()
+        .into_iter()
+        .flat_map(|p| p.0.values())
+        .filter(|p| p.run.hp > 0.0 && p.run.dead_t.is_none())
+        .filter_map(|p| positions.get(p.entity).ok())
+        .map(|tf| tf.translation)
+        .collect();
     for (e, tf, drop) in &drops {
         if *phase.get() != Phase::GameOver
-            && !hero.is_some_and(|hero| hero.translation.distance(tf.translation) <= 3.0)
+            && !(run.hp > 0.0
+                && run.dead_t.is_none()
+                && hero.is_some_and(|hero| hero.translation.distance(tf.translation) <= 3.0))
+            && !guest_positions
+                .iter()
+                .any(|pos| pos.distance(tf.translation) <= 3.0)
         {
             continue;
         }
         match inventory.collect(drop.0.clone()) {
             Ok(()) => {
+                if let Some(opened) = opened.as_mut() {
+                    opened.write(ChestOpened {
+                        level: drop.0.level,
+                    });
+                }
                 run.banner = Some((format!("Boss loot: {}", drop.0.name), 4.0));
                 coin.write(crate::sound::CoinSound);
                 commands.entity(e).despawn();

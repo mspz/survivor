@@ -14,6 +14,7 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_message::<abilities::Hit>()
         .add_message::<enemies::Loot>()
+        .add_message::<healing::Credit>()
         .init_resource::<Rng>()
         .init_resource::<session::Sessions>()
         .init_resource::<session::ServerInput>()
@@ -55,6 +56,7 @@ pub(super) fn plugin(app: &mut App) {
                 enemies::drop_loot,
                 enemies::collect_gems,
                 hero::hero_vitals,
+                healing::credit,
                 revival::tick,
             )
                 .chain()
@@ -149,6 +151,9 @@ pub(super) struct Run {
     pub(super) expedition_map: usize,
     pub(super) expedition_players: usize,
     pub meter: combat_ui::Meter,
+    pub healing_meter: combat_ui::Meter,
+    pub taken_meter: combat_ui::Meter,
+    pub taken_source: &'static str,
     pub spell_modifiers: spell_engine::Modifiers,
     pub(super) equipment_version: Option<(Option<u64>, u64)>,
     pub(super) equipment_hp: f32,
@@ -184,7 +189,10 @@ pub(super) struct Run {
     pub thorns_spell: u32,
     pub heal_rate: f32,
     pub heal_t: f32,
+    pub heal_credit: Option<(Option<u64>, &'static str)>,
+    pub heal_triggered: bool,
     pub(super) talent_runtime: talent_runtime::Runtime,
+    pub(super) proc_runtime: super::procs::Runtime,
     pub(super) healer_buffs: healer_buffs::State,
     pub(super) legendary: items::legendary::Runtime,
     /// The class mobility's cooldown and running effect.
@@ -215,6 +223,9 @@ impl Default for Run {
             expedition_map: data::CAMPAIGN[0],
             expedition_players: 1,
             meter: combat_ui::Meter::default(),
+            healing_meter: default(),
+            taken_meter: default(),
+            taken_source: "Damage taken",
             spell_modifiers: spell_engine::Modifiers::default(),
             equipment_version: None,
             equipment_hp: 0.0,
@@ -248,7 +259,10 @@ impl Default for Run {
             thorns_spell: 0,
             heal_rate: 0.0,
             heal_t: 0.0,
+            heal_credit: None,
+            heal_triggered: false,
             talent_runtime: default(),
+            proc_runtime: default(),
             healer_buffs: default(),
             legendary: default(),
             mobile: mobility::MobilityState::default(),
@@ -336,6 +350,13 @@ impl Run {
         self.next_guid
     }
     pub fn heal(&mut self, amount: f32) -> f32 {
+        let healed = self.recover(amount);
+        self.healing_meter
+            .record_hit("self_healing", self.elapsed, healed, false, false);
+        healed
+    }
+    /// Incoming healing; the caster owns its meter attribution.
+    pub fn recover(&mut self, amount: f32) -> f32 {
         if self.hp <= 0.0 || self.dead_t.is_some() || !amount.is_finite() {
             return 0.0;
         }

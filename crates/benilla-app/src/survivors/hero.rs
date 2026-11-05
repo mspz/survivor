@@ -461,9 +461,17 @@ pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engin
     if shield > 0.0
         && run.shield <= 0.0
         && super::talent_runtime::active(run, super::talent_design::Mechanic::Shieldburst)
+        && run.legendary.events.shield_origin == super::items::legendary::events::Origin::Skill
     {
         run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
+    run.taken_meter.record_hit(
+        run.taken_source,
+        run.elapsed,
+        dmg.min(run.hp.max(0.0)),
+        false,
+        tags.contains(super::spell_engine::Tags::DOT),
+    );
     run.hp -= dmg;
     super::items::legendary::events::hurt(run, run.hp + dmg, absorbed, dmg);
     dmg
@@ -512,6 +520,7 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
 /// The clock, regeneration, the timed buffs and their visuals, death and victory.
 pub(super) fn hero_vitals(
     time: Res<Time>,
+    mut credits: Option<ResMut<Messages<super::healing::Credit>>>,
     mut run: ResMut<Run>,
     mut next: ResMut<NextState<Phase>>,
     mut hero: Query<(Entity, &Guid, &mut ObjectStore, &mut Marks), With<Hero>>,
@@ -553,8 +562,31 @@ pub(super) fn hero_vitals(
     let heal = (stats.regen + super::items::legendary::events::regeneration(&run)) * dt;
     if run.heal_t > 0.0 {
         let amount = run.heal_rate * dt.min(run.heal_t);
-        super::items::legendary::events::active_heal(&mut run, amount);
+        if let Some((owner, skill)) = run.heal_credit {
+            let amount = if run.heal_triggered {
+                run.recover(amount)
+            } else {
+                super::items::legendary::events::receive_active_heal(&mut run, amount)
+            };
+            if let Some(credits) = credits.as_mut() {
+                credits.write(super::healing::Credit {
+                    owner,
+                    skill,
+                    amount,
+                });
+            }
+        } else {
+            if run.heal_triggered {
+                run.heal(amount);
+            } else {
+                super::items::legendary::events::active_heal(&mut run, amount);
+            }
+        }
         run.heal_t = (run.heal_t - dt).max(0.0);
+        if run.heal_t <= 0.0 {
+            run.heal_credit = None;
+            run.heal_triggered = false;
+        }
     }
     run.heal(heal);
     store.0.merge_diff(
@@ -641,6 +673,34 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::window::{CursorLeft, WindowFocused};
+
+    #[test]
+    fn meters_count_effective_healing_and_damage_after_shields_without_overkill() {
+        let mut run = Run {
+            hp: 10.0,
+            elapsed: 5.0,
+            ..default()
+        };
+        let healed = run.heal(10000.0);
+        assert_eq!(run.heal(10000.0), 0.0);
+        assert_eq!(
+            run.healing_meter
+                .rows(5.0)
+                .iter()
+                .map(|r| r.total)
+                .sum::<f64>(),
+            f64::from(healed)
+        );
+        run.hp = 20.0;
+        run.shield = 10.0;
+        run.shield_t = 5.0;
+        run.immune_t = 1.0;
+        hurt_hero_tagged(&mut run, 1000.0, super::super::spell_engine::Tags::FIRE);
+        assert!(run.taken_meter.rows(5.0).is_empty());
+        run.immune_t = 0.0;
+        hurt_hero_tagged(&mut run, 1000.0, super::super::spell_engine::Tags::FIRE);
+        assert_eq!(run.taken_meter.rows(5.0)[0].total, 20.0);
+    }
 
     #[test]
     fn reward_selection_protects_host_and_guests_until_the_last_choice() {

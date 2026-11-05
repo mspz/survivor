@@ -2,7 +2,7 @@
 use super::*;
 use crate::survivors::{abilities::Hit, data, enemies::Enemy, spell_engine::Resolved, units::flat};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(in crate::survivors) enum Origin {
     #[default]
     Skill,
@@ -19,6 +19,7 @@ pub(in crate::survivors) enum Shape {
 }
 #[derive(Clone)]
 pub(in crate::survivors) struct Payload {
+    pub parent: u64,
     pub unique: u16,
     pub at: f32,
     pub pos: Vec3,
@@ -119,6 +120,14 @@ pub(in crate::survivors) fn queue(
     if run.legendary.events.queue.len() >= 256 {
         return;
     }
+    if !crate::survivors::procs::ready_effect(
+        run,
+        "legendary_proc",
+        Some(unique),
+        Tags::SPELL | Tags::DAMAGE | school,
+    ) {
+        return;
+    }
     if run.legendary.has(70) {
         school = Tags::SHADOW;
     }
@@ -194,7 +203,13 @@ pub(in crate::survivors) fn queue(
     } else {
         0.0
     };
+    let parent = if run.proc_runtime.parent == 0 {
+        crate::survivors::procs::fresh(run)
+    } else {
+        run.proc_runtime.parent
+    };
     run.legendary.events.queue.push(Payload {
+        parent,
         unique,
         at: run.elapsed + delay,
         pos,
@@ -207,8 +222,13 @@ pub(in crate::survivors) fn queue(
         duration: if converted { 3.0 } else { 0.0 },
     });
 }
+fn ready(run: &mut Run, id: u16, base: f32) -> bool {
+    let cd =
+        crate::survivors::procs::cooldown(run, "legendary_proc", Tags::SPELL | Tags::DAMAGE, base);
+    run.legendary.events.ready(id, run.elapsed, cd)
+}
 fn arm(run: &mut Run, id: u16, duration: f32, cooldown: f32) {
-    if run.legendary.has(id) && run.legendary.events.ready(id, run.elapsed, cooldown) {
+    if run.legendary.has(id) && ready(run, id, cooldown) {
         run.legendary
             .events
             .buffs
@@ -270,6 +290,7 @@ pub(in crate::survivors) fn cast(
     if repeated {
         return;
     }
+    crate::survivors::procs::parent(run, p.cast_id);
     super::effects::cast(run, def, p, primary, repeated);
     let now = run.elapsed;
     let pos = primary.map_or(run.legendary.events.position, |p| p.1);
@@ -302,7 +323,7 @@ pub(in crate::survivors) fn cast(
     if run.legendary.has(328) && tags.contains(Tags::DAMAGE) {
         run.legendary.events.names.retain(|_, at| now - *at <= 6.0);
         run.legendary.events.names.insert(def.key, now);
-        if run.legendary.events.names.len() >= 3 && run.legendary.events.ready(328, now, 8.0) {
+        if run.legendary.events.names.len() >= 3 && ready(run, 328, 8.0) {
             run.legendary.events.buffs.insert(328, now + 4.0);
             run.legendary.events.names.clear();
         }
@@ -353,6 +374,7 @@ pub(in crate::survivors) fn cast(
             0.0,
         );
     }
+    run.proc_runtime.parent = 0;
 }
 /// Primary hit counters are keyed by the successful activation, never by volley size.
 pub(in crate::survivors) fn hit(
@@ -365,11 +387,11 @@ pub(in crate::survivors) fn hit(
     newly_rooted: bool,
     rng: &mut Rng,
 ) {
-    if matches!(h.origin, Origin::Legendary | Origin::Item) || h.triggered {
+    if !h.can_proc() {
         return;
     }
     let now = run.elapsed;
-    if newly_rooted && run.legendary.has(318) && run.legendary.events.ready(318, now, 3.0) {
+    if newly_rooted && run.legendary.has(318) && ready(run, 318, 3.0) {
         queue(
             run,
             318,
@@ -385,11 +407,7 @@ pub(in crate::survivors) fn hit(
     if effective <= 0.0 {
         return;
     }
-    if run.legendary.has(312)
-        && h.crit
-        && rng.f32() < 0.25
-        && run.legendary.events.ready(312, now, 2.0)
-    {
+    if run.legendary.has(312) && h.crit && rng.f32() < 0.25 && ready(run, 312, 2.0) {
         queue(
             run,
             312,
@@ -430,7 +448,7 @@ pub(in crate::survivors) fn hit(
             .schools
             .retain(|_, at| now - *at <= 8.0);
         run.legendary.events.schools.insert(school(tags), now);
-        if run.legendary.events.schools.len() >= 3 && run.legendary.events.ready(319, now, 6.0) {
+        if run.legendary.events.schools.len() >= 3 && ready(run, 319, 6.0) {
             run.legendary.events.schools.clear();
             queue(
                 run,
@@ -451,7 +469,7 @@ pub(in crate::survivors) fn hit(
         && tags.contains(Tags::AREA)
         && run.legendary.events.first(320, h.cast_id, now)
         && rng.f32() < 0.15
-        && run.legendary.events.ready(320, now, 3.0)
+        && ready(run, 320, 3.0)
     {
         queue(
             run,
@@ -465,7 +483,7 @@ pub(in crate::survivors) fn hit(
             1.0,
         );
     }
-    if run.legendary.has(323) && full && run.legendary.events.ready(323, now, 2.0) {
+    if run.legendary.has(323) && full && ready(run, 323, 2.0) {
         let index = run.legendary.events.queue.len();
         queue(
             run,
@@ -536,7 +554,7 @@ pub(in crate::survivors) fn dot_applied(
     origin: Origin,
     other_school: bool,
 ) {
-    if matches!(origin, Origin::Legendary | Origin::Item) || !run.legendary.has(334) {
+    if origin != Origin::Skill || !run.legendary.has(334) {
         return;
     }
     if other_school {
@@ -544,10 +562,10 @@ pub(in crate::survivors) fn dot_applied(
     }
 }
 pub(in crate::survivors) fn expired(run: &mut Run, pos: Vec3, origin: Origin) {
-    if matches!(origin, Origin::Legendary | Origin::Item) {
+    if origin != Origin::Skill {
         return;
     }
-    if run.legendary.has(314) && run.legendary.events.ready(314, run.elapsed, 4.0) {
+    if run.legendary.has(314) && ready(run, 314, 4.0) {
         queue(
             run,
             314,
@@ -573,10 +591,7 @@ pub(in crate::survivors) fn killed(
     if origin != Origin::Skill {
         return;
     }
-    if run.legendary.has(313)
-        && rng.f32() < 0.3
-        && run.legendary.events.ready(313, run.elapsed, 2.0)
-    {
+    if run.legendary.has(313) && rng.f32() < 0.3 && ready(run, 313, 2.0) {
         queue(
             run,
             313,
@@ -589,10 +604,7 @@ pub(in crate::survivors) fn killed(
             0.6,
         );
     }
-    if run.legendary.has(325)
-        && run.hp < run.stats().max_hp * 0.35
-        && run.legendary.events.ready(325, run.elapsed, 5.0)
-    {
+    if run.legendary.has(325) && run.hp < run.stats().max_hp * 0.35 && ready(run, 325, 5.0) {
         queue(
             run,
             325,
@@ -607,7 +619,7 @@ pub(in crate::survivors) fn killed(
     }
 }
 pub(in crate::survivors) fn blocked(run: &mut Run) {
-    if run.legendary.has(315) && run.legendary.events.ready(315, run.elapsed, 3.0) {
+    if run.legendary.has(315) && ready(run, 315, 3.0) {
         queue(
             run,
             315,
@@ -636,10 +648,7 @@ pub(in crate::survivors) fn hurt(run: &mut Run, before: f32, absorbed: f32, take
     if before > max * 0.35 && run.hp < max * 0.35 {
         arm(run, 331, 3.0, 20.0);
     }
-    if taken > max * 0.15
-        && run.legendary.has(337)
-        && run.legendary.events.ready(337, run.elapsed, 15.0)
-    {
+    if taken > max * 0.15 && run.legendary.has(337) && ready(run, 337, 15.0) {
         run.mobile.vanish_t = run.mobile.vanish_t.max(1.0);
     }
     // Deterministic stream lives on the run, separate from the global damage-roll stream.
@@ -653,10 +662,7 @@ pub(in crate::survivors) fn hurt(run: &mut Run, before: f32, absorbed: f32, take
     random ^= random >> 27;
     run.legendary.events.random = random;
     let roll = (random.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32;
-    if run.legendary.has(316)
-        && roll < u32::MAX / 4
-        && run.legendary.events.ready(316, run.elapsed, 3.0)
-    {
+    if run.legendary.has(316) && roll < u32::MAX / 4 && ready(run, 316, 3.0) {
         if let Some(attacker) = run.legendary.events.attacker {
             queue(
                 run,
@@ -677,7 +683,7 @@ pub(in crate::survivors) fn shield_expired(run: &mut Run, remaining: f32) {
     if remaining <= 0.0 || run.legendary.events.shield_origin != Origin::Skill {
         return;
     }
-    if run.legendary.has(321) && run.legendary.events.ready(321, run.elapsed, 5.0) {
+    if run.legendary.has(321) && ready(run, 321, 5.0) {
         queue(
             run,
             321,
@@ -693,7 +699,7 @@ pub(in crate::survivors) fn shield_expired(run: &mut Run, remaining: f32) {
 }
 pub(in crate::survivors) fn mobility(run: &mut Run, pos: Vec3) {
     run.legendary.events.position = pos;
-    if run.legendary.has(322) && run.legendary.events.ready(322, run.elapsed, 10.0) {
+    if run.legendary.has(322) && ready(run, 322, 10.0) {
         queue(
             run,
             322,
@@ -707,7 +713,7 @@ pub(in crate::survivors) fn mobility(run: &mut Run, pos: Vec3) {
         );
     }
     if run.shield <= 0.0 || run.shield_t <= 0.0 {
-        if run.legendary.has(330) && run.legendary.events.ready(330, run.elapsed, 10.0) {
+        if run.legendary.has(330) && ready(run, 330, 10.0) {
             run.shield = run.stats().max_hp * 0.15;
             run.shield_t = 3.0;
             run.legendary.events.shield_origin = Origin::Legendary;
@@ -748,11 +754,17 @@ pub(in crate::survivors) fn walk(run: &mut Run, from: Vec3, to: Vec3, dt: f32) {
     run.legendary.events.moving = moving;
 }
 pub(in crate::survivors) fn active_heal(run: &mut Run, amount: f32) -> f32 {
+    let healed = receive_active_heal(run, amount);
+    run.healing_meter
+        .record_hit("self_healing", run.elapsed, healed, false, false);
+    healed
+}
+pub(in crate::survivors) fn receive_active_heal(run: &mut Run, amount: f32) -> f32 {
     if super::effects::active_heal(run, amount) {
         return 0.0;
     }
     let before = run.hp;
-    let healed = run.heal(amount);
+    let healed = run.recover(amount);
     let max = run.stats().max_hp;
     if before < max * 0.8 && run.hp >= max * 0.8 {
         arm(run, 340, 6.0, 10.0);
@@ -949,6 +961,7 @@ pub(in crate::survivors) fn tick(
             let mut hit = Hit::direct(skill, target, p.damage * scale, false);
             hit.owner = owner;
             hit.item_source = Some(p.unique);
+            hit.cast_id = p.parent;
             hit.origin = Origin::Legendary;
             hit.tags = Some(
                 Tags::SPELL
@@ -967,6 +980,7 @@ pub(in crate::survivors) fn tick(
             );
             hit.meter_source = definition(p.unique).map(|d| d.name);
             hit.triggered = true;
+            hit.proc_admitted = true;
             hit.proc_resolved = true;
             hit.proc_chain = u64::MAX;
             hit.dot = p.dot;

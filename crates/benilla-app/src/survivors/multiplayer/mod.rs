@@ -70,6 +70,21 @@ pub(super) fn simulating(
 #[derive(Resource, Default)]
 pub(super) struct GuestActions {
     pub pick: Option<usize>,
+    pub reset_meter: bool,
+}
+
+pub(super) fn reset_meters(run: &mut super::Run, players: Option<&mut Companions>) {
+    fn clear(run: &mut super::Run) {
+        run.meter = default();
+        run.healing_meter = default();
+        run.taken_meter = default();
+    }
+    clear(run);
+    if let Some(players) = players {
+        for player in players.0.values_mut() {
+            clear(&mut player.run);
+        }
+    }
 }
 
 pub(super) mod lobby;
@@ -82,6 +97,7 @@ mod transport;
 
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<Role>()
+        .init_resource::<super::combat_ui::PartyDamage>()
         .init_resource::<GuestActions>()
         .init_resource::<Companions>();
     app.add_plugins(lobby::plugin);

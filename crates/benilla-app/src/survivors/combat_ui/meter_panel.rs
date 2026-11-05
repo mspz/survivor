@@ -1,6 +1,29 @@
 //! Classic framed meter with per-spell combat statistics.
 use super::*;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Tab {
+    #[default]
+    Damage,
+    Healing,
+    Taken,
+    Party,
+}
+#[derive(Component)]
+pub(super) struct TabButton(Tab);
+#[derive(Component)]
+pub(super) struct ResetButton;
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(in crate::survivors) struct PartyRow {
+    pub id: u64,
+    pub name: String,
+    pub class: u8,
+    pub dps: f64,
+    pub total: f64,
+}
+#[derive(Resource, Default)]
+pub(in crate::survivors) struct PartyDamage(pub Vec<PartyRow>);
+
 #[derive(Component)]
 pub(super) struct DetailsRoot;
 #[derive(Component)]
@@ -22,7 +45,41 @@ pub(super) fn interact(
     mut selection: ResMut<Selection>,
     mut rows: Query<(&Interaction, &MeterSkill, &mut BackgroundColor), Changed<Interaction>>,
     panels: Query<&Interaction, Or<(With<MeterRoot>, With<DetailsRoot>)>>,
+    tabs: Query<(&Interaction, &TabButton), Changed<Interaction>>,
+    resets: Query<&Interaction, (With<ResetButton>, Changed<Interaction>)>,
+    mut run: ResMut<Run>,
+    mut players: Option<ResMut<super::super::multiplayer::Companions>>,
+    role: Option<Res<super::super::multiplayer::Role>>,
+    mut actions: Option<ResMut<super::super::multiplayer::GuestActions>>,
+    mut party: Option<ResMut<PartyDamage>>,
 ) {
+    if resets.iter().any(|i| *i == Interaction::Pressed) {
+        if role.as_deref() == Some(&super::super::multiplayer::Role::Guest) {
+            if let Some(actions) = actions.as_deref_mut() {
+                actions.reset_meter = true;
+            }
+        } else {
+            super::super::multiplayer::reset_meters(&mut run, players.as_deref_mut());
+            if let Some(party) = party.as_deref_mut() {
+                for row in &mut party.0 {
+                    row.dps = 0.0;
+                    row.total = 0.0;
+                }
+            }
+        }
+        view.meter_selected = None;
+        view.meter_scroll = 0.0;
+        view.details_scroll = 0.0;
+        selection.ui_captured = true;
+    }
+    for (interaction, tab) in &tabs {
+        if *interaction == Interaction::Pressed {
+            view.meter_tab = tab.0;
+            view.meter_selected = None;
+            view.meter_scroll = 0.0;
+            selection.ui_captured = true;
+        }
+    }
     if panels.iter().any(|i| *i != Interaction::None) {
         selection.ui_captured = true;
     }
@@ -32,7 +89,7 @@ pub(super) fn interact(
         } else {
             Color::srgba(0.18, 0.13, 0.055, 0.95)
         };
-        if *interaction == Interaction::Pressed {
+        if *interaction == Interaction::Pressed && view.meter_tab == Tab::Damage {
             view.meter_selected = Some(skill.0.clone());
             view.details_scroll = 0.0;
             selection.ui_captured = true;
@@ -43,6 +100,144 @@ pub(super) fn interact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bars_keep_cumulative_order_after_dps_expires_and_reset_clears_all_tabs() {
+        let mut run = Run {
+            elapsed: 10.0,
+            ..default()
+        };
+        run.meter.record_hit("fireball", 1.0, 200.0, false, false);
+        run.meter.record_hit("frostbolt", 10.0, 100.0, false, false);
+        run.healing_meter
+            .record_hit("flash_heal", 10.0, 20.0, false, false);
+        run.taken_meter
+            .record_hit("enemy", 10.0, 30.0, false, false);
+        run.damage_done = 300.0;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Phase>()
+            .insert_resource(run)
+            .init_resource::<View>()
+            .init_resource::<Selection>()
+            .insert_resource(hud::HudFont(Handle::default()))
+            .add_systems(Update, (interact, render_meter).chain());
+        app.world_mut()
+            .resource_mut::<NextState<Phase>>()
+            .set(Phase::Playing);
+        app.update();
+        let world = app.world_mut();
+        let list = world
+            .query_filtered::<Entity, With<MeterRows>>()
+            .single(world)
+            .unwrap();
+        let first = world.get::<Children>(list).unwrap()[0];
+        assert_eq!(world.get::<MeterSkill>(first).unwrap().0, "fireball");
+        for (bar, node) in world.query::<(&MeterBar, &Node)>().iter(world) {
+            assert_eq!(
+                node.width,
+                Val::Percent(if bar.0 == "fireball" { 100.0 } else { 50.0 })
+            );
+        }
+        assert!(world.query::<(&MeterValue, &Text)>().iter(world).any(
+            |(value, text)| matches!(value, MeterValue::Dps(k) if k == "fireball")
+                && text.0.parse::<f64>() == Ok(0.0)
+        ));
+        world.resource_mut::<Run>().elapsed = 16.0;
+        app.update();
+        let world = app.world_mut();
+        for (bar, node) in world.query::<(&MeterBar, &Node)>().iter(world) {
+            assert_eq!(
+                node.width,
+                Val::Percent(if bar.0 == "fireball" { 100.0 } else { 50.0 })
+            );
+        }
+        let reset = world
+            .query_filtered::<Entity, With<ResetButton>>()
+            .single(world)
+            .unwrap();
+        world.entity_mut(reset).insert(Interaction::Pressed);
+        app.update();
+        let run = app.world().resource::<Run>();
+        assert!(run.meter.rows(run.elapsed).is_empty());
+        assert!(run.healing_meter.rows(run.elapsed).is_empty());
+        assert!(run.taken_meter.rows(run.elapsed).is_empty());
+        assert_eq!(run.damage_done, 300.0);
+        let world = app.world_mut();
+        assert_eq!(world.query::<&MeterBar>().iter(world).count(), 0);
+    }
+
+    #[test]
+    fn meter_tabs_show_healing_taken_and_one_row_per_party_player() {
+        let mut run = Run {
+            elapsed: 5.0,
+            ..default()
+        };
+        run.healing_meter
+            .record_hit("flash_heal", 5.0, 12.0, false, false);
+        run.taken_meter
+            .record_hit("Riverpaw Mystic", 5.0, 20.0, false, false);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Phase>()
+            .insert_resource(run)
+            .init_resource::<View>()
+            .init_resource::<Selection>()
+            .insert_resource(hud::HudFont(Handle::default()))
+            .insert_resource(PartyDamage(vec![
+                PartyRow {
+                    id: 0,
+                    name: "Alice".into(),
+                    class: 1,
+                    dps: 10.0,
+                    total: 50.0,
+                },
+                PartyRow {
+                    id: 42,
+                    name: "Bob".into(),
+                    class: 5,
+                    dps: 0.0,
+                    total: 0.0,
+                },
+            ]))
+            .add_systems(Update, (interact, render_meter).chain());
+        app.world_mut().resource_mut::<View>().meter = true;
+        app.world_mut()
+            .resource_mut::<NextState<Phase>>()
+            .set(Phase::Playing);
+        app.update();
+        for (tab, expected) in [
+            (Tab::Healing, vec!["flash_heal"]),
+            (Tab::Taken, vec!["Riverpaw Mystic"]),
+            (Tab::Party, vec!["player:0", "player:42"]),
+        ] {
+            let world = app.world_mut();
+            let button = world
+                .query::<(Entity, &TabButton)>()
+                .iter(world)
+                .find(|(_, t)| t.0 == tab)
+                .unwrap()
+                .0;
+            world.entity_mut(button).insert(Interaction::Pressed);
+            app.update();
+            let world = app.world_mut();
+            assert_eq!(world.resource::<View>().meter_tab, tab);
+            let mut keys: Vec<_> = world
+                .query::<&MeterSkill>()
+                .iter(world)
+                .map(|s| s.0.clone())
+                .collect();
+            keys.sort();
+            assert_eq!(keys, expected);
+            assert_eq!(
+                world
+                    .query_filtered::<Entity, With<DetailsRoot>>()
+                    .iter(world)
+                    .count(),
+                0
+            );
+        }
+    }
 
     #[test]
     fn clicking_a_spell_opens_its_details_and_icon_without_losing_the_selected_source() {
@@ -236,23 +431,60 @@ pub(super) fn render_meter(
     mut bars: Query<(&MeterBar, &mut Node)>,
     row_entities: Query<(Entity, &MeterSkill)>,
     mut lists: Query<&mut Children, With<MeterRows>>,
+    party: Option<Res<PartyDamage>>,
 ) {
     let Some(font) = font else {
         return;
     };
     let show = view.meter && *phase.get() != Phase::Menu;
-    let rows = run.meter.rows(run.elapsed);
+    let meter = match view.meter_tab {
+        Tab::Healing => &run.healing_meter,
+        Tab::Taken => &run.taken_meter,
+        _ => &run.meter,
+    };
+    let (rate, noun) = match view.meter_tab {
+        Tab::Healing => ("HPS", "healing"),
+        Tab::Taken => ("DTPS", "damage taken"),
+        _ => ("DPS", "damage"),
+    };
+    let mut rows = meter.rows(run.elapsed);
+    if view.meter_tab == Tab::Party {
+        rows = party
+            .as_deref()
+            .map(|p| {
+                p.0.iter()
+                    .map(|p| meter::Row {
+                        key: format!("player:{}", p.id),
+                        dps: p.dps,
+                        total: p.total,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if rows.is_empty() {
+            rows.push(meter::Row {
+                key: "player:0".into(),
+                dps: run.meter.rows(run.elapsed).iter().map(|r| r.dps).sum(),
+                total: run.meter.rows(run.elapsed).iter().map(|r| r.total).sum(),
+            });
+        }
+    }
+    rows.sort_by(|a, b| b.total.total_cmp(&a.total).then(a.key.cmp(&b.key)));
     let total_dps: f64 = rows.iter().map(|r| r.dps).sum();
     let total_damage: f64 = rows.iter().map(|r| r.total).sum();
-    let maximum = rows.first().map_or(1.0, |r| r.dps.max(1.0));
+    let maximum = rows.first().map_or(1.0, |r| r.total.max(1.0));
     let mut sources: Vec<_> = rows.iter().map(|row| row.key.as_str()).collect();
     sources.sort_unstable();
     let key = format!(
-        "{show} {:?} {:?} {:?} {}",
+        "{show} {:?} {:?} {:?} {} {:?} {:?}",
         phase.get(),
         sources,
         view.meter_selected,
-        run.class.id
+        run.class.id,
+        view.meter_tab,
+        party
+            .as_deref()
+            .map(|p| p.0.iter().map(|p| (&p.name, p.class)).collect::<Vec<_>>())
     );
     if *cache == key {
         if show {
@@ -268,12 +500,12 @@ pub(super) fn render_meter(
                 .unwrap_or_default();
             for (binding, mut text) in &mut values {
                 let value = match binding {
-                    MeterValue::Summary => {
-                        Some(format!("{total_dps:.1} DPS   |   {total_damage:.0} damage"))
-                    }
+                    MeterValue::Summary => Some(format!(
+                        "{total_dps:.1} {rate}   |   {total_damage:.0} {noun}"
+                    )),
                     MeterValue::Damage(key) => rows.iter().find(|r| r.key == *key).map(|r| {
                         format!(
-                            "{:.0} damage   •   {:.1}%",
+                            "{:.0} {noun}   •   {:.1}%",
                             r.total,
                             r.total / total_damage.max(f64::MIN_POSITIVE) * 100.0
                         )
@@ -294,7 +526,7 @@ pub(super) fn render_meter(
             }
             for (binding, mut node) in &mut bars {
                 if let Some(row) = rows.iter().find(|r| r.key == binding.0) {
-                    let width = Val::Percent((row.dps / maximum * 100.0) as f32);
+                    let width = Val::Percent((row.total / maximum * 100.0) as f32);
                     if node.width != width {
                         node.width = width;
                     }
@@ -358,26 +590,79 @@ pub(super) fn render_meter(
                 },
             ))
             .with_children(|header| {
-                header.spawn(text(f, "Damage meter", 14.0, GOLD));
+                header.spawn(text(f, "Combat meter", 14.0, GOLD));
                 button(header, f, Click::CloseMeter, "X", 24.0);
+            });
+            ui.spawn(Node {
+                width: Val::Percent(100.0),
+                column_gap: Val::Px(2.0),
+                flex_wrap: FlexWrap::Wrap,
+                row_gap: Val::Px(2.0),
+                ..default()
+            })
+            .with_children(|tabs| {
+                tabs.spawn((
+                    Button,
+                    ResetButton,
+                    BackgroundColor(Color::srgb(0.20, 0.08, 0.04)),
+                    Node {
+                        padding: UiRect::axes(Val::Px(5.0), Val::Px(4.0)),
+                        ..default()
+                    },
+                ))
+                .with_children(|b| {
+                    b.spawn(text(f, "Reset", 11.0, GOLD));
+                });
+                for (tab, label) in [
+                    (Tab::Damage, "Damage"),
+                    (Tab::Healing, "Healing done"),
+                    (Tab::Taken, "Damage taken"),
+                    (Tab::Party, "Party DPS"),
+                ] {
+                    tabs.spawn((
+                        Button,
+                        TabButton(tab),
+                        BackgroundColor(if view.meter_tab == tab {
+                            Color::srgb(0.28, 0.19, 0.06)
+                        } else {
+                            Color::srgb(0.07, 0.06, 0.045)
+                        }),
+                        Node {
+                            padding: UiRect::axes(Val::Px(5.0), Val::Px(4.0)),
+                            ..default()
+                        },
+                    ))
+                    .with_children(|b| {
+                        b.spawn(text(
+                            f,
+                            label,
+                            11.0,
+                            if view.meter_tab == tab { GOLD } else { GREY },
+                        ));
+                    });
+                }
             });
             ui.spawn((
                 MeterValue::Summary,
                 text(
                     f,
-                    format!("{total_dps:.1} DPS   |   {total_damage:.0} damage"),
+                    format!("{total_dps:.1} {rate}   |   {total_damage:.0} {noun}"),
                     12.0,
                     Color::WHITE,
                 ),
             ));
             ui.spawn(text(
                 f,
-                "DPS: last 5s   •   Click a spell for details",
+                if view.meter_tab == Tab::Damage {
+                    "DPS: last 5s • Click a spell for details"
+                } else {
+                    "Rate: last 5s • Total since last reset"
+                },
                 10.0,
                 GREY,
             ));
             if rows.is_empty() {
-                ui.spawn(text(f, "Waiting for damage...", 13.0, GREY));
+                ui.spawn(text(f, "Waiting for combat...", 13.0, GREY));
             }
             ui.spawn((
                 MeterRows,
@@ -395,7 +680,20 @@ pub(super) fn render_meter(
             ))
             .with_children(|list| {
                 for row in &rows {
-                    let (name, spell) = identity(&run, &row.key, spells.as_deref());
+                    let member = party
+                        .as_deref()
+                        .and_then(|p| p.0.iter().find(|p| row.key == format!("player:{}", p.id)));
+                    let (name, spell) = if view.meter_tab == Tab::Party {
+                        (
+                            member.map_or_else(|| run.class.name.into(), |p| p.name.clone()),
+                            0,
+                        )
+                    } else {
+                        identity(&run, &row.key, spells.as_deref())
+                    };
+                    let color = member
+                        .and_then(|p| data::CLASSES.iter().find(|c| c.id == p.class))
+                        .map_or(run.class.color, |c| c.color);
                     let selected = view.meter_selected.as_deref() == Some(row.key.as_str());
                     list.spawn((
                         Button,
@@ -421,13 +719,13 @@ pub(super) fn render_meter(
                     .with_children(|line| {
                         line.spawn((
                             MeterBar(row.key.clone()),
-                            BackgroundColor(hud::rgb(run.class.color).with_alpha(0.30)),
+                            BackgroundColor(hud::rgb(color).with_alpha(0.30)),
                             bevy::ui::FocusPolicy::Pass,
                             Node {
                                 position_type: PositionType::Absolute,
                                 left: Val::Px(0.0),
                                 top: Val::Px(0.0),
-                                width: Val::Percent((row.dps / maximum * 100.0) as f32),
+                                width: Val::Percent((row.total / maximum * 100.0) as f32),
                                 height: Val::Percent(100.0),
                                 ..default()
                             },
@@ -450,7 +748,7 @@ pub(super) fn render_meter(
                                 text(
                                     f,
                                     format!(
-                                        "{:.0} damage   •   {:.1}%",
+                                        "{:.0} {noun}   •   {:.1}%",
                                         row.total,
                                         row.total / total_damage.max(f64::MIN_POSITIVE) * 100.0
                                     ),
@@ -467,6 +765,9 @@ pub(super) fn render_meter(
                 }
             });
         });
+    if view.meter_tab != Tab::Damage {
+        return;
+    }
     let Some(selected) = view.meter_selected.as_deref() else {
         return;
     };
@@ -510,7 +811,7 @@ pub(super) fn render_meter(
                 ));
                 button(header, f, Click::CloseMeterDetails, "X", 24.0);
             });
-            ui.spawn(text(f, "Effective damage • current expedition", 12.0, GREY));
+            ui.spawn(text(f, "Effective damage • since last reset", 12.0, GREY));
             ui.spawn((
                 DetailsRows,
                 Interaction::default(),

@@ -113,11 +113,12 @@ pub(super) fn impact(missile: Missile, run: &mut Run, fx: &mut Fx) {
         return;
     }
     run.legendary.events.attacker = Some(missile.attacker);
+    run.taken_source = missile.caster.name;
     let damage = hero::hurt_hero_tagged(run, missile.damage, missile.caster.tags);
     run.legendary.events.attacker = None;
     fx.impact(missile.target, missile.caster.spell);
     if damage > 0.0 {
-        fx.number(missile.target, damage, false, COLOR_HURT);
+        fx.number(run.owner, missile.target, damage, false, COLOR_HURT);
     }
 }
 

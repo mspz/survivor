@@ -81,6 +81,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(combat_ui::plugin)
         .add_plugins(unit_frames::plugin)
         .add_plugins(items::plugin)
+        .add_plugins(shared_chest::plugin)
         .add_plugins(runes::plugin)
         .init_resource::<crate::entities::dest_fx::AreaVisualScales>()
         .init_resource::<crate::entities::dest_fx::EchoCasts>()

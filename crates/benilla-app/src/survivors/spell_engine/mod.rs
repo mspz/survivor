@@ -159,6 +159,7 @@ pub struct PeriodicSnapshot {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Resolved {
+    pub triggered: bool,
     pub direct_dot: Option<PeriodicSnapshot>,
     pub dot_tags: Option<Tags>,
     /// Assigned by the authoritative cast adapter; zero denotes a triggered copy.
@@ -300,6 +301,7 @@ pub(super) fn resolve_tagged(
         * (1.0 + area).max(0.0).sqrt())
     .min(100.0);
     Resolved {
+        triggered: false,
         direct_dot: None,
         dot_tags: None,
         cast_id: 0,

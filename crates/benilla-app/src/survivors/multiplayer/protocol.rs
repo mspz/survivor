@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 13;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +59,8 @@ impl Input {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToServer {
+    ResetMeter,
+    Chest(super::super::shared_chest::Request),
     Join { version: u32, profile: Profile },
     Input(Input),
     Pick { offer: u64, index: usize },
@@ -69,6 +71,8 @@ pub enum ToServer {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Unit {
+    #[serde(default)]
+    pub party_player: bool,
     #[serde(default)]
     pub static_pickup: bool,
     pub status: Option<super::super::unit_frames::Status>,
@@ -88,6 +92,8 @@ pub struct Unit {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Effect {
     Number {
+        #[serde(default)]
+        owner: Option<u64>,
         target: u64,
         amount: f32,
         crit: bool,
@@ -112,6 +118,10 @@ pub enum Effect {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stats {
+    #[serde(default)]
+    pub healing_meter: super::super::combat_ui::Meter,
+    #[serde(default)]
+    pub taken_meter: super::super::combat_ui::Meter,
     pub movement_speed: f32,
     pub meter: super::super::combat_ui::Meter,
     pub earned: u64,
@@ -153,6 +163,10 @@ pub enum Choice {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub chest: super::super::shared_chest::Replica,
+    #[serde(default)]
+    pub party: Vec<super::super::combat_ui::PartyRow>,
     pub run_id: u64,
     pub loot: Vec<(u64, String)>,
     pub tick: u64,
@@ -220,6 +234,7 @@ mod tests {
     #[test]
     fn target_status_roundtrips_with_real_health_and_debuff_durations() {
         let unit = Unit {
+            party_player: false,
             static_pickup: true,
             status: Some(super::super::super::unit_frames::Status {
                 name: "Training Boss".into(),

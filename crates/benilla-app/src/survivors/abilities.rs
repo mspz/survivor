@@ -31,6 +31,8 @@ pub(super) struct Hit {
     pub triggered: bool,
     /// Hidden payloads are resolved once before target copies and periodic snapshots.
     pub proc_resolved: bool,
+    /// Its source has already paid the proc recovery delay; landing never pays it again.
+    pub proc_admitted: bool,
     /// Milestones already visited by this hit's proc ancestry; copies retain it.
     pub proc_chain: u64,
     pub target: Entity,
@@ -45,6 +47,11 @@ pub(super) struct Hit {
     pub crit: bool,
     pub color: u32,
 }
+impl Hit {
+    pub(super) fn can_proc(&self) -> bool {
+        !self.triggered && self.origin == Origin::Skill && super::procs::find(self.skill).is_none()
+    }
+}
 
 #[cfg(test)]
 mod spell_engine_integration_tests {
@@ -53,6 +60,124 @@ mod spell_engine_integration_tests {
     use crate::combat_text::CombatTextSpawn;
     use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn proc_rules_only_original_skill_kills_trigger_death_explosions() {
+        for proc_kill in [false, true] {
+            let (mut world, targets) = legendary_world("fireball", 24, &[1.0]);
+            {
+                let mut en = world.get_mut::<Enemy>(targets[0]).unwrap();
+                en.hp = 1.0;
+                en.dots.push(enemies::Dot {
+                    owner: None,
+                    skill: "proc_ignite",
+                    meter_source: None,
+                    item_source: None,
+                    origin: Origin::Talent,
+                    tags: Some(engine::Tags::FIRE | engine::Tags::DOT),
+                    meta: default(),
+                    dps: 10.0,
+                    left: 5.0,
+                    tick: 5.0,
+                });
+            }
+            let mut hit = Hit::direct("fireball", targets[0], 100.0, false);
+            hit.cast_id = 100;
+            if proc_kill {
+                hit.origin = Origin::Talent;
+                hit.triggered = true;
+            }
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            assert!(world.get::<Enemy>(targets[0]).unwrap().dead);
+            assert_eq!(
+                world.resource::<Run>().legendary.events.queue.is_empty(),
+                proc_kill
+            );
+        }
+    }
+
+    #[test]
+    fn proc_rules_periodic_area_keeps_all_victims_in_one_activation() {
+        use super::super::items::legendary::periodic;
+        let (mut world, _) = legendary_world("fireball", 69, &[1.0, 2.0, 3.0]);
+        periodic::field(
+            &mut world.resource_mut::<Run>(),
+            69,
+            Vec3::ZERO,
+            120.0,
+            1.0,
+            engine::Tags::PHYSICAL,
+            false,
+        );
+        world.resource_mut::<Run>().elapsed = 1.0;
+        world.run_system_once(periodic::tick_world).unwrap();
+        assert_eq!(world.resource::<Run>().legendary.events.queue.len(), 1);
+        world.run_system_once(legendary_events::tick).unwrap();
+        let hits: Vec<_> = world.resource_mut::<Messages<Hit>>().drain().collect();
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|hit| hit.damage == 40.0 && !hit.can_proc()));
+    }
+
+    #[test]
+    fn proc_rules_thorns_are_non_recursive_and_share_a_recovery_delay() {
+        let (mut world, targets) = legendary_world("thorns", 1, &[0.1, 0.2]);
+        for target in targets {
+            world
+                .entity_mut(target)
+                .insert(crate::creature_anim::MovementState::default());
+        }
+        benilla_world::world_point::init_world_point_resources(&mut world);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.equipped.clear();
+            run.thorns = 10.0;
+            run.thorns_t = 5.0;
+            run.thorns_spell = data::ability("thorns").spell;
+        }
+        world.run_system_once(enemies::move_enemies).unwrap();
+        let hits: Vec<_> = world.resource_mut::<Messages<Hit>>().drain().collect();
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].can_proc());
+        assert_eq!(hits[0].origin, Origin::Talent);
+    }
+
+    #[test]
+    fn proc_rules_overlapping_explosions_hit_each_enemy_once_per_parent() {
+        let (mut world, targets) = legendary_world("fireball", 1, &[1.0, 2.0, 3.0]);
+        world.resource_mut::<Run>().legendary.equipped.clear();
+        let emit = |world: &mut World, cast: u64| {
+            for _ in 0..5 {
+                for &target in &targets {
+                    let mut h = Hit::direct("fireball", target, 10.0, false);
+                    h.origin = Origin::Legendary;
+                    h.triggered = true;
+                    h.proc_resolved = true;
+                    h.item_source = Some(24);
+                    h.cast_id = cast;
+                    h.tags = Some(engine::Tags::SPELL | engine::Tags::FIRE | engine::Tags::AREA);
+                    world.write_message(h);
+                }
+            }
+        };
+        emit(&mut world, 101);
+        world.run_system_once(apply_hits).unwrap();
+        let first = world.resource::<Run>().damage_done;
+        assert!(first > 0.0);
+        assert_eq!(world.resource::<Run>().meter.rows(0.0).len(), 1);
+        for target in &targets {
+            assert!(world.get::<Enemy>(*target).unwrap().hp >= 990.0);
+        }
+        world.resource_mut::<Messages<Hit>>().clear();
+        world.resource_mut::<Run>().elapsed = 1.0;
+        emit(&mut world, 101);
+        world.run_system_once(apply_hits).unwrap();
+        assert_eq!(world.resource::<Run>().damage_done, first);
+        world.resource_mut::<Messages<Hit>>().clear();
+        emit(&mut world, 102);
+        world.run_system_once(apply_hits).unwrap();
+        assert_eq!(world.resource::<Run>().damage_done, first * 2.0);
+    }
 
     fn legendary_world(
         skill: &'static str,
@@ -72,6 +197,7 @@ mod spell_engine_integration_tests {
         world.init_resource::<Messages<SwingMessage>>();
         world.init_resource::<Messages<CombatTextSpawn>>();
         let mut run = Run {
+            expeditions: super::super::expedition_config::Config::default().without_resistances(),
             balance: super::super::balance::Config::parse("version=1\n[classes]\n[tags]\n")
                 .unwrap(),
             abilities: vec![Owned {
@@ -247,6 +373,11 @@ mod spell_engine_integration_tests {
                     );
                 } else {
                     assert!(target.hp > target.stats().max_hp * 0.9);
+                    assert!(
+                        target.healing_meter.rows(0.0).is_empty(),
+                        "the recipient is not the healer"
+                    );
+                    assert!(world.resource::<Run>().healing_meter.rows(0.0)[0].total > 0.0);
                 }
             }
         }
@@ -317,6 +448,67 @@ mod spell_engine_integration_tests {
             world.run_system_once(apply_hits).unwrap();
             assert!(world.get::<Enemy>(target).unwrap().hp < 1000.0);
         }
+    }
+    #[test]
+    fn periodic_floating_numbers_are_grouped_by_player_instead_of_combining_the_party() {
+        use super::super::multiplayer::{Companion, Companions};
+        let (mut world, targets) = legendary_world("fireball", 286, &[2.0]);
+        world.resource_mut::<Run>().legendary.equipped.clear();
+        world.init_resource::<Messages<units::CombatNumber>>();
+        let entity = world.spawn(Transform::default()).id();
+        let mut players = Companions::default();
+        players.0.insert(
+            42,
+            Companion {
+                entity,
+                run: Run {
+                    owner: Some(42),
+                    ..default()
+                },
+                physics: Hero { vy: 0.0, air: 0.0 },
+                offer: default(),
+                offer_id: 0,
+            },
+        );
+        world.insert_resource(players);
+        for (owner, dps) in [(None, 10.0), (Some(42), 20.0)] {
+            world
+                .get_mut::<Enemy>(targets[0])
+                .unwrap()
+                .dots
+                .push(enemies::Dot {
+                    owner,
+                    skill: "fireball",
+                    meter_source: None,
+                    tags: Some(engine::Tags::FIRE | engine::Tags::DOT),
+                    item_source: None,
+                    origin: Origin::Skill,
+                    meta: default(),
+                    dps,
+                    left: 5.0,
+                    tick: 0.0,
+                });
+        }
+        world.run_system_once(apply_hits).unwrap();
+        let numbers: Vec<_> = world
+            .resource_mut::<Messages<units::CombatNumber>>()
+            .drain()
+            .collect();
+        assert_eq!(numbers.len(), 2);
+        assert_eq!(numbers[0].owner, None);
+        assert_eq!(numbers[1].owner, Some(42));
+        assert!((numbers[1].amount - numbers[0].amount * 2.0).abs() < 0.001);
+        let total: f32 = numbers.iter().map(|n| n.amount).sum();
+        assert!((1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp - total).abs() < 0.001);
+        let local: Vec<_> = world
+            .resource_mut::<Messages<CombatTextSpawn>>()
+            .drain()
+            .collect();
+        assert_eq!(local.len(), 1);
+        assert_eq!(
+            local[0].text,
+            (numbers[0].amount.round() as i64).to_string()
+        );
     }
     #[test]
     fn healer_blessings_cast_at_full_health_buff_allies_and_expire_without_recasting() {
@@ -581,14 +773,16 @@ mod spell_engine_integration_tests {
                 .collect();
             let extras: Vec<_> = wave.iter().filter(|h| h.skill == "fireball").collect();
             assert!(!copies.is_empty());
-            assert!(
+            assert_eq!(
                 !extras.is_empty(),
-                "repeat {ordinal} did not trigger its learned spell"
+                ordinal == 1 || ordinal == 4,
+                "companion proc ICD at repeat {ordinal}"
             );
             for hit in copies {
                 assert!((hit.damage - base * 1.2_f32.powi(ordinal)).abs() < 0.001);
             }
             for hit in extras {
+                assert!(!hit.can_proc());
                 assert!((hit.damage - extra_base).abs() < 0.001);
             }
             assert_eq!(
@@ -735,6 +929,8 @@ mod spell_engine_integration_tests {
         let mut world = World::new();
         world.init_resource::<Time>();
         world.init_resource::<Run>();
+        world.resource_mut::<Run>().expeditions =
+            super::super::expedition_config::Config::default().without_resistances();
         world.init_resource::<Rng>();
         world.init_resource::<PendingHits>();
         world.init_resource::<PlaySeq>();
@@ -1039,6 +1235,8 @@ mod spell_engine_integration_tests {
         let mut world = World::new();
         world.init_resource::<Time>();
         world.init_resource::<Run>();
+        world.resource_mut::<Run>().expeditions =
+            super::super::expedition_config::Config::default().without_resistances();
         world.resource_mut::<Run>().balance =
             super::super::balance::Config::parse("version=1\n[classes]\n[tags]\n").unwrap();
         world.init_resource::<Rng>();
@@ -1224,7 +1422,10 @@ mod spell_engine_integration_tests {
 
         // Attribution must separate milestone damage from the spell used by its visual,
         // including periodic ticks, while still excluding overkill.
-        world.insert_resource(Run::default());
+        world.insert_resource(Run {
+            expeditions: super::super::expedition_config::Config::default().without_resistances(),
+            ..default()
+        });
         world.resource_mut::<Messages<Hit>>().clear();
         let mut targets = Vec::new();
         for id in 4..=6 {
@@ -1284,7 +1485,7 @@ mod spell_engine_integration_tests {
         );
         assert_eq!(run.damage_done, 115.0);
         assert_eq!(rows.iter().map(|r| r.total).sum::<f64>(), 115.0);
-        // Ignite accepts a Fire spell, Fire attack, and a hidden Fire proc alike.
+        // Ignite accepts original Fire damage, with an ICD, but never a hidden Fire proc.
         world.resource_mut::<Messages<Hit>>().clear();
         let mut account = super::super::talents::Account::fresh();
         account.xp = super::super::talents::threshold(60);
@@ -1330,14 +1531,16 @@ mod spell_engine_integration_tests {
             fire_targets.push(target);
         }
         world.run_system_once(apply_hits).unwrap();
-        for target in &fire_targets[..4] {
+        for target in &fire_targets[..1] {
             let dots = &world.get::<Enemy>(*target).unwrap().dots;
             assert_eq!(dots.len(), 1);
             assert_eq!(dots[0].skill, "proc_ignite");
             assert_eq!(dots[0].meter_source, Some("Ignite"));
             assert!(dots[0].dps > 0.0);
         }
-        assert!(world.get::<Enemy>(fire_targets[4]).unwrap().dots.is_empty());
+        for target in &fire_targets[1..] {
+            assert!(world.get::<Enemy>(*target).unwrap().dots.is_empty());
+        }
         // Immortality is not a damage cap: direct hits and DoTs still count in full.
         world.resource_mut::<Messages<Hit>>().clear();
         let mut dummy = enemy(
@@ -1540,6 +1743,7 @@ impl Hit {
             tags: None,
             triggered: false,
             proc_resolved: false,
+            proc_admitted: false,
             direct_dot: None,
             dot_tags: None,
             proc_chain: 0,
@@ -1568,6 +1772,7 @@ pub(super) struct PendingHits(pub Vec<(f32, Hit)>, pub Vec<(f32, Entity, Entity,
 /// A ground spell's area, ticking on whatever stands in it.
 #[derive(Component)]
 pub(super) struct GroundArea {
+    triggered: bool,
     direct_dot: Option<engine::PeriodicSnapshot>,
     cast_id: u64,
     held: Option<f32>,
@@ -1593,6 +1798,8 @@ pub(super) struct GroundArea {
 
 #[derive(Component)]
 pub(super) struct Totem {
+    triggered: bool,
+    cast_id: u64,
     direct_dot: Option<engine::PeriodicSnapshot>,
     tags: engine::Tags,
     owner: Option<u64>,
@@ -1620,13 +1827,18 @@ pub(super) fn hit_for(
         skill: def.key,
         meter_source: None,
         tags: Some(p.tags),
-        triggered: false,
+        triggered: p.triggered,
         proc_resolved: false,
+        proc_admitted: p.triggered,
         direct_dot: p.direct_dot,
         dot_tags: p.dot_tags,
         proc_chain: 0,
         item_source: None,
-        origin: Origin::Skill,
+        origin: if p.triggered {
+            Origin::Talent
+        } else {
+            Origin::Skill
+        },
         cast_id: p.cast_id,
         primary: false,
         target,
@@ -1839,6 +2051,10 @@ pub(super) fn cast_abilities(
             foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
         }
         let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
+        p.triggered = extra;
+        if extra && !super::procs::ready(&mut run, "proc_arcane_companion", p.tags) {
+            continue;
+        }
         if let Some(ordinal) = ordinal {
             super::arcane_repeats::empower(&run, &mut p, ordinal);
         }
@@ -1847,6 +2063,9 @@ pub(super) fn cast_abilities(
         } else {
             run.legendary.events.serial.wrapping_add(1).max(1)
         };
+        if extra {
+            p.cast_id = super::procs::parent(&mut run, 0);
+        }
         let mut primary = None;
         if run.legendary.has(11) && def.key == "chain_lightning" {
             p.recast += 1.0;
@@ -1997,6 +2216,7 @@ pub(super) fn cast_abilities(
                             }
                             let burst = def.duration <= 0.0;
                             commands.entity(area).insert(GroundArea {
+                                triggered: p.triggered,
                                 direct_dot: p.direct_dot,
                                 cast_id: p.cast_id,
                                 held: if run.legendary.has(17)
@@ -2167,8 +2387,11 @@ pub(super) fn cast_abilities(
                     if run.legendary.has(212) && run.legendary.effects.shield_lock > now {
                         continue;
                     }
-                    run.legendary.events.shield_origin = Origin::Skill;
-                    super::talent_runtime::refreshed_shield(&mut run, p.dmg);
+                    if !extra {
+                        super::talent_runtime::refreshed_shield(&mut run, p.dmg);
+                    }
+                    run.legendary.events.shield_origin =
+                        if extra { Origin::Talent } else { Origin::Skill };
                     run.shield = p.dmg;
                     run.shield_t = p.duration;
                     fx.cast(me, def.spell, &[me], None);
@@ -2197,10 +2420,17 @@ pub(super) fn cast_abilities(
                 }
                 Kind::Heal => {
                     let level = run.abilities[i].level;
-                    super::healer_buffs::on_heal_cast(&mut run, original_def, level);
-                    let target = healing.cast(&mut run, me, def, p.dmg, p.duration, p.range);
+                    if !extra {
+                        super::healer_buffs::on_heal_cast(&mut run, original_def, level);
+                    }
+                    let target = if extra {
+                        healing
+                            .cast_with_origin(&mut run, me, def, p.dmg, p.duration, p.range, true)
+                    } else {
+                        healing.cast(&mut run, me, def, p.dmg, p.duration, p.range)
+                    };
                     fx.cast(me, def.spell, &[target], None);
-                    fx.number(target, p.dmg, false, COLOR_HEAL);
+                    fx.number(run.owner, target, p.dmg, false, COLOR_HEAL);
                     true
                 }
                 Kind::Totem => {
@@ -2228,6 +2458,8 @@ pub(super) fn cast_abilities(
                             0.0,
                         );
                         commands.entity(totem).insert(Totem {
+                            triggered: p.triggered,
+                            cast_id: p.cast_id,
                             direct_dot: p.direct_dot,
                             tags: p.tags,
                             owner: run.owner,
@@ -2261,7 +2493,9 @@ pub(super) fn cast_abilities(
                 run.legendary.events.serial = p.cast_id;
             }
             legendary_events::cast(&mut run, def, &p, primary, repeated);
+            run.proc_runtime.parent = p.cast_id;
             super::items::legendary::casting::after_cast(&mut run, def, &p, primary, repeated);
+            run.proc_runtime.parent = 0;
             if ordinal.is_some() {
                 if let Some(other) = super::arcane_repeats::extra_spell(&run, i, p.tags, &mut rng) {
                     casts.push_back((other, None, true));
@@ -2346,6 +2580,7 @@ pub(super) fn tick_areas(
                 pos,
             );
             commands.entity(tile).insert(GroundArea {
+                triggered: area.triggered,
                 direct_dot: area.direct_dot,
                 cast_id: 0,
                 held: None,
@@ -2403,13 +2638,18 @@ pub(super) fn tick_areas(
                     skill: area.skill,
                     meter_source: None,
                     tags: Some(area.tags),
-                    triggered: false,
+                    triggered: area.triggered,
                     proc_resolved: false,
+                    proc_admitted: area.triggered,
                     direct_dot: area.direct_dot,
                     dot_tags: None,
                     proc_chain: 0,
                     item_source: None,
-                    origin: Origin::Skill,
+                    origin: if area.triggered {
+                        Origin::Talent
+                    } else {
+                        Origin::Skill
+                    },
                     cast_id: area.cast_id,
                     primary: Some(f.e) == primary && area.cast_id != 0,
                     target: f.e,
@@ -2424,7 +2664,9 @@ pub(super) fn tick_areas(
                     color: COLOR_SPELL,
                 });
             }
-            area.cast_id = 0;
+            if !area.triggered {
+                area.cast_id = 0;
+            }
             if area.root_once {
                 area.effect = Effect::None;
                 area.root_once = false;
@@ -2500,13 +2742,18 @@ pub(super) fn tick_areas(
                     skill: totem.skill,
                     direct_dot: totem.direct_dot,
                     tags: Some(totem.tags),
-                    triggered: false,
+                    triggered: totem.triggered,
                     proc_resolved: false,
+                    proc_admitted: totem.triggered,
                     dot_tags: None,
                     proc_chain: 0,
                     item_source: None,
-                    origin: Origin::Skill,
-                    cast_id: 0,
+                    origin: if totem.triggered {
+                        Origin::Talent
+                    } else {
+                        Origin::Skill
+                    },
+                    cast_id: if totem.triggered { totem.cast_id } else { 0 },
                     primary: false,
                     color: COLOR_SPELL,
                     ..Hit::direct(totem.skill, f.e, dmg, crit)
@@ -2536,6 +2783,14 @@ pub(super) fn tick_areas(
                     owner: totem.owner,
                     skill: totem.skill,
                     direct_dot: totem.direct_dot,
+                    triggered: totem.triggered,
+                    proc_admitted: totem.triggered,
+                    origin: if totem.triggered {
+                        Origin::Talent
+                    } else {
+                        Origin::Skill
+                    },
+                    cast_id: if totem.triggered { totem.cast_id } else { 0 },
                     tags: Some(totem.tags),
                     color: COLOR_SPELL,
                     ..Hit::direct(totem.skill, f.e, dmg, crit)
@@ -2736,7 +2991,7 @@ pub(super) fn apply_hits(
     }
     // Splash reaches the target's neighbours at seventy percent.
     let mut all = Vec::with_capacity(prepared.len());
-    for h in prepared {
+    for mut h in prepared {
         // The echo keeps the original target and splash profile, rather than recording
         // separate echoes on the neighbours hit by the first explosion.
         if h.proc_chain == u64::MAX
@@ -2745,7 +3000,7 @@ pub(super) fn apply_hits(
         {
             continue;
         }
-        if !h.triggered && (h.damage > 0.0 || h.direct_dot.is_some()) && h.skill == "fireball" {
+        if h.can_proc() && (h.damage > 0.0 || h.direct_dot.is_some()) && h.skill == "fireball" {
             if let Some(player) =
                 super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
             {
@@ -2760,6 +3015,11 @@ pub(super) fn apply_hits(
             }
         }
         if h.splash > 0.0 {
+            h.tags = Some(
+                h.tags
+                    .unwrap_or_else(|| engine::tags::for_spell(data::ability(h.skill)))
+                    | engine::Tags::AREA,
+            );
             if let Ok((_, _, center, ..)) = enemies.get(h.target) {
                 let c = center.translation;
                 for (e, _, tf, en, ..) in enemies.iter() {
@@ -2789,8 +3049,8 @@ pub(super) fn apply_hits(
                     pos: Vec3,
                     en: &mut Enemy,
                     origin: Origin| {
-        super::items::legendary::periodic::death(run, e, en, pos);
-        if origin != Origin::Legendary {
+        if origin == Origin::Skill {
+            super::items::legendary::periodic::death(run, e, en, pos);
             super::talent_runtime::on_death(run, en, pos);
         }
         en.dead = true;
@@ -2805,7 +3065,7 @@ pub(super) fn apply_hits(
         });
         run.kills += 1;
         super::talents::penalize_kill(run, en.def.level);
-        if origin != Origin::Legendary {
+        if origin == Origin::Skill {
             run.heal(run.equipment.life_on_kill);
         }
         if en.boss {
@@ -2820,6 +3080,23 @@ pub(super) fn apply_hits(
         else {
             continue;
         };
+        if !h.can_proc() {
+            let tags = h
+                .tags
+                .unwrap_or_else(|| engine::tags::for_spell(data::ability(h.skill)));
+            if !super::procs::admit(
+                run,
+                &h,
+                tags.intersects(engine::Tags::AREA | engine::Tags::CHAIN),
+            ) {
+                continue;
+            }
+            // Even legacy producers that only set `triggered` retain a proc origin in DoTs/kills.
+            if h.origin == Origin::Skill {
+                h.origin = Origin::Talent;
+            }
+        }
+        super::procs::parent(run, h.cast_id);
         let Ok((e, guid, mut tf, mut en, mut store, mut marks)) = enemies.get_mut(h.target) else {
             continue;
         };
@@ -2846,7 +3123,7 @@ pub(super) fn apply_hits(
             en.boss,
             super::training::actor(en.def),
         );
-        if h.origin == Origin::Legendary {
+        if !h.can_proc() {
             mods.leech = 0.0;
             mods.bleed = 0.0;
             mods.ignite = 0.0;
@@ -2879,7 +3156,7 @@ pub(super) fn apply_hits(
                 dmg.min(en.hp.max(0.0))
             };
             dealt_effective = effective;
-            if h.origin != Origin::Legendary {
+            if h.can_proc() {
                 super::talent_runtime::periodic_leech(run, tags, effective);
             }
             let now = run.elapsed;
@@ -2896,8 +3173,8 @@ pub(super) fn apply_hits(
                 en.hp -= dmg;
             }
             run.damage_done += f64::from(effective);
-            fx.number(e, dmg, h.crit, h.color);
-            if h.origin != Origin::Legendary {
+            fx.number(h.owner, e, dmg, h.crit, h.color);
+            if h.can_proc() {
                 if let Effect::Drain(frac) = h.effect {
                     if !(run.legendary.has(310) && h.skill == "death_coil") || h.primary {
                         run.heal(effective * frac);
@@ -2905,13 +3182,13 @@ pub(super) fn apply_hits(
                 }
             }
             super::items::combat::leech(run, effective * mods.leech);
-            if !h.triggered {
+            if h.can_proc() {
                 super::items::combat::record_hit_from(run, h.skill, mods.tags, h.cast_id);
             }
             for (chance, factor, seconds, spell) in
                 [(mods.bleed, 0.20, 4.0, 1943), (mods.ignite, 0.25, 3.0, 133)]
             {
-                if en.hp > 0.0 && chance > 0.0 {
+                if h.can_proc() && en.hp > 0.0 && chance > 0.0 {
                     let roll = rng.f32();
                     if roll >= chance.clamp(0.0, 1.0) {
                         continue;
@@ -2924,6 +3201,9 @@ pub(super) fn apply_hits(
                     } else {
                         "proc_ignite"
                     };
+                    if !super::procs::ready(run, key, tags) {
+                        continue;
+                    }
                     let p =
                         super::procs::resolve(run, key, 0.0, h.damage * factor, seconds, 0.0, 1);
                     // New stacks share their effect's next tick, even when the oldest
@@ -2962,7 +3242,10 @@ pub(super) fn apply_hits(
                     fx.impact(e, spell);
                 }
             }
-            if mods.chill > 0.0 && rng.f32() < mods.chill.clamp(0.0, 1.0) {
+            if mods.chill > 0.0
+                && rng.f32() < mods.chill.clamp(0.0, 1.0)
+                && super::procs::ready(run, "proc_chill", engine::Tags::COLD | engine::Tags::SPELL)
+            {
                 en.slow = if en.slow_t > 0.0 {
                     en.slow.min(0.75)
                 } else {
@@ -2975,6 +3258,7 @@ pub(super) fn apply_hits(
                 && !en.boss
                 && mods.knockback > 0.0
                 && rng.f32() < mods.knockback.clamp(0.0, 1.0)
+                && super::procs::ready(run, "proc_knockback", tags)
             {
                 if let Some((hero, _, _)) = hero.iter().find(|(_, owner, local)| {
                     h.owner
@@ -3110,8 +3394,10 @@ pub(super) fn apply_hits(
         let mut dealt = 0.0;
         let immortal = super::training::dummy(&en);
         let mut remaining_hp = en.hp.max(0.0);
+        let mut periodic_numbers = std::collections::BTreeMap::<Option<u64>, f32>::new();
         let mut last_owner = None;
         let mut last_origin = Origin::Skill;
+        let mut last_parent = 0;
         let (max_hp, boss) = (en.max_hp, en.boss);
         let rooted = en.root_t > 0.0;
         let resistance =
@@ -3136,6 +3422,7 @@ pub(super) fn apply_hits(
                 if run.pending_levels > 0 {
                     continue;
                 }
+                d.meta.parent = super::procs::parent(run, d.meta.parent);
                 let tick_damage = super::items::legendary::periodic::tick(
                     run,
                     e,
@@ -3161,6 +3448,7 @@ pub(super) fn apply_hits(
                         * (1.0 - resistance.reduction(tags))
                         * (1.0 - final_reduction);
                 dealt += amount;
+                *periodic_numbers.entry(d.owner).or_default() += amount;
                 let effective = if immortal {
                     amount.max(0.0)
                 } else {
@@ -3178,7 +3466,7 @@ pub(super) fn apply_hits(
                     remaining_hp = (remaining_hp - effective).max(0.0);
                 }
                 run.damage_done += f64::from(effective);
-                if d.origin != Origin::Legendary {
+                if d.origin == Origin::Skill {
                     super::talent_runtime::periodic_leech(run, tags, effective);
                 }
                 if d.origin == Origin::Skill {
@@ -3207,6 +3495,7 @@ pub(super) fn apply_hits(
                 if effective > 0.0 {
                     last_owner = d.owner;
                     last_origin = d.origin;
+                    last_parent = d.meta.parent;
                 }
             }
         }
@@ -3217,11 +3506,16 @@ pub(super) fn apply_hits(
             } else {
                 en.hp -= dealt;
             }
-            fx.number(e, dealt, false, COLOR_SPELL);
+            for (owner, damage) in periodic_numbers {
+                if damage > 0.0 {
+                    fx.number(owner, e, damage, false, COLOR_SPELL);
+                }
+            }
             if en.hp <= 0.0 {
                 if let Some(run) =
                     super::multiplayer::player_run(&mut run, players.as_deref_mut(), last_owner)
                 {
+                    super::procs::parent(run, last_parent);
                     legendary_events::killed(run, e, tf.translation, last_origin, &mut rng);
                     kill(&mut commands, run, e, tf.translation, &mut en, last_origin);
                 }
@@ -3236,6 +3530,7 @@ pub(super) fn apply_hits(
                     super::multiplayer::player_run(&mut run, players.as_deref_mut(), d.owner)
                 {
                     if !d.meta.transferred {
+                        super::procs::parent(player, d.meta.parent);
                         legendary_events::expired(player, tf.translation, d.origin);
                         super::items::legendary::periodic::expired(player, e, d, tf.translation);
                     }
@@ -3243,5 +3538,11 @@ pub(super) fn apply_hits(
             }
         }
         en.dots.retain(|d| d.left > 0.0);
+    }
+    run.proc_runtime.parent = 0;
+    if let Some(players) = players.as_deref_mut() {
+        for player in players.0.values_mut() {
+            player.run.proc_runtime.parent = 0;
+        }
     }
 }

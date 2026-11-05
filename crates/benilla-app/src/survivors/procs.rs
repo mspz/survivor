@@ -8,6 +8,137 @@ use super::{
 };
 pub(super) use view::{views, ViewSpell};
 
+type Key = (
+    &'static str,
+    Option<u16>,
+    Option<&'static str>,
+    super::items::legendary::events::Origin,
+);
+#[derive(Default)]
+pub(super) struct Runtime {
+    pub parent: u64,
+    serial: u64,
+    clean_at: f32,
+    trigger_cooldowns: std::collections::HashMap<Key, f32>,
+    geometry: std::collections::HashMap<(Key, u64), f32>,
+    geometry_clean_at: f32,
+    cooldowns: std::collections::HashMap<Key, f32>,
+    activations: std::collections::HashMap<
+        (Key, u64),
+        (f32, bool, std::collections::HashSet<bevy::prelude::Entity>),
+    >,
+}
+pub(super) fn cooldown(run: &Run, key: &str, tags: Tags, base: f32) -> f32 {
+    let recovery: f32 = run
+        .spell_modifiers
+        .entries()
+        .iter()
+        .filter(|m| m.filter.matches(key, tags))
+        .filter_map(|m| match m.change {
+            spell_engine::Change::IncreasedCooldownRecovery(v) if v.is_finite() => Some(v),
+            _ => None,
+        })
+        .sum();
+    base.max(0.5) * (1.0 - run.stats().haste).max(0.35) / (1.0 + recovery).max(0.05)
+}
+pub(super) fn ready(run: &mut Run, key: &'static str, tags: Tags) -> bool {
+    trigger_ready(run, key, None, find(key).map_or(tags, |s| s.tags))
+}
+pub(super) fn ready_milestone(run: &mut Run, mechanic: M, tags: Tags) -> bool {
+    let key = key(run, mechanic);
+    ready(run, key, tags)
+}
+pub(super) fn ready_effect(
+    run: &mut Run,
+    key: &'static str,
+    item: Option<u16>,
+    tags: Tags,
+) -> bool {
+    let parent = run.proc_runtime.parent;
+    let token = (
+        (
+            key,
+            item,
+            None,
+            super::items::legendary::events::Origin::Talent,
+        ),
+        parent,
+    );
+    if run.elapsed >= run.proc_runtime.geometry_clean_at {
+        let now = run.elapsed;
+        run.proc_runtime.geometry.retain(|_, at| now - *at < 310.0);
+        run.proc_runtime.geometry_clean_at = now + 1.0;
+    }
+    if parent != 0 && run.proc_runtime.geometry.contains_key(&token) {
+        return true;
+    }
+    let ready = trigger_ready(run, key, item, tags);
+    if ready && parent != 0 {
+        run.proc_runtime.geometry.insert(token, run.elapsed);
+    }
+    ready
+}
+fn trigger_ready(run: &mut Run, key: &'static str, item: Option<u16>, tags: Tags) -> bool {
+    let cd = cooldown(run, key, tags, 0.5);
+    let id = (
+        key,
+        item,
+        None,
+        super::items::legendary::events::Origin::Talent,
+    );
+    if run
+        .proc_runtime
+        .trigger_cooldowns
+        .get(&id)
+        .is_some_and(|at| *at > run.elapsed)
+    {
+        return false;
+    }
+    run.proc_runtime
+        .trigger_cooldowns
+        .insert(id, run.elapsed + cd);
+    true
+}
+pub(super) fn fresh(run: &mut Run) -> u64 {
+    run.proc_runtime.serial = run.proc_runtime.serial.wrapping_add(1);
+    (1 << 63) | run.proc_runtime.serial
+}
+pub(super) fn parent(run: &mut Run, cast: u64) -> u64 {
+    let id = if cast != 0 { cast } else { fresh(run) };
+    run.proc_runtime.parent = id;
+    id
+}
+/// Admit an activation once, then keep its target copies together across delayed missiles.
+/// Area copies from the same parent share their victim set, independently of landing time.
+pub(super) fn admit(run: &mut Run, hit: &super::abilities::Hit, area: bool) -> bool {
+    let key = (hit.skill, hit.item_source, hit.meter_source, hit.origin);
+    let cd = cooldown(run, hit.skill, hit.tags.unwrap_or(Tags::DAMAGE), 0.5);
+    let now = run.elapsed;
+    let state = &mut run.proc_runtime;
+    if now >= state.clean_at {
+        state.activations.retain(|_, (at, _, _)| now - *at < 310.0);
+        state.clean_at = now + 1.0;
+    }
+    let parent = if hit.cast_id == 0 {
+        (1 << 62) | (f64::from(now) * 10000.0) as u64
+    } else {
+        hit.cast_id
+    };
+    let token = (key, parent);
+    if !state.activations.contains_key(&token) {
+        let allowed =
+            hit.proc_admitted || state.cooldowns.get(&key).is_none_or(|until| *until <= now);
+        if allowed && !hit.proc_admitted {
+            state.cooldowns.insert(key, now + cd);
+        }
+        state
+            .activations
+            .insert(token, (now, allowed, Default::default()));
+    }
+    let (_, allowed, victims) = state.activations.get_mut(&token).unwrap();
+    *allowed && (!area || victims.insert(hit.target))
+}
+
 pub(super) struct Spell {
     pub def: AbilityDef,
     pub tags: Tags,
@@ -530,6 +661,110 @@ mod tests {
         spell_engine::{Change, Filter, Modifier},
     };
     use super::*;
+
+    #[test]
+    fn proc_rules_keep_cooldowns_per_effect_and_player_and_apply_cdr() {
+        let mut run = run();
+        assert_eq!(
+            cooldown(&run, "proc_fireburst", Tags::FIRE | Tags::SPELL, 0.5),
+            0.5
+        );
+        assert!(ready(&mut run, "proc_fireburst", Tags::FIRE));
+        assert!(!ready(&mut run, "proc_fireburst", Tags::FIRE));
+        assert!(ready(&mut run, "proc_poisonburst", Tags::NATURE));
+        let mut other = Run::default();
+        assert!(ready(&mut other, "proc_fireburst", Tags::FIRE));
+        run.elapsed = 0.499;
+        assert!(!ready(&mut run, "proc_fireburst", Tags::FIRE));
+        run.elapsed = 0.5;
+        assert!(ready(&mut run, "proc_fireburst", Tags::FIRE));
+        add(
+            &mut run,
+            &[(Tags::FIRE, Change::IncreasedCooldownRecovery(1.0))],
+        );
+        assert_eq!(
+            cooldown(&run, "proc_fireburst", Tags::FIRE | Tags::SPELL, 0.5),
+            0.25
+        );
+        assert_eq!(cooldown(&run, "proc_poisonburst", Tags::NATURE, 0.5), 0.5);
+    }
+
+    #[test]
+    fn proc_rules_one_activation_keeps_all_geometry_parts_without_bypassing_new_cast_cooldowns() {
+        let mut run = run();
+        parent(&mut run, 10);
+        assert!(ready_effect(
+            &mut run,
+            "legendary_proc",
+            Some(24),
+            Tags::FIRE
+        ));
+        assert!(ready_effect(
+            &mut run,
+            "legendary_proc",
+            Some(24),
+            Tags::FIRE
+        ));
+        parent(&mut run, 11);
+        assert!(!ready_effect(
+            &mut run,
+            "legendary_proc",
+            Some(24),
+            Tags::FIRE
+        ));
+        run.elapsed = 0.5;
+        assert!(ready_effect(
+            &mut run,
+            "legendary_proc",
+            Some(24),
+            Tags::FIRE
+        ));
+    }
+
+    #[test]
+    fn proc_rules_delayed_impacts_do_not_pay_the_activation_cooldown_twice() {
+        use super::super::{abilities::Hit, items::legendary::events::Origin};
+        use bevy::prelude::Entity;
+        let mut run = run();
+        assert!(ready(&mut run, "proc_fireburst", Tags::FIRE));
+        run.elapsed = 0.5;
+        assert!(ready(&mut run, "proc_fireburst", Tags::FIRE));
+        let mut hit = Hit::direct("proc_fireburst", Entity::from_bits(1), 10.0, false);
+        hit.origin = Origin::Talent;
+        hit.triggered = true;
+        hit.proc_admitted = true;
+        run.elapsed = 1.0;
+        hit.cast_id = 1;
+        assert!(admit(&mut run, &hit, true));
+        run.elapsed = 1.1;
+        hit.cast_id = 2;
+        assert!(admit(&mut run, &hit, true));
+        assert!(!admit(&mut run, &hit, true));
+    }
+
+    #[test]
+    fn proc_rules_aoe_shares_victims_across_delayed_copies_of_one_parent() {
+        use super::super::{abilities::Hit, items::legendary::events::Origin};
+        use bevy::prelude::Entity;
+        let mut run = run();
+        let mut hit = Hit::direct("proc_fireburst", Entity::from_bits(1), 10.0, false);
+        hit.triggered = true;
+        hit.origin = Origin::Talent;
+        hit.cast_id = 10;
+        hit.tags = Some(Tags::FIRE | Tags::SPELL | Tags::AREA);
+        assert!(admit(&mut run, &hit, true));
+        assert!(!admit(&mut run, &hit, true));
+        hit.target = Entity::from_bits(2);
+        assert!(admit(&mut run, &hit, true));
+        run.elapsed = 0.25;
+        hit.cast_id = 11;
+        assert!(!admit(&mut run, &hit, true));
+        run.elapsed = 1.0;
+        hit.cast_id = 10;
+        assert!(!admit(&mut run, &hit, true));
+        hit.cast_id = 12;
+        assert!(admit(&mut run, &hit, true));
+    }
 
     fn run() -> Run {
         Run {

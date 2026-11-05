@@ -166,7 +166,7 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Spirit Totem","Your totem heals for 4% max health per second and its bolts hit 3 enemies.",SpiritTotem)]},
     Design {title:"Arcanes",focus:"Répétition des sorts et résonance magique",filter:T::SPELL,milestones:[
         m!("Arcane Echo","Offensive spells gain 50% repeat chance. Repeated casts cannot repeat again.",None,C::RecastChance(0.50)),
-        m!("Resonant Casting","Each repeated spell also triggers another learned spell, or the source if it is your only spell. This extra cast cannot repeat or trigger another extra cast.",ArcaneCompanion),
+        m!("Resonant Casting","Repeated spells trigger another learned spell, or the source if it is your only spell. 0.5s internal cooldown, reduced by cooldown recovery. This extra cast cannot repeat or trigger any other proc.",ArcaneCompanion),
         m!("Greater Spell Echo","Each successive repeat deals 20% more damage than the previous one: 120%, 144%, 172.8%, 207.36%. The counter resets for each original cast. Copies cannot create new repeats.",ArcaneCascade)]},
     Design {title:"Feu",focus:"Enflammer et prolifération",filter:T::FIRE,milestones:[
         m!("Ignite","Fire hits burn enemies for 25% damage per second for 3 sec.",Ignite,C::IgniteChance(1.0)),

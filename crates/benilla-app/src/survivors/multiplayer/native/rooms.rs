@@ -19,6 +19,12 @@ pub(super) fn close(world: &mut World, network: &mut Network) {
         }
     }
     network.effects.clear();
+    if let Some(mut chest) = world.get_resource_mut::<game::shared_chest::View>() {
+        *chest = game::shared_chest::View::default();
+    }
+    if let Some(mut party) = world.get_resource_mut::<game::combat_ui::PartyDamage>() {
+        party.0.clear();
+    }
     if let Some(mut pick) = world.get_resource_mut::<game::cards::PendingPick>() {
         pick.clear();
     }
@@ -272,9 +278,22 @@ mod tests {
             numbers: default(),
             loot: default(),
         };
+        world.insert_resource(game::combat_ui::PartyDamage(vec![
+            game::combat_ui::PartyRow {
+                id: 42,
+                name: "Guest".into(),
+                class: 1,
+                dps: 20.0,
+                total: 100.0,
+            },
+        ]));
         close(&mut world, &mut network);
         assert_eq!(world.resource::<Run>().account_credited, 41);
         assert!(*world.resource::<Role>() == Role::Solo);
         assert!(!world.resource::<Lobby>().active);
+        assert!(world
+            .resource::<game::combat_ui::PartyDamage>()
+            .0
+            .is_empty());
     }
 }

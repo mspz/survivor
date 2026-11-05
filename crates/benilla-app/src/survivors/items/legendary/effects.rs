@@ -166,6 +166,12 @@ mod tests {
     }
 }
 fn ready(run: &mut Run, id: u16, seconds: f32) -> bool {
+    let seconds = crate::survivors::procs::cooldown(
+        run,
+        "legendary_proc",
+        Tags::SPELL | Tags::DAMAGE,
+        seconds,
+    );
     let now = run.elapsed;
     if run
         .legendary
@@ -1185,6 +1191,9 @@ pub(in crate::survivors) fn hurt(run: &mut Run, taken: f32) {
     }
 }
 pub(in crate::survivors) fn shield_expired(run: &mut Run, remaining: f32, broken: bool) {
+    if run.legendary.events.shield_origin != Origin::Skill {
+        return;
+    }
     if broken && run.legendary.has(212) {
         run.legendary.effects.shield_generation =
             run.legendary.effects.shield_generation.wrapping_add(1);
@@ -1277,6 +1286,7 @@ pub(in crate::survivors) fn tick(
             let amount = std::mem::take(&mut run.legendary.effects.immunity_shield).min(run.shield);
             run.shield -= amount;
             run.heal_rate += amount / 3.0;
+            run.heal_credit = None;
             run.heal_t = run.heal_t.max(3.0);
         }
         for (amount, duration) in std::mem::take(&mut run.legendary.effects.active_heals) {
@@ -1365,6 +1375,7 @@ pub(in crate::survivors) fn tick(
             }
             if duration > 0.0 {
                 run.heal_rate = amount / duration.max(1.0);
+                run.heal_credit = None;
                 run.heal_t = duration;
             } else {
                 events::active_heal(run, amount);
@@ -1404,6 +1415,7 @@ pub(in crate::survivors) fn tick(
         }
     }
     for (source, (pos, amount, radius, percent, nearest)) in heals {
+        let mut healed = 0.0;
         let mut targets = Vec::new();
         for (owner, p) in &positions {
             if flat(*p - pos).length() <= radius
@@ -1433,8 +1445,19 @@ pub(in crate::survivors) fn tick(
                 } else {
                     amount
                 };
-                player.heal(value);
+                healed += player.recover(value);
             }
+        }
+        if let Some(player) =
+            crate::survivors::multiplayer::player_run(&mut run, players.as_deref_mut(), source)
+        {
+            player.healing_meter.record_hit(
+                "legendary_healing",
+                player.elapsed,
+                healed,
+                false,
+                false,
+            );
         }
     }
     for (pos, radius) in pushes {
