@@ -7,7 +7,7 @@ use super::data::{self, AbilityDef, Effect, Kind};
 use super::enemies::{self, Enemy, Loot};
 use super::hero::{self, Hero};
 use super::items::legendary::events::{self as legendary_events, Origin};
-use super::spell_engine::targeting::{around, densest, links, nearest, toughest, Target as Foe};
+use super::spell_engine::targeting::{around, densest, links, nearest, weakest, Target as Foe};
 use super::spell_engine::{self as engine, Resolved as Params};
 use super::units::{self, flat, Fx, Marks, UnitSpec, COLOR_HEAL, COLOR_MELEE, COLOR_SPELL};
 use super::{Rng, Run, RunEntity};
@@ -138,6 +138,40 @@ mod spell_engine_integration_tests {
         (world, targets)
     }
 
+    #[test]
+    fn ranged_spells_prefer_lowest_health_in_range_and_melee_keeps_nearest_target() {
+        for key in [
+            "frostbolt",
+            "pyroblast",
+            "chain_lightning",
+            "shadow_word_pain",
+            "heroic_strike",
+        ] {
+            let (mut world, targets) = legendary_world(key, 286, &[1.0, 3.0, 200.0]);
+            world.resource_mut::<Run>().legendary.equipped.clear();
+            world.get_mut::<Enemy>(targets[1]).unwrap().hp = 50.0;
+            world.get_mut::<Enemy>(targets[2]).unwrap().hp = 1.0;
+            world.run_system_once(cast_abilities).unwrap();
+            let gos = world
+                .resource_mut::<Messages<SpellGoTargets>>()
+                .drain()
+                .collect::<Vec<_>>();
+            if key == "heroic_strike" {
+                let swing = world
+                    .resource_mut::<Messages<SwingMessage>>()
+                    .drain()
+                    .next()
+                    .unwrap();
+                assert_eq!(swing.victim, Some(targets[0]));
+            } else {
+                assert_eq!(
+                    gos.first().unwrap().hits.first(),
+                    Some(&targets[1]),
+                    "{key}"
+                );
+            }
+        }
+    }
     #[test]
     fn healer_blessings_cast_at_full_health_buff_allies_and_expire_without_recasting() {
         use super::super::{
@@ -1649,6 +1683,11 @@ pub(super) fn cast_abilities(
                     .cmp(&rooted(a.e))
                     .then(a.dist.total_cmp(&b.dist))
             });
+        } else if matches!(
+            def.kind,
+            Kind::Bolt | Kind::Strike | Kind::Chain | Kind::Dot
+        ) {
+            foes.sort_by(|a, b| a.hp.total_cmp(&b.hp).then(a.dist.total_cmp(&b.dist)));
         } else {
             foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
         }
@@ -1689,13 +1728,10 @@ pub(super) fn cast_abilities(
                     } else {
                         def.range
                     };
-                    let targets = if matches!(
-                        def.key,
-                        "pyroblast" | "aimed_shot" | "exorcism" | "starfire"
-                    ) {
-                        toughest(&foes, reach, p.count)
-                    } else {
+                    let targets = if def.kind == Kind::Melee {
                         nearest(&foes, reach, p.count)
+                    } else {
+                        weakest(&foes, reach, p.count)
                     };
                     if targets.is_empty() {
                         false
@@ -1866,7 +1902,7 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Chain => {
-                    let targets = nearest(&foes, p.range, 1);
+                    let targets = weakest(&foes, p.range, 1);
                     if targets.is_empty() {
                         false
                     } else {
@@ -1888,19 +1924,10 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Dot => {
-                    let mut pool: Vec<Foe> = foes
-                        .iter()
-                        .filter(|f| f.dist <= def.range)
-                        .take(p.count * 3)
-                        .copied()
-                        .collect();
-                    if pool.is_empty() {
+                    let targets = weakest(&foes, def.range, p.count);
+                    if targets.is_empty() {
                         false
                     } else {
-                        let mut targets = Vec::with_capacity(p.count);
-                        while targets.len() < p.count && !pool.is_empty() {
-                            targets.push(pool.swap_remove(rng.index(pool.len())));
-                        }
                         primary = Some((targets[0].e, targets[0].pos));
                         fx.cast(me, def.spell, &entities(&targets), None);
                         for f in &targets {

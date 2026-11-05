@@ -19,13 +19,17 @@ pub fn nearest(foes: &[Target], range: f32, n: usize) -> Vec<Target> {
         .copied()
         .collect()
 }
-pub fn toughest(foes: &[Target], range: f32, n: usize) -> Vec<Target> {
+pub fn weakest(foes: &[Target], range: f32, n: usize) -> Vec<Target> {
     let mut out: Vec<_> = foes
         .iter()
-        .filter(|f| f.dist <= range + f.radius)
+        .filter(|f| f.hp > 0.0 && f.dist <= range + f.radius)
         .copied()
         .collect();
-    out.sort_by(|a, b| b.hp.total_cmp(&a.hp));
+    out.sort_by(|a, b| {
+        a.hp.total_cmp(&b.hp)
+            .then(a.dist.total_cmp(&b.dist))
+            .then(a.e.to_bits().cmp(&b.e.to_bits()))
+    });
     out.truncate(n.min(MAX_TARGETS));
     out
 }

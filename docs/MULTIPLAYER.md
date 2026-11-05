@@ -82,6 +82,10 @@ concernent tout le groupe. En multijoueur, aucun joueur ne peut mettre la partie
 en pause : menus, inventaire, talents et choix de récompense laissent le combat
 continuer. Le solo conserve sa pause habituelle.
 
+Un personnage ayant des récompenses de niveau à choisir est invulnérable jusqu'à
+la validation du dernier choix. Cette protection est individuelle, gérée par
+l'hôte pour chaque joueur, et ne consomme ni bouclier ni charge de blocage.
+
 Chaque joueur ouvre et modifie ses propres options. Les mises à jour de l'hôte
 ne referment pas ses menus et ne remplacent pas ses préférences. Les nombres
 de dégâts, de soins et de coups critiques sont transmis aux invités ; chacun

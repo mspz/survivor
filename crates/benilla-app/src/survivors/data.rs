@@ -22,9 +22,9 @@ pub(crate) struct ClassDef {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Kind {
-    /// A missile at the nearest enemies (or instant if the spell has no speed).
+    /// A missile at the lowest-health enemies in range (or instant without missile speed).
     Bolt,
-    /// An instant hit on the nearest enemies in range.
+    /// An instant hit on the lowest-health enemies in range.
     Strike,
     /// A close hit on the nearest enemies in melee reach.
     Melee,

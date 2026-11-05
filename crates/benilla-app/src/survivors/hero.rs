@@ -442,7 +442,7 @@ pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
 
 /// Both hits and periodic ticks retain their damage school's tags.
 pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engine::Tags) -> f32 {
-    if run.immune_t > 0.0 || run.dead_t.is_some() {
+    if run.pending_levels > 0 || run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
     let shield = if run.shield_t > 0.0 { run.shield } else { 0.0 };
@@ -471,6 +471,10 @@ pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engin
 
 /// Shields block an incoming melee blow before armour or absorption is consumed.
 pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
+    // Reward selection protects each player's own run, including guests on the host.
+    if run.pending_levels > 0 {
+        return 0.0;
+    }
     if raw > 0.0
         && roll < (run.equipment.block + super::talent_runtime::block_chance(run)).clamp(0.0, 0.75)
     {
@@ -575,7 +579,7 @@ pub(super) fn hero_vitals(
     if run.shield_t > 0.0 && run.shield > 0.0 {
         shown.push(17);
     }
-    if run.immune_t > 0.0 {
+    if run.immune_t > 0.0 || run.pending_levels > 0 {
         shown.push(642);
     }
     if run.thorns_t > 0.0 {
@@ -637,6 +641,41 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::window::{CursorLeft, WindowFocused};
+
+    #[test]
+    fn reward_selection_protects_host_and_guests_until_the_last_choice() {
+        use crate::survivors::{hud, spell_engine::Tags, Rng};
+        for owner in [None, Some(42)] {
+            let mut run = Run {
+                owner,
+                hp: 100.0,
+                shield: 20.0,
+                shield_t: 10.0,
+                pending_levels: 2,
+                ..default()
+            };
+            run.equipment.block = 1.0;
+            let mut offer = hud::Offer::default();
+            let mut rng = Rng(42);
+            let mut next = NextState::<Phase>::Unchanged;
+            for remaining in [2, 1] {
+                assert_eq!(run.pending_levels, remaining);
+                let hp = run.hp;
+                assert_eq!(
+                    hurt_hero_tagged(&mut run, 1000.0, Tags::FIRE | Tags::DOT),
+                    0.0
+                );
+                assert_eq!(hurt_hero_with_block(&mut run, 1000.0, 0.0), 0.0);
+                assert_eq!(run.hp, hp);
+                assert_eq!(run.shield, 20.0);
+                assert!(!run.talent_runtime.blocked);
+                offer.choices = vec![hud::Choice::Heal];
+                hud::pick(0, &mut run, &mut offer, &mut rng, &mut next);
+            }
+            assert_eq!(run.pending_levels, 0);
+            assert!(hurt_hero_tagged(&mut run, 30.0, Tags::FIRE) > 0.0);
+        }
+    }
 
     fn held_left() -> World {
         let mut world = World::new();

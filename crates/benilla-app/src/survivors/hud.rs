@@ -2103,7 +2103,10 @@ pub(super) fn toggle_training_spells(
             TipFor::Ability(index) if *interaction != Interaction::None => Some(*index),
             _ => None,
         });
-        if let Some(key) = hovered.and_then(|i| run.abilities.get(i)).map(|o| o.def.key) {
+        if let Some(key) = hovered
+            .and_then(|i| run.abilities.get(i))
+            .map(|o| o.def.key)
+        {
             let enabled = !run.disabled_spells.insert(key);
             if enabled {
                 run.disabled_spells.remove(key);
@@ -2337,15 +2340,12 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
     let burst = def.duration <= 0.0;
     let mut s = match def.kind {
         Kind::Bolt | Kind::Strike | Kind::Melee => {
-            let toughest = matches!(def.key, "pyroblast" | "aimed_shot" | "exorcism" | "starfire");
             let melee = def.kind == Kind::Melee;
-            let who = match (toughest, melee, c.count) {
-                (true, _, 1) => "the toughest enemy in range".to_string(),
-                (true, _, n) => format!("the {n} toughest enemies in range"),
-                (false, true, 1) => "the closest enemy".into(),
-                (false, true, n) => format!("the {n} closest enemies"),
-                (false, false, 1) => "the nearest enemy".into(),
-                (false, false, n) => format!("the {n} nearest enemies"),
+            let who = match (melee, c.count) {
+                (true, 1) => "the closest enemy".into(),
+                (true, n) => format!("the {n} closest enemies"),
+                (false, 1) => "the enemy with the lowest remaining health in range".into(),
+                (false, n) => format!("the {n} enemies with the lowest remaining health in range"),
             };
             let mut s = format!("{} {who} for {d} damage", if melee { "Strikes" } else { "Hits" });
             if c.radius > 0.0 && !melee {
@@ -2368,12 +2368,12 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
             }
         }
         Kind::Chain => format!(
-            "Strikes the nearest enemy for {d} damage, then jumps to {} more within {} yd of each other, 15% weaker with every jump",
+            "Strikes the enemy with the lowest remaining health in range for {d} damage, then jumps to {} more within {} yd of each other, 15% weaker with every jump",
             c.count,
             num(c.radius)
         ),
         Kind::Dot => format!(
-            "Afflicts {} enemies in range with {} damage every second for {} sec",
+            "Afflicts the {} enemies with the lowest remaining health in range with {} damage every second for {} sec",
             c.count,
             num(c.dot),
             num(c.duration)
