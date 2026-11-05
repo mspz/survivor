@@ -86,10 +86,14 @@ fn input(
         inventory.apply(&mut run);
     }
 }
-pub(super) fn icon(ui: &mut ChildSpawnerCommands, item: &Item, size: f32) {
+pub(super) fn icon(ui: &mut ChildSpawnerCommands, item: &Item, size: f32, usable: bool) {
     ui.spawn((
         ImageNode::default(),
-        hud::UiArt::item(&item.icon),
+        if usable {
+            hud::UiArt::item(&item.icon)
+        } else {
+            hud::UiArt::item_grey(&item.icon)
+        },
         Node {
             width: Val::Px(size),
             height: Val::Px(size),
@@ -116,7 +120,7 @@ pub(super) fn equipped(ui: &mut ChildSpawnerCommands, item: &Item, slot: &'stati
             ..default()
         },
     ))
-    .with_children(|b| icon(b, item, 32.0));
+    .with_children(|b| icon(b, item, 32.0, true));
 }
 fn action(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, label: &str, click: Action) {
     skin::button(

@@ -733,6 +733,7 @@ pub(super) fn attach_spell_fx(
     ibps: Res<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     mut palettes: ResMut<benilla_world::rig_palette::RigPalettes>,
     mut emitters: Query<&mut benilla_world::particles::ParticleEmitter>,
+    scales: Option<Res<super::dest_fx::AreaVisualScales>>,
 ) {
     let Some(mut fx) = fx else {
         return;
@@ -806,12 +807,17 @@ pub(super) fn attach_spell_fx(
             }
             // Ground-anchored: a world plant, or an instance on the base point (`0x13`) or the unit
             // root. A chest-anchored one keeps its flat quads as geometry (`ProtectionFrom*`).
+            // A nova's ring lies on the ground around the caster: it grows with the area. A hand or
+            // chest flash keeps its size.
+            let area_scale = scales.as_ref().map_or(1.0, |s| s.get(unit, inst.spell_id));
             let (root, ground_anchor) = if planted {
                 let follow =
                     inst.persistent && spell_has_root_aura(spells.as_deref(), inst.spell_id);
+                let mut plant = world_plant_transform(unit_gt);
+                plant.scale *= area_scale;
                 let root = commands
                     .spawn((
-                        world_plant_transform(unit_gt),
+                        plant,
                         Visibility::default(),
                         WorldPlantFx {
                             owner: unit,
@@ -836,8 +842,12 @@ pub(super) fn attach_spell_fx(
                 });
                 let ground_anchor = point.is_none_or(|(tag, ..)| tag == 0x13);
                 let (parent, offset) = point.map_or((unit, Vec3::ZERO), |(_, j, o)| (j, o));
+                let scale = if ground_anchor { area_scale } else { 1.0 };
                 let root = commands
-                    .spawn((Transform::from_translation(offset), Visibility::default()))
+                    .spawn((
+                        Transform::from_translation(offset).with_scale(Vec3::splat(scale)),
+                        Visibility::default(),
+                    ))
                     // Chain-only, as above.
                     .vis_chain_only()
                     .id();

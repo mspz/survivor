@@ -241,20 +241,10 @@ impl Item {
                 .iter()
                 .filter(|a| a.effect.primary() == primary)
             {
-                lines.push((
-                    affix.description(),
-                    if primary {
-                        Color::WHITE
-                    } else {
-                        Color::srgb(0.0, 1.0, 0.0)
-                    },
-                ));
+                lines.push((affix.description(), Color::WHITE));
             }
         }
-        if !SLOTS
-            .iter()
-            .any(|(_, slot)| inventory.can_equip(self, *slot))
-        {
+        if !inventory.equippable(self) {
             lines.push((
                 "Cannot equip this item".into(),
                 Color::srgb(1.0, 0.15, 0.15),

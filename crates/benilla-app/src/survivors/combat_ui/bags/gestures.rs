@@ -189,7 +189,10 @@ fn ghost(
                         ..default()
                     },
                 ))
-                .with_children(|ui| icon(ui, item, 40.0));
+                .with_children(|ui| {
+                    let usable = inventory.as_ref().is_none_or(|i| i.equippable(item));
+                    icon(ui, item, 40.0, usable);
+                });
         }
     }
 }

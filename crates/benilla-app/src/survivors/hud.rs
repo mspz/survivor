@@ -617,6 +617,8 @@ pub(super) struct UiArt {
     path: String,
     coords: [f32; 4],
     tint: Color,
+    /// Draw in greyscale: an item the current class cannot equip.
+    grey: bool,
 }
 
 impl UiArt {
@@ -625,6 +627,7 @@ impl UiArt {
             path: path.to_owned(),
             coords,
             tint: Color::WHITE,
+            grey: false,
         }
     }
 
@@ -633,6 +636,7 @@ impl UiArt {
             path: path.to_owned(),
             coords: [0.0, 1.0, 0.0, 1.0],
             tint,
+            grey: false,
         }
     }
     pub(super) fn item(path: &str) -> Self {
@@ -640,8 +644,34 @@ impl UiArt {
             path: path.to_owned(),
             coords: [0.0, 1.0, 0.0, 1.0],
             tint: Color::WHITE,
+            grey: false,
         }
     }
+    pub(super) fn item_grey(path: &str) -> Self {
+        Self {
+            grey: true,
+            ..Self::item(path)
+        }
+    }
+}
+
+/// A greyscale copy of an RGBA8 image; `None` for any other pixel format.
+fn greyscale(image: &Image) -> Option<Image> {
+    use bevy::render::render_resource::TextureFormat;
+    if !matches!(
+        image.texture_descriptor.format,
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+    ) {
+        return None;
+    }
+    let mut grey = image.clone();
+    for px in grey.data.as_mut()?.chunks_exact_mut(4) {
+        let luma = (u32::from(px[0]) * 77 + u32::from(px[1]) * 150 + u32::from(px[2]) * 29) >> 8;
+        // Dimmed too, so the icon reads as disabled and not as a grey item.
+        let v = (luma * 3 / 4) as u8;
+        px[..3].fill(v);
+    }
+    Some(grey)
 }
 
 #[derive(Component)]
@@ -2063,6 +2093,7 @@ pub(super) fn fill_art(
     mut regions: Query<(Entity, &mut ImageNode, &UiArt), Without<ArtDone>>,
     assets: Option<ResMut<benilla_assets::WorldAssets>>,
     mut images: ResMut<Assets<Image>>,
+    mut greys: Local<HashMap<String, Handle<Image>>>,
 ) {
     let Some(mut assets) = assets else { return };
     for (e, mut img, art) in &mut regions {
@@ -2075,8 +2106,23 @@ pub(super) fn fill_art(
         if let Some(size) = images.get(&h).map(Image::size_f32) {
             img.rect = Some(Rect::new(l * size.x, t * size.y, r * size.x, b * size.y));
         }
-        img.image = h;
         img.color = art.tint;
+        img.image = if art.grey {
+            let cached = greys.get(&art.path).cloned();
+            let grey = cached.or_else(|| {
+                let copy = greyscale(images.get(&h)?)?;
+                let handle = images.add(copy);
+                greys.insert(art.path.clone(), handle.clone());
+                Some(handle)
+            });
+            if grey.is_none() {
+                // Compressed art cannot be rewritten: fall back to a dark tint.
+                img.color = Color::srgb(0.35, 0.35, 0.35);
+            }
+            grey.unwrap_or(h)
+        } else {
+            h
+        };
     }
 }
 

@@ -811,6 +811,8 @@ pub(super) fn route_cast_visuals(
                 if stages.missile_gate == 0 && stages.area_effect != 0 {
                     if let Some(path) = visuals.0.effect_path(stages.area_effect) {
                         bursts.write(crate::entities::dest_fx::GroundBurst {
+                            caster: go.caster,
+                            spell_id: go.spell_id,
                             path: path.to_string(),
                             pos: dest,
                         });

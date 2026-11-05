@@ -959,6 +959,13 @@ pub(super) fn cast_abilities(
         let stats = run.stats();
         let p = run.resolve_spell_for_cast(def, o.level, &mut rng);
         let speed = speed_of(def.spell);
+        // The client's models are authored for the base radius: grow them with the area.
+        let area_scale = if def.radius > 0.0 {
+            (p.radius / def.radius).clamp(0.25, 8.0)
+        } else {
+            1.0
+        };
+        fx.area_scale(me, def.spell, area_scale);
         let fired = match def.kind {
             Kind::Bolt | Kind::Strike | Kind::Melee => {
                 let reach = if def.kind == Kind::Melee {
@@ -1055,9 +1062,14 @@ pub(super) fn cast_abilities(
                                 serial,
                                 def.spell,
                                 p.radius,
+                                area_scale,
                                 center,
                             )
                         };
+                        if trap {
+                            // The trap itself casts the explosion.
+                            fx.area_scale(area, def.spell, area_scale);
+                        }
                         let burst = def.duration <= 0.0;
                         commands.entity(area).insert(GroundArea {
                             owner: run.owner,
