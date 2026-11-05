@@ -362,6 +362,10 @@ struct Save {
     #[serde(default)]
     titan_grip: bool,
     next_id: u64,
+    /// The bag grid in cell order: an item id, or 0 for an empty cell. Older saves have none and
+    /// fill up in item order; see [`bag_layout`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bag_cells: Vec<u64>,
     items: Vec<Item>,
     equipped: BTreeMap<String, u64>,
 }
@@ -372,10 +376,47 @@ impl Default for Save {
             starter_granted: false,
             titan_grip: false,
             next_id: 1,
+            bag_cells: Vec::new(),
             items: Vec::new(),
             equipped: BTreeMap::new(),
         }
     }
+}
+/// The bag cells of `save`, made consistent: worn, deleted and repeated ids leave their cell, and
+/// any bag item without a cell takes the first free one. Items stay where the player put them.
+fn bag_layout(save: &Save) -> Vec<u64> {
+    let worn: BTreeSet<u64> = save.equipped.values().copied().collect();
+    let bag: BTreeSet<u64> = save
+        .items
+        .iter()
+        .map(|item| item.id)
+        .filter(|id| !worn.contains(id))
+        .collect();
+    let mut placed = BTreeSet::new();
+    let mut cells: Vec<u64> = save
+        .bag_cells
+        .iter()
+        .map(|&id| {
+            if bag.contains(&id) && placed.insert(id) {
+                id
+            } else {
+                0
+            }
+        })
+        .collect();
+    for item in &save.items {
+        if !bag.contains(&item.id) || !placed.insert(item.id) {
+            continue;
+        }
+        match cells.iter().position(|&cell| cell == 0) {
+            Some(free) => cells[free] = item.id,
+            None => cells.push(item.id),
+        }
+    }
+    while cells.last() == Some(&0) {
+        cells.pop();
+    }
+    cells
 }
 #[derive(Resource)]
 pub(super) struct Inventory {
@@ -440,6 +481,7 @@ impl Inventory {
             blocked: false,
         }
     }
+    #[cfg(test)]
     pub fn all(&self) -> &[Item] {
         &self.save.items
     }
@@ -452,8 +494,18 @@ impl Inventory {
     pub fn worn(&self, id: u64) -> bool {
         self.save.equipped.values().any(|&v| v == id)
     }
+    #[cfg(test)]
     pub fn bag(&self) -> impl Iterator<Item = &Item> {
-        self.all().iter().filter(|i| !self.worn(i.id))
+        bag_layout(&self.save)
+            .into_iter()
+            .filter_map(move |id| self.item(id))
+    }
+    /// The bag grid, one entry per cell up to the last occupied one.
+    pub fn bag_cells(&self) -> Vec<Option<&Item>> {
+        bag_layout(&self.save)
+            .into_iter()
+            .map(|id| self.item(id))
+            .collect()
     }
     fn persist(&self, save: &Save) -> Result<(), String> {
         if self.blocked {
@@ -469,7 +521,8 @@ impl Inventory {
         crate::local_state::write_atomic(&home.join(format!("characters/{id}-items.toml")), &text)
             .map_err(|e| e.to_string())
     }
-    fn commit(&mut self, save: Save) -> Result<(), String> {
+    fn commit(&mut self, mut save: Save) -> Result<(), String> {
+        save.bag_cells = bag_layout(&save);
         self.validate_loadout(&save)?;
         self.persist(&save)?;
         self.save = save;
@@ -658,6 +711,11 @@ impl Inventory {
             ) {
                 save.items.swap(source, destination);
             }
+            // The item coming off takes the cell of the one going on.
+            save.bag_cells = bag_layout(save);
+            if let Some(cell) = save.bag_cells.iter().position(|&id| id == incoming) {
+                save.bag_cells[cell] = outgoing;
+            }
         }
     }
     pub fn quick_equip(&mut self, id: u64) -> Result<(), String> {
@@ -704,47 +762,39 @@ impl Inventory {
         Self::clear_off_hand_for_two_hander(&mut save, id, slot);
         self.commit(save)
     }
-    pub fn drop_in_bag(&mut self, id: u64, target: Option<u64>) -> Result<(), String> {
-        let source = self
-            .save
-            .items
-            .iter()
-            .position(|item| item.id == id)
-            .ok_or("Item missing")?;
-        let destination = if let Some(target) = target {
-            if self.worn(target) {
-                return Err("Drop onto a bag item or an empty bag slot.".into());
-            }
-            Some(
-                self.save
-                    .items
-                    .iter()
-                    .position(|item| item.id == target)
-                    .ok_or("Bag item missing")?,
-            )
-        } else {
-            None
-        };
-        let mut save = self.save.clone();
-        let was_equipped = self.worn(id);
-        save.equipped.retain(|_, worn| *worn != id);
-        if let Some(destination) = destination {
-            if was_equipped {
-                let target = save.items[destination].id;
-                let item = save.items.remove(source);
-                let destination = save
-                    .items
-                    .iter()
-                    .position(|item| item.id == target)
-                    .unwrap();
-                save.items.insert(destination, item);
-            } else {
-                save.items.swap(source, destination);
-            }
-        } else {
-            let item = save.items.remove(source);
-            save.items.push(item);
+    /// Put `id` in bag cell `cell`. A bag item swaps with the cell's occupant; coming off the body
+    /// there is no cell to swap with, so the occupant moves to the first free one.
+    pub fn drop_in_bag(&mut self, id: u64, cell: usize) -> Result<(), String> {
+        if self.item(id).is_none() {
+            return Err("Item missing".into());
         }
+        let mut save = self.save.clone();
+        let mut cells = bag_layout(&save);
+        let source = cells.iter().position(|&held| held == id);
+        if let Some(source) = source {
+            cells[source] = 0;
+        }
+        save.equipped.retain(|_, worn| *worn != id);
+        if cells.len() <= cell {
+            cells.resize(cell + 1, 0);
+        }
+        let occupant = std::mem::replace(&mut cells[cell], id);
+        if let (Some(source), true) = (source, occupant != 0) {
+            cells[source] = occupant;
+        }
+        save.bag_cells = cells;
+        self.commit(save)
+    }
+    /// Take a worn item off into the first free cell; a bag item stays where it is.
+    pub fn stash(&mut self, id: u64) -> Result<(), String> {
+        if self.item(id).is_none() {
+            return Err("Item missing".into());
+        }
+        if !self.worn(id) {
+            return Ok(());
+        }
+        let mut save = self.save.clone();
+        save.equipped.retain(|_, worn| *worn != id);
         self.commit(save)
     }
     pub fn apply(&self, run: &mut Run) {
@@ -1294,22 +1344,68 @@ mod tests {
         let before = toml::to_string(&inventory.save).unwrap();
         assert!(inventory.drop_on_equipment(2, "Head").is_err());
         assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
-        inventory.drop_in_bag(2, Some(3)).unwrap();
+        inventory.drop_in_bag(2, 0).unwrap();
         assert!(!inventory.worn(2));
         assert_eq!(
             inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
             vec![2, 3]
         );
-        inventory.drop_in_bag(2, Some(3)).unwrap();
+        inventory.drop_in_bag(2, 1).unwrap();
         assert_eq!(
             inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
             vec![3, 2]
         );
         inventory.blocked = true;
         let before = toml::to_string(&inventory.save).unwrap();
-        assert!(inventory.drop_in_bag(1, None).is_err());
+        assert!(inventory.drop_in_bag(1, 0).is_err());
         assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
         assert_eq!(Inventory::decode(&before).unwrap().items.len(), 3);
+    }
+    #[test]
+    fn bag_items_stay_in_the_cell_they_are_dropped_in() {
+        let ring = || {
+            item(
+                SlotKind::Ring,
+                vec![affix(Effect::Life, 10.0, AffixKind::Prefix, vec![])],
+            )
+        };
+        let mut inventory = Inventory::fixture(vec![ring(), ring(), ring()]);
+        let cells = |inv: &Inventory| {
+            inv.bag_cells()
+                .iter()
+                .map(|cell| cell.map_or(0, |item| item.id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(cells(&inventory), [1, 2, 3]);
+        // An empty cell far away: the others do not close the gap.
+        inventory.drop_in_bag(1, 20).unwrap();
+        let mut expected = vec![0; 21];
+        expected[1] = 2;
+        expected[2] = 3;
+        expected[20] = 1;
+        assert_eq!(cells(&inventory), expected);
+        // The layout survives a reload.
+        inventory.save = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        assert_eq!(cells(&inventory), expected);
+        // Onto an occupied cell: the two swap.
+        inventory.drop_in_bag(1, 1).unwrap();
+        assert_eq!(cells(&inventory)[..3], [0, 1, 3]);
+        assert_eq!(cells(&inventory)[20], 2);
+        // Equipping leaves a hole; a new item takes the first free cell.
+        inventory.equip(3, "Ring 1").unwrap();
+        assert_eq!(cells(&inventory)[..3], [0, 1, 0]);
+        inventory.collect(ring()).unwrap();
+        assert_eq!(cells(&inventory)[..3], [4, 1, 0]);
+        // Off the body onto an occupied cell: the occupant moves to the first free cell.
+        inventory.drop_in_bag(3, 0).unwrap();
+        assert_eq!(cells(&inventory)[..3], [3, 1, 4]);
+        // The grid gap only takes a worn item off, and moves nothing else.
+        let before = cells(&inventory);
+        inventory.stash(1).unwrap();
+        assert_eq!(cells(&inventory), before);
+        // Deleting empties the cell without moving anything.
+        inventory.delete(1).unwrap();
+        assert_eq!(cells(&inventory)[..3], [3, 0, 4]);
     }
     #[test]
     fn equipment_replaces_sources_and_uses_spell_tags_and_weapon_attack_speed() {

@@ -84,9 +84,9 @@ pub(super) struct Config {
     pub slots: usize,
     pub upper_rarity_chance: f32,
     pub upgrade_chances: Vec<f32>,
-    /// Chance multiplier by how many rarities the spent rune is above the upgraded one.
+    /// Chance multiplier by the rarity of the rune spent on an upgrade.
     #[serde(default = "no_bonus")]
-    pub upgrade_tier_bonus: Vec<f32>,
+    pub upgrade_rarity_bonus: Vec<f32>,
     pub milestones: Vec<u8>,
     pub rarities: Vec<RarityDef>,
     pub stats: Vec<StatDef>,
@@ -109,13 +109,13 @@ impl Config {
                 "upgrade_chances needs {MAX_LEVEL} values between 0 and 1"
             ));
         }
-        if c.upgrade_tier_bonus.is_empty()
+        if c.upgrade_rarity_bonus.is_empty()
             || !c
-                .upgrade_tier_bonus
+                .upgrade_rarity_bonus
                 .iter()
                 .all(|&m| m.is_finite() && (0.0..=100.0).contains(&m))
         {
-            return Err("upgrade_tier_bonus needs at least one multiplier >= 0".into());
+            return Err("upgrade_rarity_bonus needs at least one multiplier >= 0".into());
         }
         if c.milestones.iter().any(|&m| m == 0 || m > MAX_LEVEL) {
             return Err(format!("milestones must be 1 to {MAX_LEVEL}"));
@@ -271,20 +271,17 @@ impl Config {
         rune
     }
 
-    /// The multiplier for spending a `spent` rune on a `target` rune.
-    pub(super) fn tier_bonus(&self, target: u8, spent: u8) -> f32 {
-        let above = spent.saturating_sub(target) as usize;
-        let table = &self.upgrade_tier_bonus;
-        table[above.min(table.len() - 1)]
+    /// The multiplier for spending a rune of rarity `spent`, on any rune.
+    pub(super) fn rarity_bonus(&self, spent: u8) -> f32 {
+        let table = &self.upgrade_rarity_bonus;
+        table[(spent as usize).min(table.len() - 1)]
     }
 
     /// The success chance of upgrading `target` by spending a rune of rarity `spent`, `None` at
     /// the maximum level.
     pub(super) fn upgrade_chance(&self, target: &Rune, spent: u8) -> Option<f32> {
-        (target.level < MAX_LEVEL).then(|| {
-            (self.upgrade_chances[target.level as usize] * self.tier_bonus(target.rarity, spent))
-                .min(1.0)
-        })
+        (target.level < MAX_LEVEL)
+            .then(|| (self.upgrade_chances[target.level as usize] * self.rarity_bonus(spent)).min(1.0))
     }
 
     /// Try one upgrade, spending a rune of rarity `spent`. A success adds one step to every
@@ -417,6 +414,8 @@ pub(super) struct Runes {
     pub open: bool,
     /// The save could not be read: changes are refused so it is not overwritten.
     pub blocked: bool,
+    /// The slot whose Delete button was pressed once, awaiting confirmation.
+    pub delete_armed: Option<usize>,
 }
 
 /// Something the player does on the rune panel.
@@ -426,6 +425,8 @@ pub(super) enum RuneAction {
     Swap(usize),
     Upgrade(usize),
     Equip(usize),
+    /// The first press arms it, the second destroys the slotted rune.
+    Delete(usize),
     Discard,
     Close,
 }
@@ -508,7 +509,24 @@ impl Runes {
     /// Apply one panel action; the message says what happened.
     pub(super) fn act(&mut self, action: RuneAction, rng: &mut Rng) -> Result<String, String> {
         let mut save = self.save.clone();
+        // Any other action disarms a pending delete.
+        let armed = self.delete_armed.take();
         let message = match action {
+            RuneAction::Delete(slot) => {
+                let Some(rune) = save.rune(slot) else {
+                    return Err("That slot is empty.".into());
+                };
+                let name = self.name(rune);
+                if armed != Some(slot) {
+                    self.delete_armed = Some(slot);
+                    return Ok(format!("Delete {name} from slot {}?", slot + 1));
+                }
+                save.slots[slot].rune = None;
+                if save.equipped == Some(slot) {
+                    save.equipped = None;
+                }
+                format!("{name} destroyed.")
+            }
             RuneAction::Close => {
                 self.open = false;
                 self.message.clear();
@@ -795,9 +813,10 @@ mod tests {
     }
 
     #[test]
-    fn embedded_config_parses_with_one_rarity_per_campaign_zone() {
+    fn embedded_config_has_one_rarity_per_zone_and_one_above_the_last() {
         let c = Config::parse(FILE).unwrap();
-        assert_eq!(c.rarities.len(), data::CAMPAIGN.len());
+        assert_eq!(c.rarities.len(), data::CAMPAIGN.len() + 1);
+        assert!(c.rarities.iter().all(|r| r.milestone_stats == 1));
         assert_eq!(c.slots, 3);
         assert!(Config::parse(&FILE.replace("slots = 3", "slots = 0")).is_err());
         assert!(Config::parse(&FILE.replace("0.30, 0.20,", "0.30,")).is_err());
@@ -897,7 +916,7 @@ mod tests {
             value,
             bonus: 0.0,
         };
-        // A Titanium +4 and a Stone +7 saved with upgrades merged into the values.
+        // A Diamond +4 and a Bronze +7 saved with upgrades merged into the values.
         r.save = Save {
             version: 1,
             equipped: None,
@@ -966,7 +985,8 @@ mod tests {
             }
         }
         assert!((700..1300).contains(&upper), "{upper}");
-        assert_eq!(c.drop_rarity(5, &mut rng), 5);
+        // The top rarity has nothing above it.
+        assert_eq!(c.drop_rarity(6, &mut rng), 6);
     }
 
     #[test]
@@ -1006,22 +1026,21 @@ mod tests {
     }
 
     #[test]
-    fn spending_a_higher_rarity_rune_multiplies_the_upgrade_chance() {
+    fn the_spent_rune_rarity_alone_sets_the_upgrade_multiplier() {
         let c = Config::parse(FILE).unwrap();
         let mut rng = Rng(1);
-        let stone = c.roll(0, &mut rng);
-        let chance = |spent| c.upgrade_chance(&stone, spent).unwrap();
-        assert!((chance(0) - 0.30).abs() < 1e-6);
-        assert!((chance(1) - 0.30 * 1.25).abs() < 1e-6);
-        assert!((chance(2) - 0.30 * 1.5).abs() < 1e-6);
-        assert!((chance(5) - 0.30 * 2.25).abs() < 1e-6);
-        // A lower rarity spent on a higher one gives no bonus (and no malus).
-        let gold = c.roll(3, &mut rng);
-        assert!((c.upgrade_chance(&gold, 0).unwrap() - 0.30).abs() < 1e-6);
+        let bronze = c.roll(0, &mut rng);
+        let mut diamond = c.roll(5, &mut rng);
+        diamond.level = 5; // 5 % base
+        for (spent, multiplier) in [(0, 1.0), (1, 2.0), (2, 3.0), (6, 7.0)] {
+            assert_eq!(c.rarity_bonus(spent), multiplier);
+            let low = c.upgrade_chance(&diamond, spent).unwrap();
+            // The same multiplier on a rune above the spent one as on one below it.
+            assert!((low - 0.05 * multiplier).abs() < 1e-6);
+        }
+        assert!((c.upgrade_chance(&bronze, 1).unwrap() - 0.60).abs() < 1e-6);
         // Capped at 100 %.
-        let mut generous = Config::parse(FILE).unwrap();
-        generous.upgrade_tier_bonus = vec![1.0, 10.0];
-        assert_eq!(generous.upgrade_chance(&stone, 1), Some(1.0));
+        assert_eq!(c.upgrade_chance(&bronze, 6), Some(1.0));
     }
 
     #[test]
@@ -1049,6 +1068,33 @@ mod tests {
         r.act(RuneAction::Equip(0), &mut rng).unwrap();
         assert_eq!(r.save.equipped, None);
         assert!(r.act(RuneAction::Equip(1), &mut rng).is_err());
+    }
+
+    #[test]
+    fn deleting_a_rune_needs_a_second_press_on_the_same_slot() {
+        let mut r = runes();
+        let mut rng = Rng(4);
+        for slot in 0..2 {
+            let rune = r.config.roll(0, &mut rng);
+            r.grant(rune).unwrap();
+            r.act(RuneAction::Place(slot), &mut rng).unwrap();
+        }
+        assert_eq!(r.save.equipped, Some(0));
+        assert!(r.act(RuneAction::Delete(2), &mut rng).is_err());
+        // The first press changes nothing; another slot or action disarms it.
+        r.act(RuneAction::Delete(0), &mut rng).unwrap();
+        assert!(r.save.rune(0).is_some());
+        r.act(RuneAction::Delete(1), &mut rng).unwrap();
+        r.act(RuneAction::Delete(0), &mut rng).unwrap();
+        assert!(r.save.rune(0).is_some() && r.save.rune(1).is_some());
+        r.act(RuneAction::Equip(1), &mut rng).unwrap();
+        r.act(RuneAction::Delete(0), &mut rng).unwrap();
+        assert!(r.save.rune(0).is_some());
+        // Deleting the equipped rune leaves nothing equipped, and its effects stop.
+        r.act(RuneAction::Delete(1), &mut rng).unwrap();
+        r.act(RuneAction::Delete(1), &mut rng).unwrap();
+        assert!(r.save.rune(1).is_none());
+        assert_eq!(r.save.equipped, None);
     }
 
     #[test]

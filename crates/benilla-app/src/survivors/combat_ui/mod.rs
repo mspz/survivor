@@ -41,6 +41,8 @@ pub(super) struct View {
     drag: Option<Drag>,
     /// The character sheet shows the Runes tab instead of the paper doll.
     rune_page: bool,
+    /// The item whose Delete button was pressed once, awaiting confirmation.
+    delete_armed: Option<u64>,
 }
 impl Default for View {
     fn default() -> Self {
@@ -57,6 +59,7 @@ impl Default for View {
             meter_scroll: 0.0,
             drag: None,
             rune_page: false,
+            delete_armed: None,
         };
         if let Some(text) = crate::local_state::home().and_then(|home| {
             crate::local_state::read_to_string(&home.join("survivors-panels.txt")).ok()

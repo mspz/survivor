@@ -7,8 +7,8 @@ pub(super) fn panel(
     inventory: Option<&Inventory>,
 ) {
     let Some(inventory) = inventory else { return };
-    let items: Vec<_> = inventory.bag().collect();
-    let pages = items.len().max(1).div_ceil(BAG_PAGE_SIZE);
+    let cells = inventory.bag_cells();
+    let pages = cells.len().max(1).div_ceil(BAG_PAGE_SIZE);
     let page = view.bag_page.min(pages - 1);
     ui.spawn((
         DropTarget::BagBackground,
@@ -28,10 +28,11 @@ pub(super) fn panel(
     ))
     .with_children(|grid| {
         for index in 0..BAG_PAGE_SIZE {
-            let item = items.get(page * BAG_PAGE_SIZE + index).copied();
+            let position = page * BAG_PAGE_SIZE + index;
+            let item = cells.get(position).copied().flatten();
             let mut cell = grid.spawn((
                 Button,
-                DropTarget::Bag(item.map(|item| item.id)),
+                DropTarget::Bag(position),
                 RelativeCursorPosition::default(),
                 BackgroundColor(Color::srgb(0.015, 0.015, 0.015)),
                 BorderColor::all(
@@ -70,8 +71,16 @@ pub(super) fn panel(
         ..default()
     })
     .with_children(|footer| {
-        footer.spawn(text(font, format!("{} items", items.len()), 11.0, GREY));
+        let count = cells.iter().flatten().count();
+        footer.spawn(text(font, format!("{count} items"), 11.0, GREY));
         if let Some(item) = view.selected_item.and_then(|id| inventory.item(id)) {
+            // Two clicks: the rolled item cannot be recovered.
+            let label = if view.delete_armed == Some(item.id) {
+                "Confirm delete"
+            } else {
+                "Delete"
+            };
+            action(footer, font, label, Action::Delete(item.id));
             for &(slot, kind) in &SLOTS {
                 if !inventory.can_equip(item, kind) {
                     continue;

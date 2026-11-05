@@ -463,8 +463,9 @@ fn update_audio_listener(
     let flying = cinematic
         .as_deref()
         .is_some_and(crate::cinematic::Cinematic::is_playing);
+    let at_character = config.listener_at_character && player.active && !player.detached && !flying;
     // `player.pos` is the feet; the facing is the yaw about world +Y.
-    if config.listener_at_character && player.active && !player.detached && !flying {
+    if at_character {
         if let Ok((t, pivot)) = self_av.single() {
             listener.pos = player.pos + Vec3::Y * head_height(pivot, t.scale.x);
             listener.rot = Quat::from_rotation_y(player.facing());
@@ -477,11 +478,41 @@ fn update_audio_listener(
     // Deviation: with no character the reference leaves the listener where it was; benilla seats
     // it on the camera, where the view is.
     if let Ok(t) = cam.single() {
-        listener.pos = t.translation;
-        listener.rot = t.rotation;
+        let mover = at_character.then_some(player.pos);
+        (listener.pos, listener.rot) = bodyless_listener(t, mover);
         if let Some(mixer) = out.mixer.as_mut() {
             mixer.set_listener(listener.pos, listener.rot);
         }
+    }
+}
+
+/// The listener with no [`Embodied`] body. A mover with no body is Survivors' hero, which drives
+/// [`Player`] without being one: it hears from its own head, or a zoomed-out camera would pass
+/// every kit's `DistanceCutoff`, and keeps the camera's rotation so left and right match the
+/// screen. With no mover it is the camera alone.
+fn bodyless_listener(camera: &Transform, mover: Option<Vec3>) -> (Vec3, Quat) {
+    let pos = mover.map_or(camera.translation, |feet| {
+        feet + Vec3::Y * head_height(None, 1.0)
+    });
+    (pos, camera.rotation)
+}
+
+#[cfg(test)]
+mod listener_tests {
+    use super::*;
+
+    #[test]
+    fn a_bodyless_mover_hears_from_itself_however_far_the_camera_is() {
+        let far = Transform::from_xyz(0.0, 60.0, 70.0).looking_at(Vec3::ZERO, Vec3::Y);
+        let near = Transform::from_xyz(0.0, 3.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y);
+        let feet = Vec3::new(10.0, 0.0, -4.0);
+        let (from_far, rotation) = bodyless_listener(&far, Some(feet));
+        assert_eq!(from_far, bodyless_listener(&near, Some(feet)).0);
+        assert_eq!((from_far.x, from_far.z), (feet.x, feet.z));
+        assert!(from_far.y > feet.y);
+        assert_eq!(rotation, far.rotation);
+        // No mover (a menu, a detached camera): the camera itself.
+        assert_eq!(bodyless_listener(&far, None), (far.translation, far.rotation));
     }
 }
 

@@ -223,7 +223,7 @@ fn build(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, runes: &Runes) {
                             Some(p) => {
                                 // The chance, spelled out: base x rarity multiplier = final.
                                 let base = runes.config.upgrade_chances[r.level as usize];
-                                let bonus = runes.config.tier_bonus(r.rarity, spent.rarity);
+                                let bonus = runes.config.rarity_bonus(spent.rarity);
                                 let (text, color) = if bonus > 1.0 {
                                     (
                                         format!(
@@ -246,8 +246,21 @@ fn build(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, runes: &Runes) {
                     _ => {}
                 }
                 if rune.is_some() {
-                    let label = if equipped { "Unequip" } else { "Equip" };
-                    skin::button(c, font, label, RuneAction::Equip(slot), 150.0);
+                    // Side by side, to keep the card height.
+                    c.spawn(Node {
+                        column_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|buttons| {
+                        let label = if equipped { "Unequip" } else { "Equip" };
+                        skin::button(buttons, font, label, RuneAction::Equip(slot), 80.0);
+                        let label = if runes.delete_armed == Some(slot) {
+                            "Confirm"
+                        } else {
+                            "Delete"
+                        };
+                        skin::button(buttons, font, label, RuneAction::Delete(slot), 80.0);
+                    });
                 }
             });
         }
@@ -280,21 +293,23 @@ fn build(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, runes: &Runes) {
     });
 }
 
-/// "Upgrade chance with a higher-rarity rune: 1 rarity above x1.25 · 2 above x1.5 · ...".
+/// "Upgrade chance by the rarity of the spent rune: Bronze x1 · Silver x2 · ...".
 fn bonus_table(runes: &Runes) -> String {
     let steps: Vec<String> = runes
         .config
-        .upgrade_tier_bonus
+        .rarities
         .iter()
         .enumerate()
-        .skip(1)
-        .map(|(above, m)| format!("+{above} rarity x{m}"))
+        .map(|(rarity, def)| {
+            format!(
+                "{} x{}",
+                def.name.trim_end_matches(" Rune"),
+                runes.config.rarity_bonus(rarity as u8)
+            )
+        })
         .collect();
-    if steps.is_empty() {
-        return String::new();
-    }
     format!(
-        "Upgrade chance when spending a higher-rarity rune:  {}",
+        "Upgrade chance by the rarity of the spent rune:  {}",
         steps.join("  ·  ")
     )
 }

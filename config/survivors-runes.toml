@@ -15,70 +15,78 @@ upper_rarity_chance = 0.10
 # A failed upgrade changes nothing (the end-of-run reward is spent).
 upgrade_chances = [0.30, 0.20, 0.15, 0.10, 0.07, 0.05, 0.03, 0.015, 0.005, 0.001]
 
-# Upgrade chance multiplier when the rune spent on the upgrade is of a higher rarity than the
-# upgraded rune, by how many rarities higher: [same or lower, 1 higher, 2 higher, ...].
-# E.g. a Silver rune spent on a Stone rune (2 higher) turns 30 % into 30 % x 1.5 = 45 %.
+# Upgrade chance multiplier by the rarity of the rune spent on the upgrade, in rarity order
+# (Bronze first), whatever the rarity of the upgraded rune.
+# E.g. a Gold rune (x3) spent on any rune at +0 turns 30 % into 90 %.
 # Past the end of the list the last value is used. The result is capped at 100 %.
-upgrade_tier_bonus = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25]
+upgrade_rarity_bonus = [1, 2, 3, 4, 5, 6, 7]
 
 # Levels that add new stats to the rune (count set per rarity below).
 milestones = [5, 10]
 
-# One rarity per campaign zone, in campaign order (Elwynn Forest first).
+# One rarity per campaign zone, in campaign order (Elwynn Forest first). The last one has no zone
+# of its own: it only drops as the rarity above the last zone's.
 # stats            : how many stats a new rune has: the first ones of the stat table below
 # milestone_stats  : how many of the next stats in the table each milestone level adds
 # color            : hex colour of the rune's name and frame
 # icon             : client icon (Interface\Icons\INV_Misc_Rune_01 to _09)
 [[rarities]]
-name = "Stone Rune"
-color = "9d9d9d"
+name = "Bronze Rune"
+color = "cd7f32"
 icon = 'Interface\Icons\INV_Misc_Rune_01'
 stats = 3
 milestone_stats = 1
 
 [[rarities]]
-name = "Copper Rune"
-color = "1eff00"
+name = "Silver Rune"
+color = "c0c0c0"
 icon = 'Interface\Icons\INV_Misc_Rune_02'
 stats = 4
 milestone_stats = 1
 
 [[rarities]]
-name = "Silver Rune"
-color = "0070dd"
+name = "Gold Rune"
+color = "ffd700"
 icon = 'Interface\Icons\INV_Misc_Rune_03'
 stats = 5
 milestone_stats = 1
 
 [[rarities]]
-name = "Gold Rune"
-color = "a335ee"
+name = "Platinum Rune"
+color = "9fd8e8"
 icon = 'Interface\Icons\INV_Misc_Rune_04'
 stats = 6
-milestone_stats = 2
+milestone_stats = 1
 
 [[rarities]]
-name = "Arcanite Rune"
-color = "ff8000"
+name = "Emerald Rune"
+color = "1eff00"
 icon = 'Interface\Icons\INV_Misc_Rune_05'
 stats = 7
-milestone_stats = 2
+milestone_stats = 1
 
 [[rarities]]
-name = "Titanium Rune"
-color = "e6cc80"
+name = "Diamond Rune"
+color = "4fc3ff"
 icon = 'Interface\Icons\INV_Misc_Rune_06'
 stats = 8
-milestone_stats = 2
+milestone_stats = 1
+
+[[rarities]]
+name = "Master Rune"
+color = "ff4040"
+icon = 'Interface\Icons\INV_Misc_Rune_07'
+stats = 9
+milestone_stats = 1
 
 # The stat table. ORDER MATTERS: a rune always has the first stats of this list, in this order
-# (a Stone rune the first 3, a Copper rune the first 4, ...), and milestones unlock the next
+# (a Bronze rune the first 3, a Silver rune the first 4, ...), and milestones unlock the next
 # ones. Disabled stats are skipped. Only the values are rolled, always as whole percents.
 #
 # id        : stable key stored in saves (do not rename an id once runes use it)
 # label     : name shown in game
-# min / max : whole-percent roll range on the first rarity (Stone)
-# tier_min / tier_max : added to min / max per rarity above Stone (may be fractional:
+# min / max : whole-percent roll range on the first rarity (Bronze)
+# tier_min / tier_max : added to min / max per rarity above Bronze (may be fractional:
 #                       0.5 = +1 every two rarities); the range is then rounded inwards
 # step      : whole percents added to the stat by each successful upgrade
 # enabled   : false keeps the line in the table without giving it to runes

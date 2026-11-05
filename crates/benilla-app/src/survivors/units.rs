@@ -330,6 +330,7 @@ pub(super) struct Fx<'w> {
     swings: MessageWriter<'w, SwingMessage>,
     text: MessageWriter<'w, CombatTextSpawn>,
     area_scales: Option<ResMut<'w, crate::entities::dest_fx::AreaVisualScales>>,
+    echoes: Option<ResMut<'w, crate::entities::dest_fx::EchoCasts>>,
 }
 
 /// More impacts than this per cast only cost frames.
@@ -340,6 +341,13 @@ impl Fx<'_> {
     pub fn area_scale(&mut self, caster: Entity, spell: u32, scale: f32) {
         if let Some(scales) = self.area_scales.as_mut() {
             scales.0.insert((caster, spell), scale);
+        }
+    }
+
+    /// The next effects of `spell` on `unit` are an echo: they overlap the running ones.
+    pub fn echo(&mut self, unit: Entity, spell: u32) {
+        if let Some(echoes) = self.echoes.as_mut() {
+            echoes.0.insert((unit, spell));
         }
     }
 

@@ -544,9 +544,11 @@ pub(super) fn resolve_spell_fx(
     time: Res<Time>,
     asset_server: Res<AssetServer>,
     mut emitters: Query<&mut benilla_world::particles::ParticleEmitter>,
+    mut echoes: Option<ResMut<super::dest_fx::EchoCasts>>,
 ) {
     let Some(mut fx) = fx else { return };
     let now = time.elapsed_secs();
+    let mut spent_echoes = Vec::new();
     let mut ops: EntityHashMap<Vec<&SpellKitFx>> = EntityHashMap::default();
     for ev in events.read() {
         let entity = match ev {
@@ -586,15 +588,25 @@ pub(super) fn resolve_spell_fx(
                             &mut emitters,
                         );
                     }
+                    // An echo overlaps the cast it repeats, which the replace below would cut.
+                    let echo = !*persistent
+                        && echoes
+                            .as_ref()
+                            .is_some_and(|e| e.0.contains(&(entity, *spell_id)));
+                    if echo {
+                        spent_echoes.push((entity, *spell_id));
+                    }
                     for FxSlot { tag, effect, path } in effects {
                         // Per slot, as `AddEffect 0x61fdd0` opens with `0x6208e0(owner, rec, tag)`.
-                        replace_same_slot(
-                            &mut instances,
-                            *effect,
-                            *tag,
-                            &mut commands,
-                            &mut emitters,
-                        );
+                        if !echo {
+                            replace_same_slot(
+                                &mut instances,
+                                *effect,
+                                *tag,
+                                &mut commands,
+                                &mut emitters,
+                            );
+                        }
                         ensure_model(&mut fx, &asset_server, path);
                         instances.push(FxInstance {
                             spell_id: *spell_id,
@@ -630,6 +642,11 @@ pub(super) fn resolve_spell_fx(
             Err(_) => {
                 commands.entity(entity).insert(FxAttached { instances });
             }
+        }
+    }
+    if let Some(echoes) = echoes.as_mut() {
+        for key in &spent_echoes {
+            echoes.0.remove(key);
         }
     }
 }
