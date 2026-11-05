@@ -96,6 +96,11 @@ pub(crate) struct GroundBurst {
     pub(crate) pos: Vec3,
 }
 
+/// Effects about to play as an echo of a cast still on screen, by (unit, spell): their one-shot
+/// models overlap the running ones instead of replacing them. Spent by `resolve_spell_fx`.
+#[derive(Resource, Default)]
+pub(crate) struct EchoCasts(pub(crate) std::collections::HashSet<(Entity, u32)>);
+
 /// How much bigger than authored a caster's area spell looks, by (caster, spell). Survivors'
 /// radius modifiers grow an area past its model's fixed size; a spell with no entry is 1.0, so the
 /// MMO client never sees a difference. Local casts only: a remote caster's spells stay at 1.0.

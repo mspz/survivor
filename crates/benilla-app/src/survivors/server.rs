@@ -170,6 +170,8 @@ pub(super) struct Run {
     pub xp: f32,
     pub hp: f32,
     pub abilities: Vec<Owned>,
+    /// Skills switched off on the training ground (right click on their icon); they do not cast.
+    pub(super) disabled_spells: std::collections::HashSet<&'static str>,
     pub(super) starter_spell: Option<&'static str>,
     pub passives: Vec<(&'static PassiveDef, u64)>,
     pub shield: f32,
@@ -233,6 +235,7 @@ impl Default for Run {
             xp: 0.0,
             hp: BASE_HP,
             abilities: Vec::new(),
+            disabled_spells: default(),
             starter_spell: None,
             passives: Vec::new(),
             shield: 0.0,

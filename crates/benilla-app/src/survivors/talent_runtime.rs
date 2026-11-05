@@ -759,14 +759,15 @@ pub(super) fn tick(
                 hit.tags = Some(p.tags);
                 hit.proc_chain = burst.chain;
                 hit.meter_source = burst.meter_source;
+                let spell = data::ability(burst.skill).spell;
                 for repeat in 0..repeats {
-                    pending.0.push((
-                        now + super::spell_engine::RECAST_DELAY * (repeat + 1) as f32,
-                        hit.clone(),
-                    ));
+                    let at = now + super::spell_engine::RECAST_DELAY * (repeat + 1) as f32;
+                    pending.0.push((at, hit.clone()));
+                    // Same unit at both ends: the impact alone, on the echo's landing.
+                    pending.1.push((at, entity, entity, spell));
                 }
                 pending.0.push((now, hit));
-                fx.impact(entity, data::ability(burst.skill).spell);
+                fx.impact(entity, spell);
             }
         }
     }

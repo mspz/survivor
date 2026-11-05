@@ -7,7 +7,8 @@ mod grid;
 #[derive(Component, Clone, Copy)]
 pub(super) enum DropTarget {
     Equipment(&'static str),
-    Bag(Option<u64>),
+    /// A bag cell, by its index across all pages.
+    Bag(usize),
     BagBackground,
 }
 #[derive(Component, Clone, Copy)]
@@ -16,6 +17,8 @@ enum Action {
     Equip(u64, &'static str),
     Unequip(&'static str),
     Page(i32),
+    /// The first press arms it, the second destroys the item.
+    Delete(u64),
 }
 #[derive(Component)]
 struct ItemTip(u64);
@@ -65,12 +68,25 @@ fn input(
         let result = match *action {
             Action::Select(id) => {
                 view.selected_item = Some(id);
+                view.delete_armed = None;
+                Ok(())
+            }
+            Action::Delete(id) if view.delete_armed == Some(id) => {
+                view.delete_armed = None;
+                let result = inventory.delete(id);
+                if result.is_ok() {
+                    view.selected_item = None;
+                }
+                result
+            }
+            Action::Delete(id) => {
+                view.delete_armed = Some(id);
                 Ok(())
             }
             Action::Equip(id, slot) => inventory.equip(id, slot),
             Action::Unequip(slot) => inventory.unequip(slot),
             Action::Page(delta) => {
-                let last = inventory.bag().count().max(1).div_ceil(BAG_PAGE_SIZE) - 1;
+                let last = inventory.bag_cells().len().max(1).div_ceil(BAG_PAGE_SIZE) - 1;
                 view.bag_page = view
                     .bag_page
                     .min(last)
@@ -157,9 +173,10 @@ fn render(
         .map_or("Adventurer", |c| c.name.as_str());
     let show = selection.bags_open && in_world(*phase.get());
     let stamp = format!(
-        "{show} {owner} {} {:?} {:?}",
+        "{show} {owner} {} {:?} {:?} {:?}",
         view.bag_page,
         view.selected_item,
+        view.delete_armed,
         inventory.as_ref().map(|i| (i.revision, &i.notice))
     );
     if *cache == stamp {
@@ -386,6 +403,41 @@ mod tests {
         commands
             .spawn((TestRoot, Node::default()))
             .with_children(|ui| panel(ui, &Handle::default(), &view, Some(&inventory)));
+    }
+    #[test]
+    fn the_delete_button_needs_a_second_press_on_the_same_item() {
+        let mut rng = super::super::super::Rng(7);
+        let items = vec![
+            Config::builtin().generate(10, &mut rng).unwrap(),
+            Config::builtin().generate(10, &mut rng).unwrap(),
+        ];
+        let mut app = App::new();
+        app.insert_resource(Inventory::fixture(items))
+            .init_resource::<View>()
+            .insert_resource(Selection {
+                bags_open: true,
+                ..default()
+            })
+            .init_resource::<Run>()
+            .add_systems(Update, input);
+        let press = |app: &mut App, action: Action| {
+            app.world_mut().spawn((Interaction::Pressed, action));
+            app.update();
+        };
+        let count = |app: &App| app.world().resource::<Inventory>().all().len();
+        press(&mut app, Action::Select(1));
+        press(&mut app, Action::Delete(1));
+        assert_eq!(count(&app), 2);
+        assert_eq!(app.world().resource::<View>().delete_armed, Some(1));
+        // Selecting another item disarms it.
+        press(&mut app, Action::Select(2));
+        press(&mut app, Action::Delete(1));
+        press(&mut app, Action::Delete(2));
+        assert_eq!(count(&app), 2);
+        press(&mut app, Action::Delete(2));
+        assert_eq!(count(&app), 1);
+        assert!(app.world().resource::<Inventory>().item(2).is_none());
+        assert_eq!(app.world().resource::<View>().selected_item, None);
     }
     #[test]
     fn populated_bag_builds_and_buttons_equip_and_unequip_without_losing_items() {

@@ -1197,6 +1197,65 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    fn a_disabled_spell_does_not_cast_until_it_is_enabled_again() {
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.init_resource::<Rng>();
+        world.init_resource::<PendingHits>();
+        world.init_resource::<PlaySeq>();
+        world.init_resource::<Messages<Hit>>();
+        world.init_resource::<Messages<CastEvent>>();
+        world.init_resource::<Messages<SpellGoTargets>>();
+        world.init_resource::<Messages<SwingMessage>>();
+        world.init_resource::<Messages<CombatTextSpawn>>();
+        let mut run = Run {
+            class: &data::CLASSES[6],
+            abilities: vec![Owned {
+                def: data::ability("fireball"),
+                level: 1,
+                cd: 0.0,
+            }],
+            ..Run::default()
+        };
+        run.disabled_spells.insert("fireball");
+        world.insert_resource(run);
+        world.spawn((Transform::default(), Hero { vy: 0.0, air: 0.0 }));
+        world.spawn((
+            Transform::from_xyz(1.0, 0.0, 0.0),
+            Enemy {
+                def: &data::roster(0).enemies[0],
+                hp: 1000.0,
+                max_hp: 1000.0,
+                speed: 0.0,
+                damage: 0.0,
+                radius: 0.0,
+                xp: 1,
+                boss: false,
+                attack_cd: 0.0,
+                slow: 1.0,
+                slow_t: 0.0,
+                root_t: 0.0,
+                stun_t: 0.0,
+                fear_t: 0.0,
+                weaken: 1.0,
+                weaken_t: 0.0,
+                dots: vec![],
+                dead: false,
+            },
+        ));
+        let cast = |world: &mut World| {
+            world
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_millis(100));
+            world.run_system_once(cast_abilities).unwrap();
+            world.resource::<Messages<CastEvent>>().len()
+        };
+        assert_eq!(cast(&mut world), 0);
+        world.resource_mut::<Run>().disabled_spells.clear();
+        assert!(cast(&mut world) > 0);
+    }
+
+    #[test]
     fn projectile_modifiers_schedule_real_hits_and_multiple_nonrecursive_repeats() {
         for repeats in [1, 2] {
             let mut world = World::new();
@@ -1425,6 +1484,35 @@ fn schedule(
     }
 }
 
+/// The client spell that draws `skill`'s impact: a hidden proc's, else the ability's own.
+fn visual_spell(skill: &str) -> Option<u32> {
+    super::procs::find(skill)
+        .map(|proc| proc.def.spell)
+        .or_else(|| {
+            super::data::ABILITIES
+                .iter()
+                .find(|def| def.key == skill)
+                .map(|def| def.spell)
+        })
+        .filter(|&spell| spell != 0)
+}
+
+#[cfg(test)]
+mod echo_visual_tests {
+    use super::*;
+
+    #[test]
+    fn echoes_find_the_impact_of_abilities_and_hidden_procs() {
+        assert_eq!(visual_spell("fireball"), Some(133));
+        let bleed = super::super::procs::find("proc_bleed").unwrap();
+        assert_eq!(
+            visual_spell("proc_bleed"),
+            Some(bleed.def.spell).filter(|&s| s != 0)
+        );
+        assert_eq!(visual_spell("no_such_skill"), None);
+    }
+}
+
 fn roll(rng: &mut Rng, crit: f32, multiplier: f32, dmg: f32) -> (f32, bool) {
     engine::critical_with_multiplier(dmg, crit, multiplier, rng.f32())
 }
@@ -1515,6 +1603,9 @@ pub(super) fn cast_abilities(
 
     let mut casts = std::collections::VecDeque::new();
     for i in 0..run.abilities.len() {
+        if run.disabled_spells.contains(run.abilities[i].def.key) {
+            continue;
+        }
         run.abilities[i].cd -= dt;
         let ordinal = run.recasts.take_due_ordinal(i, now);
         if run.abilities[i].cd <= 0.0 || ordinal.is_some() {
@@ -1582,6 +1673,9 @@ pub(super) fn cast_abilities(
             1.0
         };
         fx.area_scale(me, def.spell, area_scale);
+        if repeated {
+            fx.echo(me, def.spell);
+        }
         let intercepted =
             super::items::legendary::casting::intercept(&mut run, def, p, &foes, hpos, repeated);
         let fired = if let Some((fired, target)) = intercepted {
@@ -2333,7 +2427,13 @@ pub(super) fn apply_hits(
     let mut item_mods = std::collections::HashMap::new();
     pending.1.retain(|&(at, from, to, spell)| {
         if at <= now {
-            fx.cast(from, spell, &[to], None);
+            if from == to {
+                // A proc echo: no caster to animate, only the landing on the target.
+                fx.echo(to, spell);
+                fx.impact(to, spell);
+            } else {
+                fx.cast(from, spell, &[to], None);
+            }
             false
         } else {
             true
@@ -2392,6 +2492,7 @@ pub(super) fn apply_hits(
             }
             h.proc_resolved = true;
             let repeats = engine::recast_count(p.recast, rng.f32(), false).min(64);
+            let echo_spell = visual_spell(h.skill);
             if p.tags
                 .intersects(engine::Tags::PROJECTILE | engine::Tags::CHAIN | engine::Tags::MELEE)
             {
@@ -2438,10 +2539,12 @@ pub(super) fn apply_hits(
                             dot.dps *= link.scale;
                         }
                         for repeat in 0..repeats {
-                            pending.0.push((
-                                now + link.arrival + engine::RECAST_DELAY * (repeat + 1) as f32,
-                                copy.clone(),
-                            ));
+                            let at =
+                                now + link.arrival + engine::RECAST_DELAY * (repeat + 1) as f32;
+                            pending.0.push((at, copy.clone()));
+                            if let Some(spell) = echo_spell {
+                                pending.1.push((at, copy.target, copy.target, spell));
+                            }
                         }
                         if link.arrival > 0.0 {
                             pending.0.push((now + link.arrival, copy));
@@ -2453,9 +2556,11 @@ pub(super) fn apply_hits(
                 }
             }
             for repeat in 0..repeats {
-                pending
-                    .0
-                    .push((now + engine::RECAST_DELAY * (repeat + 1) as f32, h.clone()));
+                let at = now + engine::RECAST_DELAY * (repeat + 1) as f32;
+                pending.0.push((at, h.clone()));
+                if let Some(spell) = echo_spell {
+                    pending.1.push((at, h.target, h.target, spell));
+                }
             }
         }
         if h.direct_dot.is_some() {

@@ -82,6 +82,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(items::plugin)
         .add_plugins(runes::plugin)
         .init_resource::<crate::entities::dest_fx::AreaVisualScales>()
+        .init_resource::<crate::entities::dest_fx::EchoCasts>()
         .add_plugins(talent_ui::plugin)
         .init_resource::<hero::CamRig>()
         .init_resource::<hero::AimPoint>()
@@ -123,6 +124,7 @@ pub(super) fn plugin(app: &mut App) {
                 hud::refresh_results,
                 hud::fill_icons,
                 hud::update_cooldown_sweeps,
+                hud::toggle_training_spells,
                 hud::refresh_mobility,
                 hud::show_panels,
             )

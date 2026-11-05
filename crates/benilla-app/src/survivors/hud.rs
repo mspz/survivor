@@ -1968,6 +1968,18 @@ pub(super) fn refresh_hud(
                             MaterialNode(handle.clone()),
                             AbilitySweep { handle, index: i },
                         ));
+                        // Over the sweep: shown while the skill is switched off.
+                        slot.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.45, 0.0, 0.0, 0.7)),
+                            Visibility::Hidden,
+                            AbilityOff(i),
+                        ));
                     }
                     slot.spawn(Node {
                         position_type: PositionType::Absolute,
@@ -2068,6 +2080,48 @@ pub(super) fn refresh_mobility(
                 m.sweep = f;
             }
         }
+    }
+}
+
+/// The red cover of a switched-off skill, by its index in the run's abilities.
+#[derive(Component)]
+pub(super) struct AbilityOff(usize);
+
+/// On the training ground, a right click on a skill icon switches the skill off or back on, to
+/// test one skill at a time. A new run starts with everything on.
+pub(super) fn toggle_training_spells(
+    mouse: Res<ButtonInput<MouseButton>>,
+    phase: Res<State<Phase>>,
+    selection: Res<Selection>,
+    mut run: ResMut<Run>,
+    icons: Query<(&Interaction, &TipFor)>,
+    mut covers: Query<(&AbilityOff, &mut Visibility)>,
+) {
+    let usable = *phase.get() == Phase::Playing && super::training::active(&selection);
+    if usable && mouse.just_pressed(MouseButton::Right) {
+        let hovered = icons.iter().find_map(|(interaction, tip)| match tip {
+            TipFor::Ability(index) if *interaction != Interaction::None => Some(*index),
+            _ => None,
+        });
+        if let Some(key) = hovered.and_then(|i| run.abilities.get(i)).map(|o| o.def.key) {
+            let enabled = !run.disabled_spells.insert(key);
+            if enabled {
+                run.disabled_spells.remove(key);
+            }
+            let state = if enabled { "enabled" } else { "disabled" };
+            run.banner = Some((format!("{} {state}", key.replace('_', " ")), 2.0));
+        }
+    }
+    for (cover, mut visibility) in &mut covers {
+        let off = run
+            .abilities
+            .get(cover.0)
+            .is_some_and(|o| run.disabled_spells.contains(o.def.key));
+        visibility.set_if_neq(if off {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
 }
 

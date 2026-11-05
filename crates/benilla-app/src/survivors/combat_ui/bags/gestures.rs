@@ -136,8 +136,8 @@ pub(super) fn input(
             .map(|(_, target, _)| *target);
         let result = match target {
             Some(DropTarget::Equipment(slot)) => inventory.drop_on_equipment(press.id, slot),
-            Some(DropTarget::Bag(target)) => inventory.drop_in_bag(press.id, target),
-            Some(DropTarget::BagBackground) => inventory.drop_in_bag(press.id, None),
+            Some(DropTarget::Bag(cell)) => inventory.drop_in_bag(press.id, cell),
+            Some(DropTarget::BagBackground) => inventory.stash(press.id),
             None => return,
         };
         inventory.notice = result.err().unwrap_or_default();
