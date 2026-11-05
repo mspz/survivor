@@ -16,6 +16,7 @@ pub(in crate::survivors) enum EquipmentType {
     TwoHand,
     Staff,
     Shield,
+    HeldOffHand,
     Bow,
     Wand,
 }
@@ -61,7 +62,7 @@ impl EquipmentType {
                 matches!(slot, SlotKind::MainHand | SlotKind::OffHand)
             }
             Self::TwoHand | Self::Staff => slot == SlotKind::MainHand,
-            Self::Shield => slot == SlotKind::OffHand,
+            Self::Shield | Self::HeldOffHand => slot == SlotKind::OffHand,
             Self::Bow | Self::Wand => slot == SlotKind::Ranged,
             Self::Universal => !slot.weapon(),
             Self::Legacy => true,
@@ -107,6 +108,7 @@ impl EquipmentType {
             Self::TwoHand => "Two-handed melee weapon",
             Self::Staff => "Two-handed caster staff",
             Self::Shield => "Shield",
+            Self::HeldOffHand => "Held in off-hand",
             Self::Bow => "Bow",
             Self::Wand => "Wand",
         }
@@ -234,6 +236,7 @@ mod tests {
         let mut inventory = Inventory::fixture(vec![weapon.clone(), weapon]);
         assert!(inventory.equip(2, "Off hand").is_err());
         inventory.save.titan_grip = true;
+        inventory.native_titan_grip = true;
         inventory.equip(1, "Main hand").unwrap();
         inventory.equip(2, "Off hand").unwrap();
         let text = toml::to_string(&inventory.save).unwrap();
@@ -465,12 +468,13 @@ impl Inventory {
     }
     pub fn can_equip(&self, item: &Item, slot: SlotKind) -> bool {
         item.usable(self.class, slot)
-            || self.class == 1
+            || item.equipment_type.can_equip(self.class)
                 && self.save.titan_grip
                 && item.equipment_type == EquipmentType::TwoHand
                 && slot == SlotKind::OffHand
     }
     pub(super) fn validate_loadout(&self, save: &Save) -> Result<(), String> {
+        legendary::validate_loadout(save)?;
         save.validate_hands()?;
         for (name, id) in &save.equipped {
             let item = save
@@ -483,7 +487,12 @@ impl Inventory {
                 .find(|(s, _)| s == name)
                 .map(|(_, s)| *s)
                 .ok_or("Invalid equipment slot")?;
-            if !self.can_equip(item, slot) {
+            if !item.usable(self.class, slot)
+                && !(save.titan_grip
+                    && slot == SlotKind::OffHand
+                    && item.equipment_type == EquipmentType::TwoHand
+                    && item.equipment_type.can_equip(self.class))
+            {
                 return Err("This class cannot equip this item in that slot.".into());
             }
         }

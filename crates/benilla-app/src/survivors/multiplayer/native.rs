@@ -847,6 +847,7 @@ fn decode_choice(choice: wire::Choice) -> Option<hud::Choice> {
 
 fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
     wire::Stats {
+        meter: run.meter.clone(),
         earned: game::talents::earned(run),
         hp: run.hp,
         max_hp: run.stats().max_hp,
@@ -911,7 +912,8 @@ fn publish(world: &mut World) {
         .loot
         .read(world.resource::<Messages<game::enemies::Loot>>())
         .filter(|loot| loot.boss)
-        .count();
+        .map(|loot| loot.item_level)
+        .collect::<Vec<_>>();
     for peer in network.peers.values_mut() {
         let Some(connection) = &peer.session else {
             continue;
@@ -919,8 +921,8 @@ fn publish(world: &mut World) {
         let Some(player) = world.resource::<Companions>().0.get(&connection.wire_id()) else {
             continue;
         };
-        let (level, class) = (player.run.level, player.run.class.id);
-        for _ in 0..boss_kills {
+        let (class, magic_find) = (player.run.class.id, player.run.equipment.magic_find);
+        for &level in &boss_kills {
             let item = world.resource_scope(|world, mut rng: Mut<Rng>| {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
                 if rng.f32() >= inventory.config.boss_drop_chance {
@@ -928,7 +930,7 @@ fn publish(world: &mut World) {
                 }
                 inventory
                     .config
-                    .generate_for_class(level, class, &mut rng)
+                    .generate_loot(level, class, magic_find, &mut rng)
                     .ok()
             });
             if let Some(item) = item {
@@ -1302,6 +1304,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.shield_t = stats.shield[1];
         run.immune_t = stats.immune;
         run.damage_done = stats.damage_done;
+        run.meter = stats.meter.clone();
         run.dead_t = stats.dead.then_some(0.0);
         run.abilities = stats
             .abilities
@@ -1933,6 +1936,7 @@ mod tests {
             icon: "Interface\\Icons\\INV_Misc_QuestionMark".into(),
             rarity: Rarity::Epic,
             level: 1,
+            legendary: None,
             base_damage: None,
             base_armour: None,
             base_block: 0.0,

@@ -1,0 +1,38 @@
+VALIDATION DU CATALOGUE DE 160 PROPOSITIONS
+
+Validation de documents et revue de conception ; aucun effet de gameplay n'est implemente
+par ces modifications. Les extensions de runtime requises figurent dans les regles communes.
+
+CONTROLES REUSSIS
+- 160 fiches au format numero | nom | slot | description.
+- 160 identifiants et 160 noms distincts.
+- Les 130 anciennes fiches sont archivees avant modification.
+- Exactement les 37 fiches signalees par l'audit ont ete corrigees.
+- Les 93 autres anciennes descriptions restent identiques.
+- 30 nouveaux identifiants consecutifs, 311 a 340 : 15 procs de degats, 15 procs de buff.
+- Statistiques detaillees presentes pour les 160 objets.
+- Les cinq slots impossibles de caster sont remplaces, sans supposer un type Focus absent.
+- Le 088 nomme Starfall/proc_starfall, un effet existant, et ne lui attribue plus une zone persistante.
+- Le 310 definit une reserve a partir des degats de drain_life, sans supposer un soin de tick absent.
+- Les families de DoT, soins actifs, totems et permissions TwoHand sont maintenant specifies.
+- Les 81 variantes du 301 sont conservees.
+- Les nouveaux payloads et buffs sont declares comme effets d'objet nouveaux ; aucun sort
+  actif inexistant n'est presente comme une competence deja disponible.
+- Les declencheurs n'exigent ni mana, ni critique d'ennemi, ni projectile physique, ni mur d'arene.
+
+ETAT DES ANCIENS CONSTATS
+Le CSV de l'audit initial garde les numeros F01 a F24 pour la trace. Les 37 fiches signalees
+portent maintenant SPEC_CORRIGEE. Le rapport initial est une archive des constats avant correction.
+Cela ne signifie pas que les hooks de soin, les sources de degats, l'alternance des mains ou
+les buffs temporaires existent deja dans le jeu : ils restent du travail d'implementation.
+
+FICHIERS ACTUELS
+- idees-100-legendaires.txt : catalogue complet de 160 propositions.
+- corrections-37-uniques.txt : nouvelles descriptions des 37 fiches corrigees.
+- uniques-procs-311-340.txt : les 30 nouveaux uniques par type de proc.
+- regles-uniques-propositions.txt : declencheurs, limites, familles, slots et valeurs proposees.
+- stats-legendaires-detail.csv et stats-legendaires-retenus.txt : statistiques actualisees.
+- idees-130-avant-corrections.txt : sauvegarde des textes avant correction.
+
+IDENTIFIANTS CORRIGES
+017, 024, 026, 046, 050, 057, 063, 066, 071, 077, 078, 082, 086, 087, 088, 094, 142, 152, 159, 176, 194, 203, 207, 213, 221, 222, 224, 226, 229, 230, 235, 237, 279, 280, 308, 309, 310

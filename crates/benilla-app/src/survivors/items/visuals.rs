@@ -111,7 +111,8 @@ fn worn_appearances(save: &Save, config: &Config, class: u8) -> [Option<Appearan
         let Some((_, kind)) = SLOTS.iter().find(|(s, _)| *s == name) else {
             continue;
         };
-        let titan = class == 1 && save.titan_grip && item.equipment_type == EquipmentType::TwoHand;
+        let titan = (class == 1 && save.titan_grip || super::legendary::titan_grip(save))
+            && item.equipment_type == EquipmentType::TwoHand;
         if !item.usable(class, *kind) && !(titan && *kind == SlotKind::OffHand) {
             continue;
         }
@@ -654,6 +655,7 @@ mod tests {
         });
         let mut inv = Inventory::fixture(vec![weapon.clone(), weapon]);
         inv.save.titan_grip = true;
+        inv.native_titan_grip = true;
         inv.equip(1, "Main hand").unwrap();
         inv.equip(2, "Off hand").unwrap();
         let worn = worn_appearances(&inv.save, &inv.config, 1);

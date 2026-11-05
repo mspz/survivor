@@ -50,12 +50,16 @@ pub(super) struct Taunted {
 }
 #[derive(Component)]
 pub(super) struct Summon {
+    family: u8,
     owner: Option<u64>,
     slot: u8,
     cooldown: f32,
     stationary: bool,
     target: Option<Entity>,
     retarget: f32,
+    carried: Option<Dot>,
+    carry_until: f32,
+    harvested: Option<Entity>,
 }
 
 const PET_LEASH: f32 = 100.0;
@@ -101,7 +105,7 @@ fn pet_target(
     Some(candidates[(rng.next_u64() % count as u64) as usize].0)
 }
 pub(super) fn active(run: &Run, m: M) -> bool {
-    run.talent_runtime.enabled.contains(&m)
+    run.talent_runtime.enabled.contains(&m) || super::items::legendary::milestones::active(run, m)
 }
 fn chain_bit(m: M) -> u64 {
     1u64 << (m as u32)
@@ -125,6 +129,16 @@ fn accepts(run: &Run, h: &Hit, m: M, tags: Tags) -> bool {
 fn meter_source(run: &Run, m: M) -> Option<&'static str> {
     if !active(run, m) {
         return None;
+    }
+    if !run.talent_runtime.enabled.contains(&m) {
+        if let Some(grant) = run
+            .legendary
+            .grants
+            .iter()
+            .find(|g| g.milestone().mechanic == m)
+        {
+            return Some(grant.milestone().name);
+        }
     }
     let class = data::CLASSES.iter().position(|c| c.id == run.class.id)?;
     talent_design::DESIGNS[class * 3..class * 3 + 3]
@@ -208,7 +222,9 @@ pub(super) fn configure(run: &mut Run) {
 }
 pub(super) fn block_chance(run: &Run) -> f32 {
     if active(run, M::Block) {
-        0.2
+        0.2 * super::items::legendary::milestones::sources(run, M::Block)
+            .len()
+            .max(1) as f32
     } else {
         0.0
     }
@@ -220,17 +236,23 @@ pub(super) fn refreshed_shield(run: &mut Run, capacity: f32) {
     run.talent_runtime.shield_capacity = capacity;
 }
 pub(super) fn before_hit(run: &mut Run, h: &Hit, en: &Enemy) -> f32 {
-    if run.talent_runtime.enabled.is_empty() {
+    if run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty() {
         return 1.0;
     }
-    let t = tags::for_spell(data::ability(h.skill));
+    let t = h
+        .tags
+        .unwrap_or_else(|| tags::for_spell(data::ability(h.skill)));
     let focus = accepts(run, h, M::Focus, t) || accepts(run, h, M::ArcaneFocus, t);
-    if focus {
+    if focus || accepts(run, h, M::Execution, t) {
         if run.talent_runtime.target != Some(h.target) {
             run.talent_runtime.target = Some(h.target);
             run.talent_runtime.streak = 0;
         }
-        let bonus = run.talent_runtime.streak.min(10) as f32 * 0.08;
+        let bonus = if focus {
+            run.talent_runtime.streak.min(10) as f32 * 0.08
+        } else {
+            0.0
+        };
         run.talent_runtime.streak += 1;
         return 1.0 + bonus;
     }
@@ -248,10 +270,13 @@ pub(super) fn on_hit(
     rng: &mut Rng,
     pending: &mut PendingHits,
 ) {
-    if h.damage <= 0.0 || run.talent_runtime.enabled.is_empty() {
+    if h.damage <= 0.0 || (run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty())
+    {
         return;
     }
-    let t = tags::for_spell(data::ability(h.skill));
+    let t = h
+        .tags
+        .unwrap_or_else(|| tags::for_spell(data::ability(h.skill)));
     // Count only eligible hits: e.g. a Fire hit cannot advance an Arcane milestone.
     for (index, qualifies) in [
         accepts(run, h, M::Flurry, t),
@@ -283,27 +308,43 @@ pub(super) fn on_hit(
             .iter()
             .find(|d| d.owner == h.owner && d.skill == key)
             .map_or(1.0, |d| d.tick);
-        en.dots.retain(|d| !(d.owner == h.owner && d.skill == key));
+        if !run.legendary.has(230) {
+            en.dots.retain(|d| !(d.owner == h.owner && d.skill == key));
+        }
         let p = procs::resolve(run, key, 0.0, h.damage * 0.18, 6.0, 0.0, 1);
-        en.dots.push(Dot {
-            owner: h.owner,
-            skill: key,
-            meter_source: meter_source(
-                run,
-                if poison {
-                    M::Poison
-                } else if arcane {
-                    M::Moonfire
-                } else if active(run, M::ShadowPlague) {
-                    M::ShadowPlague
+        super::items::legendary::periodic::install(
+            run,
+            en,
+            h.target,
+            pos,
+            Dot {
+                owner: h.owner,
+                skill: key,
+                tags: Some(p.tags),
+                meter_source: meter_source(
+                    run,
+                    if poison {
+                        M::Poison
+                    } else if arcane {
+                        M::Moonfire
+                    } else if active(run, M::ShadowPlague) {
+                        M::ShadowPlague
+                    } else {
+                        M::Plague
+                    },
+                ),
+                item_source: None,
+                origin: if h.origin == super::items::legendary::events::Origin::Item {
+                    h.origin
                 } else {
-                    M::Plague
+                    super::items::legendary::events::Origin::Talent
                 },
-            ),
-            dps: p.dot,
-            left: p.duration,
-            tick,
-        });
+                meta: Default::default(),
+                dps: p.dot,
+                left: p.duration,
+                tick,
+            },
+        );
     }
     if accepts(run, h, M::Freeze, t) {
         let duration = procs::resolve(run, "proc_frostbite", 0.0, 0.0, 3.0, 0.0, 1).duration;
@@ -338,31 +379,31 @@ pub(super) fn on_hit(
         let mut hit = Hit::direct(key, h.target, damage, false);
         hit.owner = h.owner;
         hit.triggered = true;
+        hit.origin = if h.origin == super::items::legendary::events::Origin::Item {
+            h.origin
+        } else {
+            super::items::legendary::events::Origin::Talent
+        };
         hit.proc_chain = h.proc_chain | chain_bit(mechanic);
         hit.splash = splash;
         hit.meter_source = source;
         pending.0.push((now + 0.01, hit));
     };
     if accepts(run, h, M::Seal, t) {
-        let key = if run.class.id == 7 {
-            "flame_shock"
-        } else {
-            "holy_shock"
-        };
-        extra(
-            key,
-            h.damage * 0.25,
-            if active(run, M::SealStorm) { 6.0 } else { 0.0 },
-            meter_source(
-                run,
-                if active(run, M::SealStorm) {
-                    M::SealStorm
-                } else {
-                    M::Seal
-                },
-            ),
-            M::Seal,
-        );
+        for donor in super::items::legendary::milestones::sources(run, M::Seal) {
+            let key = if donor == 7 {
+                "flame_shock"
+            } else {
+                "holy_shock"
+            };
+            extra(
+                key,
+                h.damage * 0.25,
+                if active(run, M::SealStorm) { 6.0 } else { 0.0 },
+                super::items::legendary::milestones::source_name(donor, M::Seal),
+                M::Seal,
+            );
+        }
         if active(run, M::SealStorm) {
             let amount =
                 procs::resolve(run, "proc_holy_heal", h.damage * 0.05, 0.0, 0.0, 0.0, 1).dmg;
@@ -384,7 +425,10 @@ pub(super) fn on_hit(
             spread_source: None,
         });
     }
-    if holy && run.class.id == 2 && accepts(run, h, M::HolyJudgement, t) {
+    if holy
+        && super::items::legendary::milestones::sources(run, M::HolyJudgement).contains(&2)
+        && accepts(run, h, M::HolyJudgement, t)
+    {
         run.talent_runtime.bursts.push(Burst {
             chain: h.proc_chain | chain_bit(M::HolyJudgement),
             pos,
@@ -471,15 +515,14 @@ pub(super) fn on_hit(
         });
     }
 }
-pub(super) fn periodic_leech(run: &mut Run, skill: &str, damage: f32) {
-    if active(run, M::ShadowDrain) && tags::school(skill).is_some_and(|t| t.contains(Tags::SHADOW))
-    {
+pub(super) fn periodic_leech(run: &mut Run, tags: Tags, damage: f32) {
+    if active(run, M::ShadowDrain) && tags.contains(Tags::SHADOW) {
         let amount = procs::resolve(run, "proc_shadow_leech", damage * 0.12, 0.0, 0.0, 0.0, 1).dmg;
         run.heal(amount);
     }
 }
 pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
-    if run.talent_runtime.enabled.is_empty() {
+    if run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty() {
         return;
     }
     let owned: Vec<_> = en
@@ -505,7 +548,9 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
         || active(run, M::Poisonburst) && poison
         || active(run, M::Fireburst) && fire
         || active(run, M::Plagueburst) && !owned.is_empty()
-        || run.class.id == 5 && active(run, M::PlagueSpread) && !owned.is_empty()
+        || super::items::legendary::milestones::sources(run, M::PlagueSpread).contains(&5)
+            && active(run, M::PlagueSpread)
+            && !owned.is_empty()
         || freeze;
     if spread || explode {
         run.talent_runtime.bursts.push(Burst {
@@ -588,7 +633,34 @@ pub(super) fn tick(
     let owner = run.owner;
     let now = run.elapsed;
     let bursts = std::mem::take(&mut run.talent_runtime.bursts);
-    for burst in bursts {
+    for mut burst in bursts {
+        if run.legendary.has(238) && !burst.dots.is_empty() {
+            let mut gathered = Vec::new();
+            for (_, tf, mut en) in &mut enemies {
+                if !en.dead && units::flat(tf.translation - burst.pos).length() <= burst.radius {
+                    en.dots.retain(|dot| {
+                        if dot.owner == owner {
+                            gathered.push(dot.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+            }
+            for dot in gathered {
+                super::items::legendary::periodic::field(
+                    &mut run,
+                    238,
+                    burst.pos,
+                    super::items::legendary::periodic::budget(&dot),
+                    dot.left,
+                    dot.tags.unwrap_or(Tags::SHADOW),
+                    false,
+                );
+            }
+            burst.dots.clear();
+        }
         let skill = procs::source_key(&run, burst.meter_source)
             .filter(|key| !key.ends_with("_spread"))
             .unwrap_or("proc_plagueburst");
@@ -601,6 +673,40 @@ pub(super) fn tick(
             burst.radius,
             burst.targets,
         );
+        if skill == "proc_starfall" && run.legendary.has(88) {
+            let mut targets: Vec<_> = enemies
+                .iter()
+                .filter(|(_, tf, en)| {
+                    !en.dead && units::flat(tf.translation - burst.pos).length() <= 24.0
+                })
+                .map(|(e, tf, _)| (e, units::flat(tf.translation - burst.pos).length()))
+                .collect();
+            targets.sort_by(|a, b| a.1.total_cmp(&b.1));
+            targets.truncate(3);
+            let count = targets.len().max(1) as f32;
+            for (target, dist) in targets {
+                let (damage, crit) = super::spell_engine::critical_with_multiplier(
+                    p.dmg / count,
+                    p.crit,
+                    p.crit_multiplier,
+                    rng.f32(),
+                );
+                let mut hit = Hit::direct(skill, target, damage, crit);
+                hit.owner = owner;
+                hit.origin = super::items::legendary::events::Origin::Talent;
+                hit.triggered = true;
+                hit.proc_resolved = true;
+                hit.tags = Some(p.tags);
+                hit.direct_dot = p.direct_dot.map(|mut dot| {
+                    dot.dps /= count;
+                    dot
+                });
+                hit.proc_chain = burst.chain;
+                hit.meter_source = burst.meter_source;
+                pending.0.push((now + dist / 25.0, hit));
+            }
+            continue;
+        }
         let spread_key =
             procs::source_key(&run, burst.spread_source).unwrap_or("proc_plague_spread");
         let spread_radius = if burst.dots.is_empty() {
@@ -650,6 +756,8 @@ pub(super) fn tick(
                 hit.owner = owner;
                 hit.triggered = true;
                 hit.proc_resolved = true;
+                hit.direct_dot = p.direct_dot;
+                hit.tags = Some(p.tags);
                 hit.proc_chain = burst.chain;
                 hit.meter_source = burst.meter_source;
                 for repeat in 0..repeats {
@@ -683,30 +791,42 @@ pub(super) fn tick(
         } else {
             45.0
         };
-        let skill = if run.class.id == 1 {
-            "thunder_clap"
+        let donors = if shield > 0.0 {
+            vec![run.class.id]
         } else {
-            "holy_nova"
+            super::items::legendary::milestones::sources(&run, M::Bulwark)
         };
-        for (entity, tf, en) in &enemies {
-            if !en.dead && units::flat(tf.translation - pos).length() <= radius {
-                let mut hit = Hit::direct(skill, entity, damage, false);
-                hit.owner = owner;
-                hit.triggered = true;
-                hit.meter_source = meter_source(
-                    &run,
-                    if shield > 0.0 {
-                        if nova {
-                            M::ShieldNova
+        for donor in donors {
+            let skill = if donor == 1 {
+                "thunder_clap"
+            } else {
+                "holy_nova"
+            };
+            for (entity, tf, en) in &enemies {
+                if !en.dead && units::flat(tf.translation - pos).length() <= radius {
+                    let mut hit = Hit::direct(skill, entity, damage, false);
+                    hit.owner = owner;
+                    hit.triggered = true;
+                    hit.meter_source = meter_source(
+                        &run,
+                        if shield > 0.0 {
+                            if nova {
+                                M::ShieldNova
+                            } else {
+                                M::Shieldburst
+                            }
                         } else {
-                            M::Shieldburst
-                        }
-                    } else {
-                        M::Bulwark
-                    },
-                );
-                pending.0.push((now, hit));
+                            M::Bulwark
+                        },
+                    );
+                    if shield <= 0.0 {
+                        hit.meter_source =
+                            super::items::legendary::milestones::source_name(donor, M::Bulwark);
+                    }
+                    pending.0.push((now, hit));
+                }
             }
+            fx.cast(me, data::ability(skill).spell, &[me], None);
         }
         if active(&run, M::ShieldHeal) {
             let max = run.stats().max_hp;
@@ -715,14 +835,13 @@ pub(super) fn tick(
         }
         if blocked {
             run.talent_runtime.last_block = now;
-            if run.class.id == 2 {
+            if super::items::legendary::milestones::sources(&run, M::Bulwark).contains(&2) {
                 let max = run.stats().max_hp;
                 let amount =
                     procs::resolve(&run, "proc_holy_heal", max * 0.02, 0.0, 0.0, 0.0, 1).dmg;
                 run.heal(amount);
             }
         }
-        fx.cast(me, data::ability(skill).spell, &[me], None);
     }
     for (index, mechanic, key) in [
         (0, M::Taunt, "proc_taunt"),
@@ -738,12 +857,16 @@ pub(super) fn tick(
         }
         if mechanic == M::Taunt {
             let p = procs::resolve(&run, "proc_taunt", 0.0, 0.0, 3.0, 12.0, 1);
-            for (entity, tf, en) in &enemies {
+            for (entity, tf, mut en) in &mut enemies {
                 if !en.dead && units::flat(tf.translation - pos).length() <= p.radius {
-                    commands.entity(entity).insert(Taunted {
-                        owner,
-                        until: now + p.duration,
-                    });
+                    if run.legendary.has(159) && !en.boss {
+                        en.fear_t = en.fear_t.max(p.duration);
+                    } else {
+                        commands.entity(entity).insert(Taunted {
+                            owner,
+                            until: now + p.duration,
+                        });
+                    }
                     fx.impact(entity, 355);
                 }
             }
@@ -761,60 +884,69 @@ pub(super) fn tick(
             }
         }
     }
-    let totem = active(&run, M::HealTotem);
-    let demon = active(&run, M::Demon);
-    let count = if active(&run, M::Demons) {
-        3
-    } else if active(&run, M::Pack) {
-        2
-    } else if demon || active(&run, M::Pet) || totem {
-        1
-    } else {
-        0
-    };
+    let counts = [
+        if active(&run, M::Pack) {
+            2
+        } else {
+            u8::from(active(&run, M::Pet))
+        },
+        if active(&run, M::Demons) {
+            3
+        } else {
+            u8::from(active(&run, M::Demon))
+        },
+        u8::from(active(&run, M::HealTotem)),
+    ];
     if now >= run.talent_runtime.summon {
         run.talent_runtime.summon = now + 1.0;
-        for slot in 0..count {
-            if pets
-                .iter()
-                .any(|(_, _, p, _)| p.owner == owner && p.slot == slot)
-            {
-                continue;
-            }
-            let serial = run.guid();
-            let entity = units::spawn_unit(
-                &mut commands,
-                &UnitSpec {
-                    serial,
-                    display: if totem {
-                        4587
-                    } else if demon {
-                        4449
-                    } else {
-                        247
+        for (family, count) in counts.into_iter().enumerate() {
+            for slot in 0..count {
+                let totem = family == 2;
+                let demon = family == 1;
+                if pets.iter().any(|(_, _, p, _)| {
+                    p.owner == owner && p.family == family as u8 && p.slot == slot
+                }) {
+                    continue;
+                }
+                let serial = run.guid();
+                let entity = units::spawn_unit(
+                    &mut commands,
+                    &UnitSpec {
+                        serial,
+                        display: if totem {
+                            4587
+                        } else if demon {
+                            4449
+                        } else {
+                            247
+                        },
+                        scale: 1.0,
+                        level: 60,
+                        faction: units::FACTION_FRIENDLY,
+                        bytes0: 0,
+                        weapons: &[],
+                        sheath: 0,
                     },
-                    scale: 1.0,
-                    level: 60,
-                    faction: units::FACTION_FRIENDLY,
-                    bytes0: 0,
-                    weapons: &[],
-                    sheath: 0,
-                },
-                pos + Vec3::X * (2.0 + f32::from(slot)),
-                0.0,
-            );
-            commands.entity(entity).insert(Summon {
-                owner,
-                slot,
-                cooldown: rng.range(0.05, 0.55),
-                stationary: totem,
-                target: None,
-                retarget: 0.0,
-            });
-            if let Some(owner) = owner {
-                commands
-                    .entity(entity)
-                    .insert(super::multiplayer::OwnedEffect(owner));
+                    pos + Vec3::X * (2.0 + f32::from(slot)),
+                    0.0,
+                );
+                commands.entity(entity).insert(Summon {
+                    family: family as u8,
+                    owner,
+                    slot,
+                    cooldown: rng.range(0.05, 0.55),
+                    stationary: totem,
+                    target: None,
+                    retarget: 0.0,
+                    carried: None,
+                    carry_until: 0.0,
+                    harvested: None,
+                });
+                if let Some(owner) = owner {
+                    commands
+                        .entity(entity)
+                        .insert(super::multiplayer::OwnedEffect(owner));
+                }
             }
         }
     }
@@ -822,7 +954,11 @@ pub(super) fn tick(
         if pet.owner != owner {
             continue;
         }
-        if pet.slot >= count {
+        let demon = pet.family == 1;
+        if pet.carry_until < now {
+            pet.carried = None;
+        }
+        if pet.slot >= counts[pet.family as usize] {
             commands.entity(entity).despawn();
             continue;
         }
@@ -856,10 +992,40 @@ pub(super) fn tick(
             pet.retarget = rng.range(1.2, 2.4);
         }
         let target = pet.target.and_then(|e| enemies.get(e).ok());
+        if !pet.stationary && run.legendary.has(185) {
+            if let Some((e, _, _)) = enemies
+                .iter()
+                .filter(|(_, _, en)| {
+                    !en.dead
+                        && en.dots.iter().any(|d| {
+                            d.owner == owner
+                                && super::items::legendary::periodic::family(d)
+                                    == super::items::legendary::periodic::Family::Bleed
+                        })
+                })
+                .min_by(|(_, a, _), (_, b, _)| {
+                    units::flat(a.translation - tf.translation)
+                        .length_squared()
+                        .total_cmp(&units::flat(b.translation - tf.translation).length_squared())
+                })
+            {
+                if pet.carried.is_none() {
+                    pet.target = Some(e);
+                }
+            }
+        }
         let destination = if pet.stationary {
             pos + Vec3::X * 2.0
         } else {
             target.as_ref().map_or(pos, |t| t.1.translation)
+        };
+        let destination = if run.legendary.has(188) && !pet.stationary {
+            run.legendary
+                .casting
+                .spirit_destination
+                .unwrap_or(destination)
+        } else {
+            destination
         };
         let delta = units::flat(destination - tf.translation);
         let len = delta.length();
@@ -869,13 +1035,70 @@ pub(super) fn tick(
         mv.speed = if move_by > 0.0 { 8.0 } else { 0.0 };
         mv.flags = if move_by > 0.0 { 1 } else { 0 };
         pet.cooldown -= dt;
+        if !pet.stationary {
+            run.legendary.casting.pet = Some(tf.translation);
+        }
         if let Some((target, target_tf, _)) = target {
             if pet.cooldown <= 0.0
                 && units::flat(target_tf.translation - tf.translation).length() <= range
-                && (!pet.stationary || active(&run, M::DualTotem))
+                && (!pet.stationary || active(&run, M::DualTotem) || run.legendary.has(194))
             {
+                let target_pos = target_tf.translation;
+                if !pet.stationary && run.legendary.has(188) {
+                    pet.cooldown = 0.5;
+                    continue;
+                }
+                if !pet.stationary && run.legendary.has(185) {
+                    if pet.harvested != Some(target) {
+                        if let Some(dot) = pet.carried.take() {
+                            if let Ok((_, _, mut en)) = enemies.get_mut(target) {
+                                en.dots.push(dot);
+                            }
+                            pet.harvested = None;
+                        } else if let Ok((_, _, mut en)) = enemies.get_mut(target) {
+                            if let Some(dot) = en.dots.iter_mut().find(|d| {
+                                d.owner == owner
+                                    && super::items::legendary::periodic::family(d)
+                                        == super::items::legendary::periodic::Family::Bleed
+                            }) {
+                                let mut portion = dot.clone();
+                                portion.dps *= 0.3;
+                                dot.dps *= 0.7;
+                                pet.carried = Some(portion);
+                                pet.carry_until = now + 6.0;
+                                pet.harvested = Some(target);
+                                pet.target = None;
+                            }
+                        }
+                    }
+                }
+                if !pet.stationary {
+                    super::items::legendary::effects::pet_mark(&mut run, target, target_pos);
+                }
+                if !pet.stationary && run.legendary.has(191) {
+                    pet.cooldown = 1.5;
+                    continue;
+                }
+                if !pet.stationary && run.legendary.has(181) {
+                    if let Some((key, _)) = run.legendary.casting.last_melee {
+                        super::items::legendary::casting::copy(
+                            &mut run,
+                            181,
+                            key,
+                            tf.translation,
+                            Some(target),
+                            0.0,
+                        );
+                        pet.cooldown = 1.5;
+                        continue;
+                    }
+                }
                 let damage = (if pet.stationary { 24.0 } else { 18.0 })
-                    * if active(&run, M::DemonLord) { 2.0 } else { 1.0 };
+                    * if demon && active(&run, M::DemonLord) {
+                        2.0
+                    } else {
+                        1.0
+                    };
                 let skill = if demon {
                     "proc_demon_bolt"
                 } else if pet.stationary {
@@ -913,11 +1136,13 @@ pub(super) fn tick(
                         M::Pet
                     },
                 );
-                if active(&run, M::Pack) || active(&run, M::Demons) {
+                if (!demon && !pet.stationary && active(&run, M::Pack))
+                    || (demon && active(&run, M::Demons))
+                {
                     hit.dot = damage * 0.2;
                     hit.dot_dur = 4.0;
                 }
-                if active(&run, M::DemonLord) {
+                if demon && active(&run, M::DemonLord) {
                     hit.splash = 4.0;
                 }
                 pending.0.push((now, hit.clone()));
@@ -951,9 +1176,9 @@ pub(super) fn support(
         buff: (f32, f32),
     }
     fn source(run: &mut Run, pos: Vec3) -> Source {
-        let rate = if active(run, M::SpiritTotem) {
+        let rate = if active(run, M::SpiritTotem) && !run.legendary.has(194) {
             0.04
-        } else if active(run, M::HealTotem) {
+        } else if active(run, M::HealTotem) && !run.legendary.has(194) {
             0.02
         } else if active(run, M::Grove) {
             0.03
@@ -965,7 +1190,9 @@ pub(super) fn support(
         let pulse = std::mem::take(&mut run.talent_runtime.party_pulse)
             && (active(run, M::HolyBurst) || active(run, M::Grove));
         let healing = std::mem::take(&mut run.talent_runtime.healing);
-        let key = if active(run, M::HealTotem) || active(run, M::SpiritTotem) {
+        let key = if (active(run, M::HealTotem) || active(run, M::SpiritTotem))
+            && !run.legendary.has(194)
+        {
             "proc_totem_heal"
         } else if active(run, M::Grove) {
             "proc_grove"
@@ -1543,8 +1770,12 @@ mod tests {
         let mut enemy = enemy();
         enemy.dots.push(Dot {
             meter_source: None,
+            tags: None,
             owner: Some(8),
             skill: "deadly_poison",
+            item_source: None,
+            origin: crate::survivors::items::legendary::events::Origin::Talent,
+            meta: Default::default(),
             dps: 10.0,
             left: 4.0,
             tick: 1.0,
@@ -1573,6 +1804,10 @@ mod tests {
                 owner: None,
                 skill: "rend",
                 meter_source: None,
+                tags: None,
+                item_source: None,
+                origin: crate::survivors::items::legendary::events::Origin::Talent,
+                meta: Default::default(),
                 dps: 5.0,
                 left: 4.0,
                 tick: 1.0,

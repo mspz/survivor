@@ -1,7 +1,9 @@
-# Restart the game after edits. Base and rarity weights are relative; 0 disables an entry.
+# Restart the game after edits. Base/ordinary rarity weights are relative; legendary is a base percentage.
 # First choose loot class (80% player, 20% another class), then rarity, compatible base and affixes.
 # Common: 1 primary. Uncommon: 1 primary + 1 secondary. Epic: stamina + 1 other primary + 2 secondary.
-# An item cannot roll two affixes in the same group. Legendary is reserved: weight must be 0.
+# An item cannot roll two affixes in the same group. Legendary: 4 affixes and one saved unique effect.
+# Rarity weights are modified by Ilvl and equipped Magic Find, without changing affix rolls.
+# Ilvl scales item values by 1.015^(Ilvl-1); boss loot follows zone tier and boss order.
 # Stamina: 1 life/point. Strength/agility: 1% attack damage/point for eligible classes. Intelligence: 1% spell damage/healing/point.
 version = 1
 boss_drop_chance = 1.0
@@ -581,6 +583,15 @@ appearance = { display_id = 472, inventory_type = 17, item_class = 2, subclass =
 # MAIN GAUCHE (off_hand)
 # ============================================================================
 
+[[bases]]
+id = "focus_tome"
+name = "Focus Tome"
+slot = "off_hand"
+equipment_type = "held_off_hand"
+base_armour = 0
+icon = 'Interface\Icons\INV_Misc_Book_09'
+weight = 1
+
 # --- Boucliers ---
 [[bases]]
 id = "shield"
@@ -624,4 +635,5 @@ appearance = { display_id = 5291, inventory_type = 26, item_class = 2, subclass 
 normal = 60
 magic = 30
 epic = 10
-legendary = 0
+# Base percentage before Magic Find, independent of Ilvl.
+legendary = 5

@@ -150,7 +150,14 @@ impl Modifiers {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeriodicSnapshot { pub dps:f32,pub duration:f32,pub tags:Tags }
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Resolved {
+    pub direct_dot: Option<PeriodicSnapshot>,
+    pub dot_tags: Option<Tags>,
+    /// Assigned by the authoritative cast adapter; zero denotes a triggered copy.
+    pub cast_id: u64,
+    pub primary_critical: bool,
     pub tags: Tags,
     pub dmg: f32,
     pub dot: f32,
@@ -191,9 +198,26 @@ pub fn resolve_with_weapon_damage(
     modifiers: &[Modifier],
     weapon_damage: f32,
 ) -> Resolved {
+    resolve_tagged(
+        def,
+        level,
+        stats,
+        modifiers,
+        weapon_damage,
+        tags::for_spell(def),
+    )
+}
+
+pub(super) fn resolve_tagged(
+    def: &AbilityDef,
+    level: u8,
+    stats: &Stats,
+    modifiers: &[Modifier],
+    weapon_damage: f32,
+    tags: Tags,
+) -> Resolved {
     let level = level.max(1);
     let rank = f32::from(level - 1);
-    let tags = tags::for_spell(def);
     let mut increased = finite(stats.might) - 1.0;
     let (mut flat, mut more, mut dot_inc, mut dot_more) = (0.0, 1.0, 0.0, 1.0);
     if tags.contains(Tags::ATTACK) && def.damage > 0.0 {
@@ -267,6 +291,10 @@ pub fn resolve_with_weapon_damage(
         * (1.0 + area).max(0.0).sqrt())
     .min(100.0);
     Resolved {
+        direct_dot: None,
+        dot_tags: None,
+        cast_id: 0,
+        primary_critical: false,
         tags,
         dmg: bounded_damage(
             (def.damage * base + flat).max(0.0) * (1.0 + increased).max(0.0) * more,

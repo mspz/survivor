@@ -415,6 +415,7 @@ impl Account {
         }
     }
     pub fn apply(&self, class: usize, run: &mut Run) {
+        run.meta_level = level(self.xp);
         run.talent_build = self.builds[class];
         super::talent_runtime::configure(run);
         for (tree, spec) in TREES[class].iter().enumerate() {
@@ -493,9 +494,21 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
 
 pub(in crate::survivors) fn earned(run: &Run) -> u64 {
     (run.elapsed.max(0.0) as u64 / 5)
-        + u64::from(run.kills)
+        + (u64::from(run.kills) * 1000).saturating_sub(run.meta_kill_penalty) / 1000
         + u64::from(run.bosses) * 100
         + if run.won { 500 } else { 0 }
+}
+
+/// Keep full meta kill XP within nine levels; retain fractional rewards across kills.
+pub(super) fn penalize_kill(run: &mut Run, monster_level: u32) {
+    let retained = match run.meta_level.abs_diff(monster_level) {
+        0..=9 => 1000,
+        10 => 100,
+        11 => 50,
+        12 => 25,
+        _ => 10,
+    };
+    run.meta_kill_penalty += 1000 - retained;
 }
 pub(super) fn prepare(
     account: Res<Account>,
@@ -524,6 +537,7 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
     }
     run.account_credited = total;
     account.xp = account.xp.saturating_add(gained).min(threshold(60));
+    run.meta_level = level(account.xp);
     account.last_reward = total;
     account.save();
 }
@@ -609,6 +623,40 @@ mod tests {
         assert_eq!(budget(threshold(9)), 0);
         assert_eq!(budget(threshold(10)), 1);
         assert_eq!(budget(u64::MAX), 51);
+    }
+    #[test]
+    fn meta_kill_xp_penalty_uses_monster_gap_in_both_directions() {
+        for (gap, expected) in [(9, 1000), (10, 100), (11, 50), (12, 25), (13, 10), (25, 10)] {
+            for monster_level in [30 - gap, 30 + gap] {
+                let mut run = Run {
+                    meta_level: 30,
+                    level: 100,
+                    ..Run::default()
+                };
+                for _ in 0..1000 {
+                    run.kills += 1;
+                    penalize_kill(&mut run, monster_level);
+                }
+                assert_eq!(earned(&run), expected, "monster level {monster_level}");
+            }
+        }
+    }
+
+    #[test]
+    fn meta_kill_penalties_preserve_previous_rewards_when_the_level_changes() {
+        let mut run = Run {
+            meta_level: 20,
+            ..Run::default()
+        };
+        for _ in 0..10 {
+            run.kills += 1;
+            penalize_kill(&mut run, 10);
+        }
+        assert_eq!(earned(&run), 1);
+        run.meta_level = 19;
+        run.kills += 1;
+        penalize_kill(&mut run, 10);
+        assert_eq!(earned(&run), 2);
     }
     #[test]
     fn ranks_prerequisites_and_shared_tree_budget_are_enforced() {

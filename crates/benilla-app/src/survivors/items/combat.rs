@@ -61,12 +61,31 @@ fn sync_buffs(run: &mut Run) {
         .collect();
     run.replace_spell_modifiers(PROC_SOURCE, modifiers);
 }
+#[cfg(test)]
 pub(in crate::survivors) fn record_hit(run: &mut Run, skill: &'static str, tags: Tags) {
+    record_hit_from(run, skill, tags, 0);
+}
+pub(in crate::survivors) fn record_hit_from(
+    run: &mut Run,
+    skill: &'static str,
+    tags: Tags,
+    cast: u64,
+) {
     if run.item_runtime.events.len() < 256 && !run.item_runtime.procs.is_empty() {
         let equipped = run
             .item_runtime
             .procs
             .iter()
+            .filter(|p| {
+                !run.legendary.has(279)
+                    || !tags.contains(Tags::MELEE | Tags::ATTACK)
+                    || run.legendary.weapon_items.get(&p.item).is_none_or(|hand| {
+                        run.legendary
+                            .hands
+                            .get(&cast)
+                            .is_none_or(|used| used == hand)
+                    })
+            })
             .map(|p| (p.item, p.index))
             .collect();
         run.item_runtime.events.push(Event {
@@ -282,6 +301,7 @@ pub(in crate::survivors) fn tick(
             let mut hit =
                 super::super::abilities::hit_for(def, &params, link.target.e, damage, crit);
             hit.triggered = true;
+            hit.origin = super::legendary::events::Origin::Item;
             hit.dot *= link.scale;
             if area {
                 hit.splash = 0.0;

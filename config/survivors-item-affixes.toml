@@ -1,5 +1,6 @@
 # Restart the game after edits. Secondary percentages are fractions: 0.10 = 10%.
 # Primary stats use whole points. Zero weight disables an affix.
+# Roll maxima: normal x1, magic x1.25, epic x1.5, future legendary x2; minima stay fixed.
 # slots controls compatible slots; tags requires ALL listed tags; group prevents duplicates.
 
 [[affixes]]
@@ -422,3 +423,14 @@ min = 0.02
 max = 0.08
 weight = 10
 slots = ["off_hand"]
+
+[[affixes]]
+id = "magic_find"
+name = "of Fortune"
+kind = "suffix"
+group = "magic_find"
+effect = "magic_find"
+min = 0.05
+max = 0.15
+weight = 10
+slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]

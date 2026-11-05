@@ -31,9 +31,7 @@ pub(super) fn base_for(kind: EquipmentType, slot: SlotKind) -> f32 {
 }
 
 pub(super) fn scaled_base(base: f32, level: u32) -> f32 {
-    (base * (1.0 + 0.02 * level.saturating_sub(1) as f32))
-        .round()
-        .min(1.0e6)
+    (base * super::item_level::factor(level)).round().min(1.0e6)
 }
 
 impl Item {
@@ -51,6 +49,7 @@ impl crate::survivors::Run {
     pub(in crate::survivors) fn damage_reduction(&self) -> f32 {
         1.0 - (1.0 - reduction(self.stats().armor))
             * (1.0 - self.equipment.reduction.clamp(0.0, 0.75))
+            * (1.0 - super::legendary::events::reduction(self))
     }
 }
 

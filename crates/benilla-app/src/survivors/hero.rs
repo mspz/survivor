@@ -208,7 +208,7 @@ pub(super) fn drive_hero(
     time: Res<Time>,
     input: Res<super::session::ServerInput>,
     session: Res<super::session::LocalSession>,
-    run: Res<Run>,
+    mut run: ResMut<Run>,
     selection: Res<Selection>,
     world: WorldPoint,
     mut player: ResMut<crate::player::Player>,
@@ -286,6 +286,7 @@ pub(super) fn drive_hero(
             if hm.vy != 0.0 {
                 mv.flags |= move_flags::FALLING;
             }
+            super::items::legendary::events::walk(&mut run, tf.translation, pos, dt);
             if tf.translation != pos {
                 tf.translation = pos;
             }
@@ -426,6 +427,7 @@ pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
         };
     let (dmg, absorbed) = super::spell_engine::mitigate(raw, 0.0, shield, false);
     run.shield -= absorbed;
+    if shield>0.0&&run.shield<=0.0{super::items::legendary::effects::shield_expired(run,0.0,true);}
     if shield > 0.0
         && run.shield <= 0.0
         && super::talent_runtime::active(run, super::talent_design::Mechanic::Shieldburst)
@@ -433,6 +435,7 @@ pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
         run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
     run.hp -= dmg;
+    super::items::legendary::events::hurt(run, run.hp + dmg, absorbed, dmg);
     dmg
 }
 
@@ -442,15 +445,18 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
         && roll < (run.equipment.block + super::talent_runtime::block_chance(run)).clamp(0.0, 0.75)
     {
         run.talent_runtime.blocked = true;
+        super::items::legendary::effects::blocked(run,raw);
+        super::items::legendary::events::blocked(run);
         if super::talent_runtime::active(run, super::talent_design::Mechanic::Block) {
-            if run.class.id == 2 {
+            if super::items::legendary::milestones::sources(run,super::talent_design::Mechanic::Block).contains(&2) {
                 let max = run.stats().max_hp;
                 let amount =
                     super::procs::resolve(run, "proc_holy_heal", max * 0.03, 0.0, 0.0, 0.0, 1).dmg;
                 run.heal(amount);
             }
+            let warrior_block = super::items::legendary::milestones::sources(run,super::talent_design::Mechanic::Block).contains(&1);
             for ability in &mut run.abilities {
-                if ability.def.key == "thunder_clap" {
+                if ability.def.key == "thunder_clap" && warrior_block {
                     ability.cd = (ability.cd - 1.0).max(0.0);
                 }
             }
@@ -493,13 +499,18 @@ pub(super) fn hero_vitals(
         return;
     }
     run.elapsed += dt;
+    if run.shield_t > 0.0 && run.shield_t <= dt {
+        let remaining = run.shield;
+        super::items::legendary::events::shield_expired(&mut run, remaining);
+    }
     let r = &mut *run;
     for t in [&mut r.shield_t, &mut r.immune_t, &mut r.thorns_t] {
         *t = (*t - dt).max(0.0);
     }
-    let mut heal = stats.regen * dt;
+    let heal = (stats.regen + super::items::legendary::events::regeneration(&run)) * dt;
     if run.heal_t > 0.0 {
-        heal += run.heal_rate * dt.min(run.heal_t);
+        let amount = run.heal_rate * dt.min(run.heal_t);
+        super::items::legendary::events::active_heal(&mut run, amount);
         run.heal_t = (run.heal_t - dt).max(0.0);
     }
     run.heal(heal);

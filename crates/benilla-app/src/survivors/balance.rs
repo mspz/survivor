@@ -1,6 +1,8 @@
 //! Final effect-power tuning, independent of item rolls and reward weights.
 use super::data;
-use super::spell_engine::tags::{self, Tags};
+#[cfg(test)]
+use super::spell_engine::tags;
+use super::spell_engine::tags::Tags;
 use bevy::prelude::*;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -83,19 +85,23 @@ impl Config {
         }
         Ok(config)
     }
+    #[cfg(test)]
     pub fn multiplier(&self, class: &data::ClassDef, spell: &str) -> f32 {
-        let class_factor = self
-            .classes
-            .get(&class.name.to_lowercase())
-            .map_or(1.0, |entry| {
-                entry.multiplier * entry.spells.get(spell).copied().unwrap_or(1.0)
-            });
         let spell_tags = data::ABILITIES
             .iter()
             .find(|def| def.key == spell)
             .or_else(|| super::procs::find(spell).map(|s| &s.def))
             .map(tags::for_spell)
             .unwrap_or_default();
+        self.multiplier_tagged(class, spell, spell_tags)
+    }
+    pub fn multiplier_tagged(&self, class: &data::ClassDef, spell: &str, spell_tags: Tags) -> f32 {
+        let class_factor = self
+            .classes
+            .get(&class.name.to_lowercase())
+            .map_or(1.0, |entry| {
+                entry.multiplier * entry.spells.get(spell).copied().unwrap_or(1.0)
+            });
         // Every matching tag is an independent factor, even on multi-school spells.
         TAGS.iter()
             .filter(|(_, tag)| spell_tags.contains(*tag))

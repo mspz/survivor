@@ -1,6 +1,6 @@
 //! Paper-doll layout and tag-aware current spell statistics, using client art from the MPQs.
 use super::super::{
-    spell_engine::{tags, Change, Tags},
+    spell_engine::{Change, Tags},
     talents,
 };
 use super::*;
@@ -353,9 +353,10 @@ pub(super) fn spell_stats(run: &Run, index: usize) -> String {
                 |p| p.lines.join("\n"),
             );
     };
-    let def = owned.def;
-    let tags = tags::for_spell(def);
-    let p = run.resolve_spell(def, owned.level);
+    let profile = crate::survivors::items::legendary::profile(run, owned.def);
+    let def = &profile.0;
+    let p = run.resolve_spell(owned.def, owned.level);
+    let tags = p.tags;
     let mut increased = run.stats().might - 1.0;
     let (mut more, mut recovery, mut speed, mut flat) = (1.0, 0.0, 0.0, 0.0);
     for modifier in run

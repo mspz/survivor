@@ -195,15 +195,13 @@ impl Config {
         if c.version != 1
             || !c.boss_drop_chance.is_finite()
             || !(0.0..=1.0).contains(&c.boss_drop_chance)
-            || c.rarities.legendary != 0.0
+            || !valid_weight(c.rarities.legendary)
             || !c.weights().iter().copied().all(valid_weight)
-            || !c.weights().iter().any(|w| *w > 0.0)
+            || !(c.weights().iter().any(|w| *w > 0.0) || c.rarities.legendary > 0.0)
             || c.bases.is_empty()
             || c.affixes.is_empty()
         {
-            return Err(
-                "Invalid version, drop chance or rarity weights (legendary must stay 0).".into(),
-            );
+            return Err("Invalid version, drop chance or rarity weights.".into());
         }
         let mut ids = BTreeSet::new();
         let mut groups = BTreeMap::new();
@@ -277,7 +275,7 @@ impl Config {
                 continue;
             }
             // All enabled bases must be able to roll every enabled rarity without fallback.
-            let need = if c.rarities.epic > 0.0 {
+            let need = if c.rarities.epic > 0.0 || c.rarities.legendary > 0.0 {
                 2
             } else if c.rarities.magic > 0.0 {
                 1
@@ -291,7 +289,7 @@ impl Config {
                 .collect();
             for primary in [true, false] {
                 let required = if primary {
-                    if c.rarities.epic > 0.0 {
+                    if c.rarities.epic > 0.0 || c.rarities.legendary > 0.0 {
                         2
                     } else {
                         1
@@ -343,7 +341,7 @@ impl Config {
                         && a.effect != Effect::Stamina
                         && b.equipment_type.drop_primary_allowed(class.id, a.effect)
                 });
-                if c.rarities.epic > 0.0 && !offensive {
+                if (c.rarities.epic > 0.0 || c.rarities.legendary > 0.0) && !offensive {
                     return Err(format!(
                         "{} has no offensive primary for {}",
                         b.id, class.name
@@ -355,6 +353,19 @@ impl Config {
             return Err("No enabled item bases".into());
         }
         for class in super::super::data::CLASSES {
+            if c.rarities.legendary > 0.0
+                && !legendary::DEFINITIONS.iter().any(|d| {
+                    legendary::eligible(d.id, class.id)
+                        && c.bases.iter().any(|base| {
+                            base.weight > 0.0
+                                && base.slot == d.slot
+                                && base.equipment_type.can_drop(class.id)
+                                && legendary::base_allowed(d.id, class.id, base.equipment_type)
+                        })
+                })
+            {
+                return Err(format!("No compatible legendary base for {}", class.name));
+            }
             if !c
                 .bases
                 .iter()
@@ -376,10 +387,20 @@ impl Config {
     pub fn generate(&self, level: u32, rng: &mut Rng) -> Result<Item, String> {
         self.generate_for_class(level, 1, rng)
     }
+    #[cfg(test)]
     pub fn generate_for_class(
         &self,
         level: u32,
         class_id: u8,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        self.generate_loot(level, class_id, 0.0, rng)
+    }
+    pub fn generate_loot(
+        &self,
+        level: u32,
+        class_id: u8,
+        magic_find: f32,
         rng: &mut Rng,
     ) -> Result<Item, String> {
         if !super::super::data::CLASSES.iter().any(|c| c.id == class_id) {
@@ -394,20 +415,79 @@ impl Config {
                 .collect();
             others[rng.index(others.len())].id
         };
-        self.generate_for_target(level, target, rng)
+        self.roll_for_target(level, target, magic_find, rng)
     }
+    #[cfg(test)]
     fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
+        self.roll_for_target(level, class_id, 0.0, rng)
+    }
+    fn rarity_weights(&self, level: u32, magic_find: f32) -> [f64; 4] {
+        let ordinary = item_level::quality_weights(self.weights(), level, magic_find);
+        let total = ordinary.iter().sum::<f64>();
+        let find = if magic_find.is_finite() {
+            f64::from(magic_find.max(0.0))
+        } else {
+            0.0
+        };
+        let chance = (self.rarities.legendary / 100.0 * (1.0 + find)).clamp(0.0, 1.0);
+        if chance >= 1.0 || total == 0.0 {
+            return [0.0, 0.0, 0.0, self.rarities.legendary];
+        }
+        [
+            ordinary[0],
+            ordinary[1],
+            ordinary[2],
+            total * chance / (1.0 - chance),
+        ]
+    }
+    fn roll_for_target(
+        &self,
+        level: u32,
+        class_id: u8,
+        magic_find: f32,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
         let class = super::super::data::CLASSES
             .iter()
             .find(|c| c.id == class_id)
             .ok_or("Unknown loot class")?;
-        let rarity = [Rarity::Normal, Rarity::Magic, Rarity::Epic]
-            [weighted_index(&self.weights(), rng.f32()).ok_or("No rarity available")?];
+        let weights = self.rarity_weights(level, magic_find);
+        let rarity = [
+            Rarity::Normal,
+            Rarity::Magic,
+            Rarity::Epic,
+            Rarity::Legendary,
+        ][weighted_index(&weights, rng.f32()).ok_or("No rarity available")?];
+        let unique = if rarity == Rarity::Legendary {
+            let pool: Vec<_> = legendary::DEFINITIONS
+                .iter()
+                .filter(|d| {
+                    legendary::eligible(d.id, class_id)
+                        && self.bases.iter().any(|b| {
+                            b.slot == d.slot
+                                && b.weight > 0.0
+                                && b.equipment_type.can_drop(class_id)
+                                && legendary::base_allowed(d.id, class_id, b.equipment_type)
+                        })
+                })
+                .collect();
+            if pool.is_empty() {
+                return Err("No compatible legendary".into());
+            }
+            Some(pool[rng.index(pool.len())])
+        } else {
+            None
+        };
         let weights: Vec<_> = self
             .bases
             .iter()
             .map(|b| {
-                if b.equipment_type.can_drop(class_id) {
+                if b.equipment_type.can_drop(class_id)
+                    && unique.is_none_or(|d| {
+                        d.slot == b.slot
+                            && legendary::base_allowed(d.id, class_id, b.equipment_type)
+                    })
+                {
                     b.weight
                 } else {
                     0.0
@@ -419,7 +499,7 @@ impl Config {
         let mut affixes: Vec<Affix> = Vec::new();
         for index in 0..rarity.count() {
             let primary = index < rarity.primary_count();
-            let stamina = rarity == Rarity::Epic && index == 0;
+            let stamina = matches!(rarity, Rarity::Epic | Rarity::Legendary) && index == 0;
             let pool: Vec<_> = self
                 .affixes
                 .iter()
@@ -436,10 +516,11 @@ impl Config {
             let weights: Vec<_> = pool.iter().map(|a| a.weight).collect();
             let a = pool[weighted_index(&weights, rng.f32())
                 .ok_or("No compatible affix; check the item table")?];
+            let maximum = item_level::roll_max(a.effect, a.max, rarity);
             let value = if a.effect.discrete() {
-                a.min + (rng.next_u64() % ((a.max - a.min) as u64 + 1)) as f32
+                a.min + (rng.next_u64() % ((maximum - a.min) as u64 + 1)) as f32
             } else {
-                ((rng.range(a.min, a.max) * 1000.0).round() / 1000.0).clamp(a.min, a.max)
+                ((rng.range(a.min, maximum) * 1000.0).round() / 1000.0).clamp(a.min, maximum)
             };
             affixes.push(Affix {
                 id: a.id.clone(),
@@ -447,7 +528,7 @@ impl Config {
                 kind: a.kind,
                 group: a.group.clone(),
                 effect: a.effect,
-                value,
+                value: item_level::scale(a.effect, value, level),
                 tags: a.tags.clone(),
                 proc: a.proc.as_ref().map(|p| {
                     let spell = if matches!(p.kind, ProcKind::ClassSpell) {
@@ -485,6 +566,10 @@ impl Config {
             .collect::<Vec<_>>()
             .join(" ");
         Ok(Item {
+            legendary: unique.map(|d| legendary::Roll {
+                unique: d.id,
+                milestone: (d.id == 301).then(|| rng.index(81) as u8),
+            }),
             base_damage: weapons::is_weapon(base.equipment_type).then(|| {
                 base.base_damage
                     .unwrap_or_else(|| weapons::base_for(base.equipment_type, base.appearance))
@@ -497,13 +582,18 @@ impl Config {
             )),
             appearance: base.appearance,
             equipment_type: base.equipment_type,
-            base_block: base.base_block_max.map_or(base.base_block, |max| {
-                (rng.range(base.base_block, max) * 1000.0).round() / 1000.0
-            }),
+            base_block: item_level::scale(
+                Effect::BlockChance,
+                base.base_block_max.map_or(base.base_block, |max| {
+                    let max = item_level::roll_max(Effect::BlockChance, max, rarity);
+                    (rng.range(base.base_block, max) * 1000.0).round() / 1000.0
+                }),
+                level,
+            ),
             loot_class: Some(class_id),
             id: 0,
             base: base.id.clone(),
-            name,
+            name: unique.map_or(name, |d| d.name.to_owned()),
             slot: base.slot,
             icon: base.icon.clone(),
             rarity,
@@ -611,6 +701,94 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_uniques_load_the_current_english_name_without_changing_their_roll() {
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 0.0,
+            epic: 0.0,
+            legendary: 100.0,
+        };
+        let item = config.roll_for_target(60, 1, 0.0, &mut Rng(160)).unwrap();
+        let mut inventory = Inventory::fixture(vec![item]);
+        let expected = toml::to_string(&inventory.save).unwrap();
+        inventory.save.items[0].name = "Ancien nom français".into();
+        let decoded = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        assert_eq!(toml::to_string(&decoded).unwrap(), expected);
+    }
+    #[test]
+    fn legendary_chance_is_five_percent_before_find_at_every_item_level() {
+        let config = Config::builtin();
+        for level in [1, 20, 60, 100] {
+            for (find, expected) in [
+                (0.0, 0.05),
+                (0.1, 0.055),
+                (1.0, 0.10),
+                (10.0, 0.55),
+                (100.0, 1.0),
+            ] {
+                let weights = config.rarity_weights(level, find);
+                assert!((weights[3] / weights.iter().sum::<f64>() - expected).abs() < 1e-8);
+            }
+        }
+    }
+    #[test]
+    fn legendary_rolls_keep_identity_stats_and_quality_across_saving() {
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 0.0,
+            epic: 0.0,
+            legendary: 1.0,
+        };
+        let mut rng = Rng(160);
+        let mut seen = BTreeSet::new();
+        for class in super::super::super::data::CLASSES {
+            for _ in 0..50 {
+                let item = config.roll_for_target(60, class.id, 0.0, &mut rng).unwrap();
+                assert_eq!(item.rarity, Rarity::Legendary);
+                assert_eq!(item.affixes.len(), 4);
+                assert_eq!(
+                    item.affixes.iter().filter(|a| a.effect.primary()).count(),
+                    2
+                );
+                let roll = item.legendary.as_ref().unwrap().clone();
+                assert!(legendary::eligible(roll.unique, class.id));
+                seen.insert(roll.unique);
+                let inventory = Inventory::fixture(vec![item]);
+                let text = toml::to_string(&inventory.save).unwrap();
+                let decoded = Inventory::decode(&text).unwrap();
+                assert_eq!(decoded.items[0].legendary.as_ref(), Some(&roll));
+                assert_eq!(decoded.items[0].level, 60);
+                assert_eq!(decoded.items[0].affixes.len(), 4);
+            }
+        }
+        assert!(seen.len() > 80);
+        for d in legendary::DEFINITIONS {
+            assert!(legendary::supported(d.id));
+            assert!(
+                super::super::super::data::CLASSES
+                    .iter()
+                    .any(|class| legendary::eligible(d.id, class.id)
+                        && config.bases.iter().any(|base| base.weight > 0.0
+                            && base.slot == d.slot
+                            && base.equipment_type.can_drop(class.id)
+                            && legendary::base_allowed(d.id, class.id, base.equipment_type))),
+                "{} has no usable drop base",
+                d.name
+            );
+        }
+        // Item level one must never accidentally select a zero-weight legendary tier.
+        config.rarities.normal = 1.0;
+        config.rarities.legendary = 0.0;
+        for _ in 0..50 {
+            assert_eq!(
+                config.roll_for_target(1, 1, 0.0, &mut rng).unwrap().rarity,
+                Rarity::Normal
+            );
+        }
+    }
     #[test]
     fn split_tables_preserve_rolls_and_reject_fields_in_the_wrong_file() {
         let split = Config::parse_parts(DEFAULT_BASES, DEFAULT_AFFIXES).unwrap();
@@ -743,7 +921,9 @@ mod tests {
                     assert!(item.affixes.iter().any(|a| a.effect == Effect::Stamina));
                 }
                 if item.equipment_type == EquipmentType::Shield {
-                    assert!((0.25..=0.40).contains(&item.base_block));
+                    let scale = item_level::factor(item.level);
+                    let max = item_level::roll_max(Effect::BlockChance, 0.40, item.rarity);
+                    assert!((0.25 * scale..=(max * scale).min(1.0)).contains(&item.base_block));
                 }
                 assert!(item.valid_equipment());
             }
@@ -887,6 +1067,7 @@ mod tests {
             "pickup_radius",
             "experience",
             "luck",
+            "magic_find",
             "proc_class_spell",
         ] {
             assert!(
@@ -906,7 +1087,8 @@ mod tests {
     }
     #[test]
     fn rolls_obey_primary_secondary_counts_ranges_and_item_restrictions() {
-        let config = Config::builtin();
+        let mut config = Config::builtin();
+        config.rarities.legendary = 0.0;
         let mut rng = Rng(42);
         let mut counts = [0; 3];
         for _ in 0..10_000 {
@@ -930,7 +1112,13 @@ mod tests {
             for a in &item.affixes {
                 let def = config.affixes.iter().find(|d| d.id == a.id).unwrap();
                 assert!(def.slots.contains(&item.slot));
-                assert!((def.min..=def.max).contains(&a.value));
+                assert!((item_level::scale(def.effect, def.min, item.level)
+                    ..=item_level::scale(
+                        def.effect,
+                        item_level::roll_max(def.effect, def.max, item.rarity),
+                        item.level
+                    ))
+                    .contains(&a.value));
                 assert!(groups.insert(&a.group));
 
                 if matches!(a.effect, Effect::AttackSpeed | Effect::FlatDamage) {
@@ -956,9 +1144,11 @@ mod tests {
                 assert_eq!(Inventory::decode(&text).unwrap().items.len(), 1);
             }
         }
-        assert!((5700..6300).contains(&counts[0]));
-        assert!((2700..3300).contains(&counts[1]));
-        assert!((800..1200).contains(&counts[2]));
+        let weights = item_level::quality_weights(config.weights(), 20, 0.0);
+        for (count, weight) in counts.into_iter().zip(weights) {
+            let expected = weight / weights.iter().sum::<f64>() * 10_000.0;
+            assert!((f64::from(count) - expected).abs() < 250.0);
+        }
     }
     #[test]
     fn config_rejects_invalid_weights_weapon_mods_and_incomplete_affix_pools() {
@@ -967,7 +1157,8 @@ mod tests {
             "equipment_type = \"legacy\""
         ))
         .is_err());
-        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 0", "legendary = 1")).is_err());
+        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 5", "legendary = -1")).is_err());
+        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 5", "legendary = 1")).is_ok());
         assert!(Config::parse(
             &DEFAULT_FILE.replace("boss_drop_chance = 1.0", "boss_drop_chance = 2.0")
         )

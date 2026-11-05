@@ -1,0 +1,129 @@
+301 — The Archive of Nine Paths
+Slot : Bijou. Unique equipe : une seule copie de cet objet equipee par personnage.
+
+PROPOSITION D'OBJET, PAS ENCORE UNE FONCTIONNALITE IMPLEMENTEE
+Accorde un milestone tire parmi les 81 milestones actuels du jeu, quelle que soit ta classe.
+L'option est tiree une seule fois a la creation du loot, puis sauvegardee avec l'objet.
+Elle ne change pas en equipant l'objet, en changeant de classe ou en entrant en expedition.
+Le tooltip affiche la classe, la specialisation, le palier, le nom et l'effet du milestone.
+Les 120 propositions deja retenues sont conservees ; ceci ajoute un objet avec 81 variantes.
+
+REGLES DU ROLL
+- Un seul milestone, jamais les 81 en meme temps.
+- Les 81 options sont presentes : 9 classes x 3 specialisations x 3 milestones.
+- Par defaut, chaque option a le meme poids : 1/81. Chaque classe represente donc 1/9.
+- Le tirage n'est pas limite a la classe du personnage qui trouve ou equipe l'objet.
+- Les valeurs du milestone ne sont pas un jet d'affixe : reprendre son effet complet actuel.
+- Inclure aussi les milestones purement numeriques, comme Ruin ou Arcane Power, pour couvrir
+  reellement tous les milestones demandes, sans les remplacer par de nouveaux pouvoirs.
+- L'effet n'est actif que pendant que le bijou est equipe.
+- Un milestone deja fourni par les talents ne se cumule pas avec sa copie exacte sur l'objet.
+
+CONDITIONS ET DEPENDANCES
+Conserver les tags, les conditions et les restrictions du milestone d'origine : un effet
+qui exige du froid, du sacre, une arme, un blocage ou un bouclier les exige toujours.
+Le bijou ne convertit pas gratuitement les degats et ne supprime pas ces conditions.
+Ne pas attribuer des rangs de talents : l'objet constitue sa propre source de capacite.
+Pour un palier dependant d'un acteur ou d'un mecanisme anterieur, fournir le support minimal
+necessaire a son fonctionnement, sans accorder tous les bonus des paliers precedents.
+Exemples : un familier ou demon de base pour Hungry Pack/Legion/Demon Lord, le support Bloom
+pour Living Grove, un sort de bouclier pour les explosions de Discipline. Les autres bonus,
+explosions, brulures ou ameliorations des paliers non tires ne sont pas accordes.
+Ces dependances devront etre explicitees option par option lors de l'implementation.
+
+IDENTIFICATION DES OPTIONS
+La cle persistante est classe:arbre:noeud, pas le seul nom ni le seul enum Mechanic.
+Classe : identifiant du jeu. Arbre : 0, 1 ou 2. Noeud : 8, 12 ou 18.
+Deux milestones proches ou de meme mecanique restent deux rolls distincts s'ils proviennent
+de classes/specialisations differentes. Les noms et descriptions ci-dessous reprennent
+le code actuel ; les descriptions du jeu sont en anglais.
+Un milestone dont Mechanic vaut None reste une option valide : ses modificateurs numeriques
+font partie de son effet. Le seul enum Mechanic ne constitue donc jamais la liste des rolls.
+Conserver aussi la classe d'origine pour les variantes d'une meme mecanique : un sceau sacre
+de paladin et une arme de feu de chaman ne doivent pas devenir le meme effet sur le porteur.
+
+SOURCE
+crates/benilla-app/src/survivors/talent_design.rs : DESIGNS, 27 specialisations et 81 milestones.
+
+Numero d'option | Cle persistante | Classe | Specialisation | Palier | Milestone | Effet actuel
+001 | 1:0:8 | Guerrier | Armes | Palier 1 | Weapon Master | Equipped weapons gain 35% base damage, affix strength and proc chance.
+002 | 1:0:12 | Guerrier | Armes | Palier 2 | Sweeping Strikes | Physical melee attacks hit 2 extra targets.
+003 | 1:0:18 | Guerrier | Armes | Palier 3 | Armor Breaker | Physical attacks ignore 60% armor and deal 35% more damage.
+004 | 1:1:8 | Guerrier | Fureur | Palier 1 | Deep Wounds | Physical skill hits bleed for 20% damage per second for 4 sec.
+005 | 1:1:12 | Guerrier | Fureur | Palier 2 | Bloodbath | Bleeding enemies explode on death for 30% max health damage, up to 300. +20% attack speed.
+006 | 1:1:18 | Guerrier | Fureur | Palier 3 | Titan's Grip | Equip two two-handed weapons. +25% attack speed.
+007 | 1:2:8 | Guerrier | Protection | Palier 1 | Taunt | Taunt enemies within 12 yards for 3 sec every 6 sec. Unlocks Thunder Clap.
+008 | 1:2:12 | Guerrier | Protection | Palier 2 | Bulwark | +20% block chance. Blocking reduces Thunder Clap's cooldown by 1 sec.
+009 | 1:2:18 | Guerrier | Protection | Palier 3 | Thunder Fortress | Blocking releases a 45-damage shockwave within 6 yards, once per second. +40% area.
+010 | 2:0:8 | Paladin | Sacré | Palier 1 | Benevolent Light | Holy hits heal you and nearby allies for 4% damage dealt.
+011 | 2:0:12 | Paladin | Sacré | Palier 2 | Healing Shock | Every 6 sec, heal nearby allies for 12% max health and deal 40 Holy damage around you.
+012 | 2:0:18 | Paladin | Sacré | Palier 3 | Judgment of Light | Holy hits heal for 8% extra damage and strike 2 nearby enemies for 50% damage.
+013 | 2:1:8 | Paladin | Protection | Palier 1 | Consecrated Defender | Taunt nearby enemies every 6 sec. Unlocks Consecration.
+014 | 2:1:12 | Paladin | Protection | Palier 2 | Blessed Shield | +20% block chance. Blocking restores 3% max health.
+015 | 2:1:18 | Paladin | Protection | Palier 3 | Sanctuary | Blocking deals 45 Holy damage around you and restores 2% max health, once per second. +40% area.
+016 | 2:2:8 | Paladin | Vindicte | Palier 1 | Seal of Righteousness | Skill hits deal an extra Holy hit for 25% damage.
+017 | 2:2:12 | Paladin | Vindicte | Palier 2 | Seal of Command | Skill hits splash 40% damage within 4 yards.
+018 | 2:2:18 | Paladin | Vindicte | Palier 3 | Divine Storm | Seal hits splash to nearby enemies and restore health equal to 5% attack damage.
+019 | 3:0:8 | Chasseur | Maîtrise des bêtes | Palier 1 | Wild Companion | Summon a wolf that hunts enemies. Physical skill hits have a 50% chance to bleed.
+020 | 3:0:12 | Chasseur | Maîtrise des bêtes | Palier 2 | Hungry Pack | Summon a second wolf. Their bites cause bleeding for 4 sec.
+021 | 3:0:18 | Chasseur | Maîtrise des bêtes | Palier 3 | Pack Frenzy | Bleeding enemies explode on death. +35% attack speed.
+022 | 3:1:8 | Chasseur | Précision | Palier 1 | Barrage | Projectile skills fire 2 extra projectiles.
+023 | 3:1:12 | Chasseur | Précision | Palier 2 | Ricochet | Projectiles chain to 2 extra enemies.
+024 | 3:1:18 | Chasseur | Précision | Palier 3 | Splinter Shot | Projectiles fork on impact. +40% critical damage.
+025 | 3:2:8 | Chasseur | Survie | Palier 1 | Close-Range Predator | Unlocks Raptor Strike. Physical skill hits always cause bleeding.
+026 | 3:2:12 | Chasseur | Survie | Palier 2 | Trapper | Unlocks Explosive Trap. +60% attack duration and +40% attack area.
+027 | 3:2:18 | Chasseur | Survie | Palier 3 | Death Trap | Enemies affected by your damage over time explode on death for 30% max health damage, up to 300.
+028 | 4:0:8 | Voleur | Assassinat | Palier 1 | Deadly Poison | Skill hits poison enemies for 18% damage per second for 6 sec. Further hits refresh the poison.
+029 | 4:0:12 | Voleur | Assassinat | Palier 2 | Toxic Contagion | Your poison spreads to enemies within 6 yards when its target dies.
+030 | 4:0:18 | Voleur | Assassinat | Palier 3 | Poison Bomb | Poisoned enemies explode on death for 30% max health damage, up to 300.
+031 | 4:1:8 | Voleur | Combat | Palier 1 | Blade Flurry | Skill hits splash 40% damage to nearby enemies.
+032 | 4:1:12 | Voleur | Combat | Palier 2 | Combat Potency | 25% chance to repeat attacks. +20% attack speed.
+033 | 4:1:18 | Voleur | Combat | Palier 3 | Blade Dance | Every third skill hit deals 80% damage to enemies within 6 yards.
+034 | 4:2:8 | Voleur | Finesse | Palier 1 | Exposed Weakness | Repeated hits on one target gain 8% damage per hit, up to 80%. Switching targets resets the bonus.
+035 | 4:2:12 | Voleur | Finesse | Palier 2 | Premeditation | +15% critical chance and +50% critical damage.
+036 | 4:2:18 | Voleur | Finesse | Palier 3 | Perfect Execution | Every tenth consecutive hit on one target strikes again for 200% damage.
+037 | 5:0:8 | Pretre | Discipline | Palier 1 | Reactive Shield | Refreshing or breaking your shield deals 60% of its original absorption as nearby Holy damage.
+038 | 5:0:12 | Pretre | Discipline | Palier 2 | Atonement | Shield explosions restore 10% max health. +25% shield strength.
+039 | 5:0:18 | Pretre | Discipline | Palier 3 | Discipline Nova | Shield explosions deal 120% of original absorption and reach 10 yards.
+040 | 5:1:8 | Pretre | Sacré | Palier 1 | Flash Heal | Every 6 sec, heal nearby allies for 12% max health and deal 40 Holy damage around you.
+041 | 5:1:12 | Pretre | Sacré | Palier 2 | Wave of Light | Holy damage heals you and nearby allies for 4% damage dealt.
+042 | 5:1:18 | Pretre | Sacré | Palier 3 | Apotheosis | +35% Holy damage. Holy hits heal you and nearby allies for 8% extra damage.
+043 | 5:2:8 | Pretre | Ombre | Palier 1 | Vampiric Embrace | Recover health equal to 12% of your direct and periodic Shadow damage.
+044 | 5:2:12 | Pretre | Ombre | Palier 2 | Devouring Plague | Shadow hits apply a plague dealing 18% damage per second for 6 sec. +30% Shadow damage over time.
+045 | 5:2:18 | Pretre | Ombre | Palier 3 | Shadow Pandemic | Your damage over time spreads when its target dies, causing a nearby explosion.
+046 | 7:0:8 | Chaman | Élémentaire | Palier 1 | Conduction | Elemental projectiles chain to an extra target.
+047 | 7:0:12 | Chaman | Élémentaire | Palier 2 | Elemental Overload | 25% chance to repeat elemental spells.
+048 | 7:0:18 | Chaman | Élémentaire | Palier 3 | Maelstrom | Elemental projectiles gain 2 chain jumps and fork on impact.
+049 | 7:1:8 | Chaman | Amélioration | Palier 1 | Windfury Weapon | Skill hits have a 20% chance to trigger two extra strikes for 50% damage each.
+050 | 7:1:12 | Chaman | Amélioration | Palier 2 | Flametongue Weapon | Skill hits deal an extra Fire hit for 25% damage.
+051 | 7:1:18 | Chaman | Amélioration | Palier 3 | Stormstrike | Every fifth skill hit strikes up to 4 nearby enemies for 100% damage as Lightning.
+052 | 7:2:8 | Chaman | Restauration | Palier 1 | Healing Totem | Summon a totem that heals nearby allies for 2% max health per second.
+053 | 7:2:12 | Chaman | Restauration | Palier 2 | Totemic Harmony | Your healing totem also fires a 24-damage bolt every second. +50% totem duration.
+054 | 7:2:18 | Chaman | Restauration | Palier 3 | Spirit Totem | Your totem heals for 4% max health per second and its bolts hit 3 enemies.
+055 | 8:0:8 | Mage | Arcanes | Palier 1 | Arcane Power | Arcane spells deal 30% more damage.
+056 | 8:0:12 | Mage | Arcanes | Palier 2 | Arcane Focus | Repeated hits on one target gain 8% damage per hit, up to 80%. Switching targets resets the bonus.
+057 | 8:0:18 | Mage | Arcanes | Palier 3 | Arcane Blast | Every fifth Arcane hit explodes for 150% damage within 7 yards.
+058 | 8:1:8 | Mage | Feu | Palier 1 | Ignite | Fire hits burn enemies for 25% damage per second for 3 sec.
+059 | 8:1:12 | Mage | Feu | Palier 2 | Spreading Flames | Ignite spreads to enemies within 6 yards when its target dies.
+060 | 8:1:18 | Mage | Feu | Palier 3 | Combustion | Ignited enemies explode on death for 30% max health damage, up to 300.
+061 | 8:2:8 | Mage | Givre | Palier 1 | Frostbite | Frost hits slow by 40% for 3 sec and have a 20% chance to freeze. Frost damage is 10% lower.
+062 | 8:2:12 | Mage | Givre | Palier 2 | Shatter | Deal 60% more Frost damage to frozen enemies.
+063 | 8:2:18 | Mage | Givre | Palier 3 | Endless Winter | Frozen enemies explode on death and freeze nearby enemies for 2 sec.
+064 | 9:0:8 | Demoniste | Affliction | Palier 1 | Unstable Affliction | Shadow hits apply an affliction dealing 18% damage per second for 6 sec. +25% Shadow damage over time.
+065 | 9:0:12 | Demoniste | Affliction | Palier 2 | Contagion | Your damage over time spreads to enemies within 6 yards when its target dies.
+066 | 9:0:18 | Demoniste | Affliction | Palier 3 | Doom Eruption | Enemies affected by your damage over time explode on death for 30% max health damage, up to 300.
+067 | 9:1:8 | Demoniste | Démonologie | Palier 1 | Demonic Pact | Summon an imp that casts Firebolts.
+068 | 9:1:12 | Demoniste | Démonologie | Palier 2 | Legion | Summon two extra demons. Their attacks burn enemies.
+069 | 9:1:18 | Demoniste | Démonologie | Palier 3 | Demon Lord | Demons deal double damage and their hits explode within 4 yards.
+070 | 9:2:8 | Demoniste | Destruction | Palier 1 | Devastating Cast | Spells deal 70% more damage but have 35% longer cooldowns.
+071 | 9:2:12 | Demoniste | Destruction | Palier 2 | Ruin | +100% spell critical damage.
+072 | 9:2:18 | Demoniste | Destruction | Palier 3 | Cataclysm | Every third skill hit explodes for 200% damage within 8 yards, once per second.
+073 | 11:0:8 | Druide | Équilibre | Palier 1 | Starfire | Arcane spells deal 30% more damage and fire an extra projectile.
+074 | 11:0:12 | Druide | Équilibre | Palier 2 | Lunar Flare | Arcane hits burn enemies for 18% damage per second for 6 sec.
+075 | 11:0:18 | Druide | Équilibre | Palier 3 | Starfall | Every fifth Arcane hit causes a starburst for 150% damage within 7 yards.
+076 | 11:1:8 | Druide | Combat farouche | Palier 1 | Blood Claws | Permanently take Cat Form. Physical melee skill hits always cause bleeding.
+077 | 11:1:12 | Druide | Combat farouche | Palier 2 | Bear Instinct | Take 15% less damage and recover health equal to 5% of melee damage.
+078 | 11:1:18 | Druide | Combat farouche | Palier 3 | Savage Carnage | Bleeding enemies explode on death. +25% attack speed.
+079 | 11:2:8 | Druide | Restauration | Palier 1 | Bloom | Nearby allies recover 1.5% max health per second.
+080 | 11:2:12 | Druide | Restauration | Palier 2 | Gift of Nature | Nearby allies gain 15% damage and attack speed.
+081 | 11:2:18 | Druide | Restauration | Palier 3 | Living Grove | Bloom heals for 3% max health per second and an extra 12% every 6 sec.

@@ -8,13 +8,15 @@ use bevy::{prelude::*, window::PrimaryWindow};
 mod bags;
 mod boss_bars;
 mod meter;
+mod meter_panel;
+use meter_panel::render_meter;
 mod preview;
 mod sheet;
 pub(super) mod skin;
 pub(super) use meter::Meter;
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.2);
 const GREY: Color = Color::srgb(0.65, 0.65, 0.65);
-const METER_WIDTH: f32 = 306.0;
+const METER_WIDTH: f32 = 280.0;
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Pane {
     Meter,
@@ -38,6 +40,8 @@ pub(super) struct View {
     stats_collapsed: u8,
     stats_scroll: f32,
     meter_scroll: f32,
+    details_scroll: f32,
+    meter_selected: Option<String>,
     drag: Option<Drag>,
 }
 impl Default for View {
@@ -53,6 +57,8 @@ impl Default for View {
             stats_collapsed: 0b111100,
             stats_scroll: 0.0,
             meter_scroll: 0.0,
+            details_scroll: 0.0,
+            meter_selected: None,
             drag: None,
         };
         if let Some(text) = crate::local_state::home().and_then(|home| {
@@ -97,6 +103,7 @@ pub(super) enum Click {
     CloseBags,
     ToggleStats(u8),
     CloseMeter,
+    CloseMeterDetails,
     Skill(usize),
     Rotate(f32),
     Bags,
@@ -122,6 +129,13 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(
             Update,
             input.before(benilla_world::schedule::WorldStage::Input),
+        )
+        .add_systems(
+            Update,
+            meter_panel::interact
+                .after(input)
+                .before(render_meter)
+                .before(benilla_world::schedule::WorldStage::Input),
         )
         .add_systems(
             Update,
@@ -160,6 +174,7 @@ pub(super) fn input(
         selection.sheet_open = false;
         selection.bags_open = false;
         view.drag = None;
+        view.meter_selected = None;
         return;
     }
     let active = in_world(*phase.get());
@@ -175,6 +190,10 @@ pub(super) fn input(
     }
     if options.open {
         return;
+    }
+    if view.meter_selected.is_some() && keys.just_pressed(KeyCode::Escape) {
+        view.meter_selected = None;
+        keys.clear_just_pressed(KeyCode::Escape);
     }
     let toggle = settings.just_pressed(Action::Character, &keys)
         || clicks
@@ -220,6 +239,7 @@ pub(super) fn input(
                 view.meter = false;
                 view.save();
             }
+            Click::CloseMeterDetails => view.meter_selected = None,
             Click::CloseSheet => selection.sheet_open = false,
             Click::CloseBags => selection.bags_open = false,
             Click::ToggleStats(category) => {
@@ -289,7 +309,7 @@ pub(super) fn input(
         let size = Vec2::new(window.width(), window.height()) / ui_scale;
         view.position = view.position.clamp(
             Vec2::ZERO,
-            (size - Vec2::new(METER_WIDTH, 300.0)).max(Vec2::ZERO),
+            (size - Vec2::new(METER_WIDTH, 400.0)).max(Vec2::ZERO),
         );
         view.sheet = view.sheet.clamp(
             Vec2::ZERO,
@@ -378,136 +398,6 @@ fn launchers(
             button(ui, &font.0, Click::Bags, "Bags", 80.0);
         });
 }
-#[allow(clippy::too_many_arguments)]
-fn render_meter(
-    mut commands: Commands,
-    phase: Res<State<Phase>>,
-    run: Res<Run>,
-    view: Res<View>,
-    font: Option<Res<hud::HudFont>>,
-    spells: Option<Res<crate::ui_action::Spells>>,
-    roots: Query<Entity, With<MeterRoot>>,
-    mut cache: Local<String>,
-) {
-    let Some(font) = font else {
-        return;
-    };
-    let show = view.meter && *phase.get() != Phase::Menu;
-    let key = format!("{} {:?} {}", show, phase.get(), (run.elapsed * 4.0) as u64);
-    if *cache == key {
-        return;
-    }
-    *cache = key;
-    for e in &roots {
-        commands.entity(e).despawn();
-    }
-    if !show {
-        return;
-    }
-    let rows = run.meter.rows(run.elapsed);
-    let total: f64 = rows.iter().map(|r| r.dps).sum();
-    let max = rows.first().map_or(1.0, |r| r.dps.max(1.0));
-    let f = &font.0;
-    commands
-        .spawn((
-            MeterRoot,
-            GlobalZIndex(465),
-            BackgroundColor(Color::srgba(0.025, 0.02, 0.02, 0.94)),
-            BorderColor::all(GOLD),
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(view.position.x),
-                top: Val::Px(view.position.y),
-                width: Val::Px(METER_WIDTH),
-                padding: UiRect::all(Val::Px(6.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                ..default()
-            },
-        ))
-        .with_children(|ui| {
-            ui.spawn((
-                Button,
-                DragTitle(Pane::Meter),
-                BackgroundColor(Color::srgb(0.18, 0.10, 0.035)),
-                Node {
-                    height: Val::Px(28.0),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::SpaceBetween,
-                    padding: UiRect::horizontal(Val::Px(4.0)),
-                    ..default()
-                },
-            ))
-            .with_children(|header| {
-                header.spawn(text(f, "Damage / s - 5s | drag / scroll", 14.0, GOLD));
-                button(header, f, Click::CloseMeter, "X", 24.0);
-            });
-            if rows.is_empty() {
-                ui.spawn(text(f, "Waiting for damage...", 13.0, GREY));
-            }
-            ui.spawn((
-                MeterRows,
-                Interaction::default(),
-                bevy::ui::RelativeCursorPosition::default(),
-                ScrollPosition(Vec2::new(0.0, view.meter_scroll)),
-                Node {
-                    width: Val::Percent(100.0),
-                    max_height: Val::Px(240.0),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(3.0),
-                    overflow: Overflow::scroll_y(),
-                    ..default()
-                },
-            ))
-            .with_children(|ui| {
-                for row in &rows {
-                    let def = data::ABILITIES.iter().find(|d| d.key == row.key);
-                    let name = def.map_or_else(
-                        || row.key.replace('_', " "),
-                        |d| hud::spell_name(spells.as_deref(), d.spell, d.key),
-                    );
-                    ui.spawn(Node {
-                        height: Val::Px(23.0),
-                        flex_shrink: 0.0,
-                        width: Val::Percent(100.0),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    })
-                    .with_children(|line| {
-                        line.spawn((
-                            BackgroundColor(hud::rgb(run.class.color).with_alpha(0.40)),
-                            Node {
-                                position_type: PositionType::Absolute,
-                                width: Val::Percent((row.dps / max * 100.0) as f32),
-                                height: Val::Percent(100.0),
-                                ..default()
-                            },
-                        ));
-                        line.spawn((
-                            text(
-                                f,
-                                format!("{}  {:.1} | {:.0}", name, row.dps, row.total),
-                                13.0,
-                                Color::WHITE,
-                            ),
-                            Node {
-                                padding: UiRect::horizontal(Val::Px(4.0)),
-                                ..default()
-                            },
-                        ));
-                    });
-                }
-            });
-            ui.spawn(text(
-                f,
-                format!("Total: {total:.1} DPS | damage this run"),
-                12.0,
-                GOLD,
-            ));
-        });
-}
-
 fn scroll_meter(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     mut view: ResMut<View>,
@@ -517,8 +407,9 @@ fn scroll_meter(
             &ComputedNode,
             &bevy::ui::RelativeCursorPosition,
             &mut ScrollPosition,
+            Option<&MeterRows>,
         ),
-        With<MeterRows>,
+        Or<(With<MeterRows>, With<meter_panel::DetailsRows>)>,
     >,
 ) {
     for event in wheel.read() {
@@ -529,7 +420,7 @@ fn scroll_meter(
             bevy::input::mouse::MouseScrollUnit::Line => event.y * 28.0,
             bevy::input::mouse::MouseScrollUnit::Pixel => event.y,
         };
-        for (node, cursor, mut scroll) in &mut rows {
+        for (node, cursor, mut scroll, meter) in &mut rows {
             if !cursor.cursor_over() {
                 continue;
             }
@@ -538,7 +429,11 @@ fn scroll_meter(
                 0.0,
                 ((node.content_size.y - node.size.y) * node.inverse_scale_factor).max(0.0),
             );
-            view.meter_scroll = scroll.0.y;
+            if meter.is_some() {
+                view.meter_scroll = scroll.0.y;
+            } else {
+                view.details_scroll = scroll.0.y;
+            }
         }
     }
 }
@@ -749,6 +644,7 @@ mod tests {
             .insert_resource(UiScale(2.0))
             .add_systems(Update, (input, hud::keys).chain());
         let mut window = Window::default();
+        window.resolution.set(1280.0, 1080.0);
         window.set_cursor_position(Some(Vec2::new(100.0, 100.0)));
         let window = app.world_mut().spawn((PrimaryWindow, window)).id();
         app.world_mut().resource_mut::<View>().position = Vec2::new(20.0, 20.0);

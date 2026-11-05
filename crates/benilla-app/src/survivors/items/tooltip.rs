@@ -68,6 +68,7 @@ impl Affix {
                 Effect::PickupRadius => "Pickup radius",
                 Effect::Experience => "Experience",
                 Effect::Luck => "Luck",
+                Effect::MagicFind => "Magic Find",
                 _ => unreachable!("flat effects handled above"),
             };
             format!("+{:.1}% {label}", self.value * 100.0)
@@ -214,6 +215,7 @@ impl Item {
         };
         let mut lines = vec![
             (self.name.clone(), self.rarity.color()),
+            (format!("Ilvl {}", self.level), Color::WHITE),
             (
                 format!("{slot}    {kind}").trim_end().to_owned(),
                 Color::WHITE,
@@ -234,6 +236,13 @@ impl Item {
                 format!("{:.1}% Block chance", self.base_block * 100.0),
                 Color::WHITE,
             ));
+        }
+        if let Some(roll) = &self.legendary {
+            if let Some(d) = legendary::definition(roll.unique) {
+                lines.push(("Unique equipped".into(), self.rarity.color()));
+                lines.push((d.description.into(), self.rarity.color()));
+                if let Some(option) = roll.milestone { lines.push((legendary::milestones::description(option), self.rarity.color())); }
+            }
         }
         for primary in [true, false] {
             for affix in self

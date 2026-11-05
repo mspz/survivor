@@ -3,9 +3,10 @@
 
 use bevy::prelude::*;
 
-use super::data::{AbilityDef, Effect, Kind};
+use super::data::{self, AbilityDef, Effect, Kind};
 use super::enemies::{self, Enemy, Loot};
 use super::hero::{self, Hero};
+use super::items::legendary::events::{self as legendary_events, Origin};
 use super::spell_engine::targeting::{around, densest, links, nearest, toughest, Target as Foe};
 use super::spell_engine::{self as engine, Resolved as Params};
 use super::units::{self, flat, Fx, Marks, UnitSpec, COLOR_HEAL, COLOR_MELEE, COLOR_SPELL};
@@ -15,10 +16,17 @@ use crate::net::{FieldChanged, Guid, ObjectStore};
 /// One blow landing on one enemy.
 #[derive(Message, Clone)]
 pub(super) struct Hit {
+    pub direct_dot: Option<engine::PeriodicSnapshot>,
+    pub dot_tags: Option<engine::Tags>,
+    pub item_source: Option<u16>,
+    pub origin: Origin,
+    pub cast_id: u64,
+    pub primary: bool,
     pub owner: Option<u64>,
     pub skill: &'static str,
     /// Display attribution only; spell rules and visuals still use `skill`.
     pub meter_source: Option<&'static str>,
+    pub tags: Option<engine::Tags>,
     /// Triggered hits may benefit from gear, but never trigger another trinket proc.
     pub triggered: bool,
     /// Hidden payloads are resolved once before target copies and periodic snapshots.
@@ -45,6 +53,262 @@ mod spell_engine_integration_tests {
     use crate::combat_text::CombatTextSpawn;
     use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
     use bevy::ecs::system::RunSystemOnce;
+
+    fn legendary_world(
+        skill: &'static str,
+        unique: u16,
+        positions: &[f32],
+    ) -> (World, Vec<Entity>) {
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.init_resource::<Rng>();
+        world.init_resource::<PendingHits>();
+        world.init_resource::<PlaySeq>();
+        world.init_resource::<Messages<Hit>>();
+        world.init_resource::<Messages<Loot>>();
+        world.init_resource::<Messages<FieldChanged>>();
+        world.init_resource::<Messages<CastEvent>>();
+        world.init_resource::<Messages<SpellGoTargets>>();
+        world.init_resource::<Messages<SwingMessage>>();
+        world.init_resource::<Messages<CombatTextSpawn>>();
+        let mut run = Run {
+            balance: super::super::balance::Config::parse("version=1\n[classes]\n[tags]\n")
+                .unwrap(),
+            abilities: vec![Owned {
+                def: data::ability(skill),
+                level: 1,
+                cd: 0.0,
+            }],
+            ..default()
+        };
+        run.legendary.equipped.insert(
+            unique,
+            super::super::items::legendary::Roll {
+                unique,
+                milestone: None,
+            },
+        );
+        run.replace_spell_modifiers(
+            42,
+            [engine::Modifier {
+                source: 42,
+                filter: engine::Filter::default(),
+                change: engine::Change::CriticalChance(-1.0),
+            }],
+        );
+        world.insert_resource(run);
+        world.spawn((Transform::default(), Hero { vy: 0.0, air: 0.0 }));
+        let targets = positions
+            .iter()
+            .enumerate()
+            .map(|(index, x)| {
+                world
+                    .spawn((
+                        Guid(100 + index as u64),
+                        Transform::from_xyz(*x, 0.0, 0.0),
+                        Enemy {
+                            def: &data::roster(0).enemies[0],
+                            hp: 1000.0,
+                            max_hp: 1000.0,
+                            speed: 0.0,
+                            damage: 0.0,
+                            radius: 0.0,
+                            xp: 1,
+                            boss: false,
+                            attack_cd: 0.0,
+                            slow: 1.0,
+                            slow_t: 0.0,
+                            root_t: 0.0,
+                            stun_t: 0.0,
+                            fear_t: 0.0,
+                            weaken: 1.0,
+                            weaken_t: 0.0,
+                            dots: vec![],
+                            dead: false,
+                        },
+                        ObjectStore(benilla_protocol::messages::ObjectFields::from_pairs(&[])),
+                        Marks::debuffs(),
+                    ))
+                    .id()
+            })
+            .collect();
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(100));
+        (world, targets)
+    }
+
+    #[test]
+    fn legendary_nova_selects_targets_around_a_distant_enemy() {
+        let (mut world, _) = legendary_world("arcane_explosion", 6, &[15.0, 17.0, 30.0]);
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Messages<Hit>>().len(), 2);
+    }
+    #[test]
+    fn copied_projectiles_keep_their_native_splash_without_gaining_an_extra_area() {
+        for (key, splash) in [("fireball", true), ("frostbolt", false)] {
+            let (mut world, targets) = legendary_world(key, 286, &[2.0, 3.0]);
+            {
+                let mut run = world.resource_mut::<Run>();
+                super::super::items::legendary::casting::copy(
+                    &mut run,
+                    286,
+                    key,
+                    Vec3::ZERO,
+                    Some(targets[0]),
+                    0.0,
+                );
+            }
+            world
+                .run_system_once(super::super::items::legendary::casting::tick)
+                .unwrap();
+            world.run_system_once(apply_hits).unwrap();
+            assert!(world.get::<Enemy>(targets[0]).unwrap().hp < 1000.0);
+            assert_eq!(
+                world.get::<Enemy>(targets[1]).unwrap().hp < 1000.0,
+                splash,
+                "{key}"
+            );
+        }
+    }
+    #[test]
+    fn splash_does_not_replace_the_projectiles_primary_target_for_legendary_counters() {
+        let (mut world, targets) =
+            legendary_world("fireball", 317, &[2.0, 2.5, 3.0, 3.5, 4.0, 4.5]);
+        for (index, target) in targets.iter().skip(1).enumerate() {
+            world.resource_mut::<Messages<Hit>>().clear();
+            let mut hit = Hit::direct("fireball", *target, 1.0, false);
+            hit.primary = true;
+            hit.cast_id = index as u64 + 1;
+            hit.splash = 10.0;
+            world.resource_mut::<Messages<Hit>>().write(hit);
+            world.run_system_once(apply_hits).unwrap();
+        }
+        assert_eq!(world.resource::<Run>().legendary.events.queue.len(), 1);
+    }
+    #[test]
+    fn legendary_runtime_systems_execute_transformed_spells_without_query_conflicts() {
+        use super::super::items::legendary::{casting, effects, events, periodic};
+        for (id, key) in [
+            (3, "arcane_explosion"),
+            (13, "chain_lightning"),
+            (17, "blizzard"),
+            (42, "thunder_clap"),
+            (43, "cleave"),
+            (52, "consecration"),
+            (57, "hellfire"),
+            (70, "fireball"),
+            (71, "holy_nova"),
+            (98, "arcane_explosion"),
+            (115, "fireball"),
+            (124, "arcane_explosion"),
+            (126, "cone_of_cold"),
+            (167, "sinister_strike"),
+            (169, "sinister_strike"),
+            (194, "searing_totem"),
+            (263, "fireball"),
+            (264, "fireball"),
+            (265, "corruption"),
+            (303, "entangling_roots"),
+            (306, "hurricane"),
+            (309, "hellfire"),
+            (310, "death_coil"),
+            (311, "heroic_strike"),
+        ] {
+            let (mut world, targets) = legendary_world(key, id, &[2.0, 4.0, 6.0, 8.0]);
+            let mut schedule = Schedule::default();
+            schedule.add_systems(
+                (
+                    events::tick,
+                    periodic::tick_world,
+                    effects::tick,
+                    cast_abilities,
+                    tick_areas,
+                    casting::tick,
+                    apply_hits,
+                )
+                    .chain(),
+            );
+            for _ in 0..32 {
+                world.resource_mut::<Run>().elapsed += 0.25;
+                world
+                    .resource_mut::<Time>()
+                    .advance_by(std::time::Duration::from_millis(250));
+                schedule.run(&mut world);
+            }
+            let run = world.resource::<Run>();
+            assert!(run.damage_done.is_finite(), "unique {id}");
+            assert!(
+                targets
+                    .iter()
+                    .all(|e| world.get::<Enemy>(*e).unwrap().hp.is_finite()),
+                "unique {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn legendary_chain_reselects_living_targets_without_resetting_cooldown() {
+        let (mut world, targets) = legendary_world("chain_lightning", 11, &[3.0, 5.0, 8.0]);
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Run>().recasts.len(), 1);
+        let cooldown = world.resource::<Run>().abilities[0].cd;
+        world.resource_mut::<Messages<Hit>>().clear();
+        world.resource_mut::<PendingHits>().0.clear();
+        world.resource_mut::<PendingHits>().1.clear();
+        world.despawn(targets[0]);
+        world.resource_mut::<Run>().elapsed = 0.2;
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(200));
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world.resource::<Run>().recasts.is_empty());
+        assert!((world.resource::<Run>().abilities[0].cd - (cooldown - 0.2)).abs() < 0.001);
+        let hits: Vec<_> = world.resource_mut::<Messages<Hit>>().drain().collect();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].target, targets[1]);
+    }
+
+    #[test]
+    fn legendary_fireball_echo_reevaluates_splash_and_cancels_on_dead_primary() {
+        for life in [1000.0, 5.0] {
+            let (mut world, targets) = legendary_world("fireball", 1, &[3.0, 4.0, 10.0]);
+            world.get_mut::<Enemy>(targets[0]).unwrap().hp = life;
+            let mut hit = Hit::direct("fireball", targets[0], 10.0, false);
+            hit.splash = 3.5;
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            assert_eq!(world.resource::<PendingHits>().0.len(), 1);
+            assert_eq!(world.get::<Enemy>(targets[1]).unwrap().hp, 993.0);
+            world.resource_mut::<Messages<Hit>>().clear();
+            world
+                .get_mut::<Transform>(targets[1])
+                .unwrap()
+                .translation
+                .x = 10.0;
+            world.resource_mut::<Run>().elapsed = 0.2;
+            world.run_system_once(apply_hits).unwrap();
+            assert!(world.resource::<PendingHits>().0.is_empty());
+            assert_eq!(world.get::<Enemy>(targets[1]).unwrap().hp, 993.0);
+            assert_eq!(world.get::<Enemy>(targets[2]).unwrap().hp, 1000.0);
+            assert_eq!(
+                world.get::<Enemy>(targets[0]).unwrap().hp,
+                if life > 5.0 { 980.0 } else { 0.0 }
+            );
+        }
+    }
+
+    #[test]
+    fn legendary_projectile_keeps_its_physical_school_after_unequipping_conversion() {
+        let (mut world, targets) = legendary_world("fireball", 96, &[3.0]);
+        world.run_system_once(cast_abilities).unwrap();
+        world.resource_mut::<Run>().legendary.equipped.clear();
+        world.run_system_once(apply_hits).unwrap();
+        let enemy = world.get::<Enemy>(targets[0]).unwrap();
+        let expected =
+            1000.0 - data::ability("fireball").damage / (1.0 + enemy.def.level as f32 * 0.005);
+        assert!((enemy.hp - expected).abs() < 0.001);
+    }
     #[test]
     fn guest_hidden_projectiles_resolve_gear_once_and_keep_their_snapshot_on_links() {
         use super::super::{
@@ -226,6 +490,10 @@ mod spell_engine_integration_tests {
                 owner: None,
                 skill: "proc_bleed",
                 meter_source: Some("Deep Wounds"),
+                tags: None,
+                item_source: None,
+                origin: Origin::Skill,
+                meta: Default::default(),
                 dps: 1.0,
                 left: 4.0,
                 tick: 1.0,
@@ -398,16 +666,24 @@ mod spell_engine_integration_tests {
                 vec![
                     enemies::Dot {
                         meter_source: None,
+                        tags: None,
                         owner: None,
                         skill: "corruption",
+                        item_source: None,
+                        origin: Origin::Skill,
+                        meta: Default::default(),
                         dps: 30.0,
                         left: 5.0,
                         tick: 0.0,
                     },
                     enemies::Dot {
                         meter_source: None,
+                        tags: None,
                         owner: None,
                         skill: "serpent_sting",
+                        item_source: None,
+                        origin: Origin::Skill,
+                        meta: Default::default(),
                         dps: 30.0,
                         left: 5.0,
                         tick: 0.0,
@@ -554,6 +830,10 @@ mod spell_engine_integration_tests {
                 owner: None,
                 skill: "deadly_poison",
                 meter_source: Some("Deadly Poison"),
+                tags: None,
+                item_source: None,
+                origin: Origin::Skill,
+                meta: Default::default(),
                 dps: 5.0,
                 left: 5.0,
                 tick: 0.0,
@@ -643,6 +923,10 @@ mod spell_engine_integration_tests {
                 owner: None,
                 skill: "proc_bleed",
                 meter_source: Some("Deep Wounds"),
+                tags: None,
+                item_source: None,
+                origin: Origin::Skill,
+                meta: Default::default(),
                 dps: 1_000_000.0,
                 left: 4.0,
                 tick: 0.0,
@@ -771,9 +1055,16 @@ impl Hit {
             owner: None,
             skill,
             meter_source: None,
+            tags: None,
             triggered: false,
             proc_resolved: false,
+            direct_dot: None,
+            dot_tags: None,
             proc_chain: 0,
+            item_source: None,
+            origin: Origin::Skill,
+            cast_id: 0,
+            primary: false,
             target,
             damage,
             dot: 0.0,
@@ -795,6 +1086,12 @@ pub(super) struct PendingHits(pub Vec<(f32, Hit)>, pub Vec<(f32, Entity, Entity,
 /// A ground spell's area, ticking on whatever stands in it.
 #[derive(Component)]
 pub(super) struct GroundArea {
+    direct_dot: Option<engine::PeriodicSnapshot>,
+    cast_id: u64,
+    held: Option<f32>,
+    root_once: bool,
+    trail: bool,
+    tags: engine::Tags,
     owner: Option<u64>,
     skill: &'static str,
     crit: f32,
@@ -814,6 +1111,8 @@ pub(super) struct GroundArea {
 
 #[derive(Component)]
 pub(super) struct Totem {
+    direct_dot: Option<engine::PeriodicSnapshot>,
+    tags: engine::Tags,
     owner: Option<u64>,
     skill: &'static str,
     crit: f32,
@@ -838,9 +1137,16 @@ pub(super) fn hit_for(
         owner: None,
         skill: def.key,
         meter_source: None,
+        tags: Some(p.tags),
         triggered: false,
         proc_resolved: false,
+        direct_dot: p.direct_dot,
+        dot_tags: p.dot_tags,
         proc_chain: 0,
+        item_source: None,
+        origin: Origin::Skill,
+        cast_id: p.cast_id,
+        primary: false,
         target,
         damage,
         dot: p.dot,
@@ -893,10 +1199,26 @@ fn emit_links(
     hits: &mut MessageWriter<Hit>,
     now: f32,
 ) {
-    for link in links(roots, foes, p, speed, native_chain) {
-        let (damage, crit) = roll(rng, p.crit, p.crit_multiplier, p.dmg * link.scale);
+    for (index, link) in links(roots, foes, p, speed, native_chain)
+        .into_iter()
+        .enumerate()
+    {
+        let (damage, crit) = roll(
+            rng,
+            if index == 0 && p.primary_critical {
+                1.0
+            } else {
+                p.crit
+            },
+            p.crit_multiplier,
+            p.dmg * link.scale,
+        );
         let mut hit = hit_for(def, p, link.target.e, damage, crit);
+        hit.primary = index == 0;
         hit.dot *= link.scale;
+        if let Some(dot) = hit.direct_dot.as_mut() {
+            dot.dps *= link.scale;
+        }
         if let Some(from) = link.from {
             pending
                 .1
@@ -955,311 +1277,475 @@ pub(super) fn cast_abilities(
             continue;
         }
         let o = &run.abilities[i];
-        let def = o.def;
+        let original_def = o.def;
+        let profile = super::items::legendary::profile(&run, original_def);
+        let def = &profile.0;
+        if run.legendary.has(308) && def.key == "shadow_bolt" {
+            let oldest = enemies
+                .iter()
+                .flat_map(|(e, _, en)| {
+                    en.dots
+                        .iter()
+                        .filter(|d| d.owner == run.owner && d.skill == "curse_of_agony")
+                        .map(move |d| (e, d.meta.started))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|p| p.0);
+            foes.sort_by(|a, b| {
+                (Some(a.e) != oldest)
+                    .cmp(&(Some(b.e) != oldest))
+                    .then(a.dist.total_cmp(&b.dist))
+            });
+        } else if run.legendary.has(306) && def.key == "hurricane" {
+            foes.sort_by(|a, b| {
+                let rooted = |e| {
+                    enemies.get(e).is_ok_and(|(_, _, en)| {
+                        en.root_t > 0.0
+                            && en
+                                .dots
+                                .iter()
+                                .any(|d| d.owner == run.owner && d.skill == "entangling_roots")
+                    })
+                };
+                rooted(b.e)
+                    .cmp(&rooted(a.e))
+                    .then(a.dist.total_cmp(&b.dist))
+            });
+        } else {
+            foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+        }
         let stats = run.stats();
-        let p = run.resolve_spell_for_cast(def, o.level, &mut rng);
+        let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
+        p.cast_id = if repeated {
+            0
+        } else {
+            run.legendary.events.serial.wrapping_add(1).max(1)
+        };
+        let mut primary = None;
+        if run.legendary.has(11) && def.key == "chain_lightning" {
+            p.recast += 1.0;
+        }
         let speed = speed_of(def.spell);
-        let fired = match def.kind {
-            Kind::Bolt | Kind::Strike | Kind::Melee => {
-                let reach = if def.kind == Kind::Melee {
-                    def.range + 0.5
-                } else {
-                    def.range
-                };
-                let targets = if matches!(
-                    def.key,
-                    "pyroblast" | "aimed_shot" | "exorcism" | "starfire"
-                ) {
-                    toughest(&foes, reach, p.count)
-                } else {
-                    nearest(&foes, reach, p.count)
-                };
-                if targets.is_empty() {
-                    false
-                } else {
-                    if def.kind == Kind::Melee {
-                        fx.swing(me, targets[0].e, p.dmg);
-                        for f in &targets {
-                            fx.impact(f.e, def.spell);
-                        }
+        let intercepted =
+            super::items::legendary::casting::intercept(&mut run, def, p, &foes, hpos, repeated);
+        let fired = if let Some((fired, target)) = intercepted {
+            primary = target;
+            fired
+        } else {
+            match def.kind {
+                Kind::Bolt | Kind::Strike | Kind::Melee => {
+                    let reach = if def.kind == Kind::Melee {
+                        def.range + 0.5
                     } else {
-                        fx.cast(me, def.spell, &entities(&targets), None);
-                    }
-                    emit_links(
-                        &targets,
-                        &foes,
-                        &p,
-                        def,
-                        false,
-                        speed,
-                        &mut rng,
-                        &mut pending,
-                        &mut hits,
-                        now,
-                    );
-                    true
-                }
-            }
-            Kind::Nova | Kind::Cone => {
-                let mut targets = around(&foes, hpos, p.radius);
-                if def.kind == Kind::Cone {
-                    if let Some(first) = targets.first().copied() {
-                        let aim = flat(first.pos - hpos).normalize_or_zero();
-                        targets.retain(|f| {
-                            let d = flat(f.pos - hpos);
-                            d.length() < 2.0 || d.normalize_or_zero().dot(aim) >= 0.8
-                        });
-                    }
-                }
-                if targets.is_empty() {
-                    false
-                } else {
-                    fx.cast(me, def.spell, &entities(&targets), None);
-                    for f in &targets {
-                        let (dmg, crit) = roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
-                        let delay = if speed > 0.0 { f.dist / speed } else { 0.0 };
-                        schedule(
+                        def.range
+                    };
+                    let targets = if matches!(
+                        def.key,
+                        "pyroblast" | "aimed_shot" | "exorcism" | "starfire"
+                    ) {
+                        toughest(&foes, reach, p.count)
+                    } else {
+                        nearest(&foes, reach, p.count)
+                    };
+                    if targets.is_empty() {
+                        false
+                    } else {
+                        primary = Some((targets[0].e, targets[0].pos));
+                        if def.kind == Kind::Melee {
+                            fx.swing(me, targets[0].e, p.dmg);
+                            for f in &targets {
+                                fx.impact(f.e, def.spell);
+                            }
+                        } else {
+                            fx.cast(me, def.spell, &entities(&targets), None);
+                        }
+                        emit_links(
+                            &targets,
+                            &foes,
+                            &p,
+                            def,
+                            false,
+                            speed,
+                            &mut rng,
                             &mut pending,
                             &mut hits,
                             now,
-                            delay,
-                            hit_for(def, &p, f.e, dmg, crit),
                         );
+                        true
                     }
-                    true
                 }
-            }
-            Kind::Ground | Kind::GroundSelf => {
-                let center = if def.kind == Kind::GroundSelf {
-                    foes.first()
-                        .filter(|f| f.dist <= p.radius + 4.0)
-                        .map(|_| hpos)
-                } else {
-                    densest(&foes, def.range, p.radius)
-                };
-                match center {
-                    None => false,
-                    Some(center) => {
-                        let trap = def.key == "explosive_trap";
-                        fx.cast(me, if trap { 13813 } else { def.spell }, &[], Some(center));
-                        let area = if trap {
-                            units::spawn_explosive_trap(&mut commands, run.guid(), center)
-                        } else if def.overhead {
-                            commands
-                                .spawn((Transform::from_translation(center), RunEntity))
-                                .id()
-                        } else {
+                Kind::Nova | Kind::Cone => {
+                    let center = if def.kind == Kind::Cone && run.legendary.has(198) {
+                        Some(
+                            super::items::legendary::effects::pack_center(&mut run).unwrap_or(hpos),
+                        )
+                    } else if let Some(mid) = super::items::legendary::effects::area_center(&run) {
+                        Some(mid)
+                    } else if run.legendary.has(6) && def.kind == Kind::Nova {
+                        foes.first().filter(|f| f.dist <= 24.0).map(|f| f.pos)
+                    } else {
+                        Some(hpos)
+                    };
+                    let mut targets =
+                        center.map_or_else(Vec::new, |center| around(&foes, center, p.radius));
+                    if def.kind == Kind::Cone {
+                        if let Some(first) = targets.first().copied() {
+                            let aim = if run.legendary.has(257)
+                                && run.legendary.casting.last_heading.length_squared() > 0.0
+                            {
+                                run.legendary.casting.last_heading
+                            } else {
+                                flat(first.pos - hpos).normalize_or_zero()
+                            };
+                            targets.retain(|f| {
+                                let d = flat(f.pos - center.unwrap_or(hpos));
+                                d.length() < 2.0 || d.normalize_or_zero().dot(aim) >= 0.8
+                            });
+                        }
+                    }
+                    if targets.is_empty() {
+                        false
+                    } else {
+                        let main = targets.iter().max_by(|a, b| a.hp.total_cmp(&b.hp)).unwrap();
+                        primary = Some((main.e, main.pos));
+                        fx.cast(me, def.spell, &entities(&targets), None);
+                        for f in &targets {
+                            let (dmg, crit) = roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
+                            let delay = if speed > 0.0 { f.dist / speed } else { 0.0 };
+                            let mut hit = hit_for(def, &p, f.e, dmg, crit);
+                            hit.primary = Some(f.e) == primary.map(|p| p.0);
+                            schedule(&mut pending, &mut hits, now, delay, hit);
+                        }
+                        true
+                    }
+                }
+                Kind::Ground | Kind::GroundSelf => {
+                    let center = if def.kind == Kind::GroundSelf {
+                        foes.first()
+                            .filter(|f| f.dist <= p.radius + 4.0)
+                            .map(|_| hpos)
+                    } else {
+                        densest(&foes, def.range, p.radius)
+                    };
+                    match center {
+                        None => false,
+                        Some(center) => {
+                            run.legendary
+                                .casting
+                                .ground
+                                .push((center, now + p.duration));
+                            if def.key == "rain_of_fire" {
+                                run.legendary.casting.rains.push((center, now + p.duration));
+                            }
+                            primary = around(&foes, center, p.radius)
+                                .into_iter()
+                                .max_by(|a, b| a.hp.total_cmp(&b.hp))
+                                .map(|f| (f.e, f.pos));
+                            let trap = def.key == "explosive_trap";
+                            fx.cast(me, if trap { 13813 } else { def.spell }, &[], Some(center));
+                            let area = if trap {
+                                units::spawn_explosive_trap(&mut commands, run.guid(), center)
+                            } else if def.overhead {
+                                commands
+                                    .spawn((Transform::from_translation(center), RunEntity))
+                                    .id()
+                            } else {
+                                let serial = run.guid();
+                                units::spawn_area_object(
+                                    &mut commands,
+                                    serial,
+                                    def.spell,
+                                    p.radius,
+                                    center,
+                                )
+                            };
+                            let burst = def.duration <= 0.0;
+                            commands.entity(area).insert(GroundArea {
+                                direct_dot: p.direct_dot,
+                                cast_id: p.cast_id,
+                                held: if run.legendary.has(17)
+                                    && p.tags.contains(engine::Tags::COLD)
+                                    && def.duration > 0.0
+                                {
+                                    Some(
+                                        p.dmg
+                                            * if p.duration >= 0.4 {
+                                                (p.duration - 0.4).floor() + 1.0
+                                            } else {
+                                                0.0
+                                            },
+                                    )
+                                } else {
+                                    None
+                                },
+                                root_once: run.legendary.has(303) && def.key == "entangling_roots",
+                                trail: run.legendary.has(52) && def.key == "consecration",
+                                tags: p.tags,
+                                owner: run.owner,
+                                skill: def.key,
+                                crit: p.crit,
+                                crit_multiplier: p.crit_multiplier,
+                                damage: p.dmg,
+                                dot: p.dot,
+                                dot_dur: if burst { 5.0 } else { 0.0 },
+                                radius: p.radius,
+                                left: if trap {
+                                    1.9
+                                } else if burst {
+                                    1.5
+                                } else {
+                                    p.duration
+                                },
+                                every: if burst { f32::INFINITY } else { 1.0 },
+                                next_tick: if burst && !trap { 0.0 } else { 0.4 },
+                                effect: def.effect,
+                                mark: def.mark,
+                                impact: if def.overhead || trap { def.spell } else { 0 },
+                            });
+                            if let Some(owner) = run.owner {
+                                commands
+                                    .entity(area)
+                                    .insert(super::multiplayer::OwnedEffect(owner));
+                            }
+                            true
+                        }
+                    }
+                }
+                Kind::Chain => {
+                    let targets = nearest(&foes, p.range, 1);
+                    if targets.is_empty() {
+                        false
+                    } else {
+                        primary = Some((targets[0].e, targets[0].pos));
+                        fx.cast(me, def.spell, &entities(&targets), None);
+                        emit_links(
+                            &targets,
+                            &foes,
+                            &p,
+                            def,
+                            true,
+                            speed,
+                            &mut rng,
+                            &mut pending,
+                            &mut hits,
+                            now,
+                        );
+                        true
+                    }
+                }
+                Kind::Dot => {
+                    let mut pool: Vec<Foe> = foes
+                        .iter()
+                        .filter(|f| f.dist <= def.range)
+                        .take(p.count * 3)
+                        .copied()
+                        .collect();
+                    if pool.is_empty() {
+                        false
+                    } else {
+                        let mut targets = Vec::with_capacity(p.count);
+                        while targets.len() < p.count && !pool.is_empty() {
+                            targets.push(pool.swap_remove(rng.index(pool.len())));
+                        }
+                        primary = Some((targets[0].e, targets[0].pos));
+                        fx.cast(me, def.spell, &entities(&targets), None);
+                        for f in &targets {
+                            let delay = if speed > 0.0 { f.dist / speed } else { 0.0 };
+                            schedule(
+                                &mut pending,
+                                &mut hits,
+                                now,
+                                delay,
+                                hit_for(def, &p, f.e, 0.0, false),
+                            );
+                        }
+                        true
+                    }
+                }
+                Kind::Aura => {
+                    run.legendary
+                        .casting
+                        .rains
+                        .retain(|(_, until)| *until > now);
+                    let mut center = if run.legendary.has(309) && def.key == "hellfire" {
+                        run.legendary.casting.rains.first().map_or(hpos, |p| p.0)
+                    } else {
+                        hpos
+                    };
+                    if run.legendary.has(57) {
+                        if let Some((entity, old, oldp, until)) =
+                            run.legendary.casting.auras.get(def.key).copied()
+                        {
+                            if until > now {
+                                center = old;
+                            } else {
+                                for f in around(&foes, old, oldp.radius) {
+                                    hits.write(hit_for(def, &oldp, f.e, oldp.dmg, false));
+                                }
+                                commands.entity(entity).despawn();
+                                run.legendary.casting.auras.remove(def.key);
+                            }
+                        }
+                        if !run.legendary.casting.auras.contains_key(def.key)
+                            && foes
+                                .iter()
+                                .any(|f| flat(f.pos - center).length() <= p.radius)
+                        {
                             let serial = run.guid();
-                            units::spawn_area_object(
+                            let entity = units::spawn_area_object(
                                 &mut commands,
                                 serial,
                                 def.spell,
                                 p.radius,
                                 center,
-                            )
-                        };
-                        let burst = def.duration <= 0.0;
-                        commands.entity(area).insert(GroundArea {
-                            owner: run.owner,
-                            skill: def.key,
-                            crit: p.crit,
-                            crit_multiplier: p.crit_multiplier,
-                            damage: p.dmg,
-                            dot: p.dot,
-                            dot_dur: if burst { 5.0 } else { 0.0 },
-                            radius: p.radius,
-                            left: if trap {
-                                1.9
-                            } else if burst {
-                                1.5
-                            } else {
-                                p.duration
-                            },
-                            every: if burst { f32::INFINITY } else { 1.0 },
-                            next_tick: if burst && !trap { 0.0 } else { 0.4 },
-                            effect: def.effect,
-                            mark: def.mark,
-                            impact: if def.overhead || trap { def.spell } else { 0 },
-                        });
-                        if let Some(owner) = run.owner {
-                            commands
-                                .entity(area)
-                                .insert(super::multiplayer::OwnedEffect(owner));
+                            );
+                            run.legendary
+                                .casting
+                                .auras
+                                .insert(def.key, (entity, center, p, now + 4.0));
+                        }
+                    }
+                    let targets = around(&foes, center, p.radius);
+                    if targets.is_empty() {
+                        false
+                    } else {
+                        if def.key == "seal_of_righteousness" {
+                            fx.cast(me, def.spell, &[me], None);
+                        }
+                        for f in targets.iter().take(6) {
+                            fx.impact(f.e, def.spell);
+                        }
+                        for f in &targets {
+                            let (dmg, crit) = roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
+                            hits.write(hit_for(def, &p, f.e, dmg, crit));
                         }
                         true
                     }
                 }
-            }
-            Kind::Chain => {
-                let targets = nearest(&foes, p.range, 1);
-                if targets.is_empty() {
-                    false
-                } else {
-                    fx.cast(me, def.spell, &entities(&targets), None);
-                    emit_links(
-                        &targets,
-                        &foes,
-                        &p,
-                        def,
-                        true,
-                        speed,
-                        &mut rng,
-                        &mut pending,
-                        &mut hits,
-                        now,
-                    );
-                    true
-                }
-            }
-            Kind::Dot => {
-                let mut pool: Vec<Foe> = foes
-                    .iter()
-                    .filter(|f| f.dist <= def.range)
-                    .take(p.count * 3)
-                    .copied()
-                    .collect();
-                if pool.is_empty() {
-                    false
-                } else {
-                    let mut targets = Vec::with_capacity(p.count);
-                    while targets.len() < p.count && !pool.is_empty() {
-                        targets.push(pool.swap_remove(rng.index(pool.len())));
-                    }
-                    fx.cast(me, def.spell, &entities(&targets), None);
-                    for f in &targets {
-                        let delay = if speed > 0.0 { f.dist / speed } else { 0.0 };
-                        schedule(
-                            &mut pending,
-                            &mut hits,
-                            now,
-                            delay,
-                            hit_for(def, &p, f.e, 0.0, false),
-                        );
-                    }
-                    true
-                }
-            }
-            Kind::Aura => {
-                let targets = around(&foes, hpos, p.radius);
-                if targets.is_empty() {
-                    false
-                } else {
-                    if def.key == "seal_of_righteousness" {
-                        fx.cast(me, def.spell, &[me], None);
-                    }
-                    for f in targets.iter().take(6) {
-                        fx.impact(f.e, def.spell);
-                    }
-                    for f in &targets {
-                        let (dmg, crit) = roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
-                        hits.write(hit_for(def, &p, f.e, dmg, crit));
-                    }
-                    true
-                }
-            }
-            Kind::Orbit => {
-                let targets = nearest(&foes, p.radius, p.count);
-                if targets.is_empty() {
-                    false
-                } else {
-                    for f in &targets {
-                        fx.impact(f.e, 403);
-                        let (dmg, crit) = roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
-                        hits.write(hit_for(def, &p, f.e, dmg, crit));
-                    }
-                    true
-                }
-            }
-            Kind::Shield => {
-                super::talent_runtime::refreshed_shield(&mut run, p.dmg);
-                run.shield = p.dmg;
-                run.shield_t = p.duration;
-                fx.cast(me, def.spell, &[me], None);
-                true
-            }
-            Kind::Immune => {
-                if foes.first().is_some_and(|f| f.dist <= 5.0) {
-                    run.immune_t = p.duration;
-                    fx.cast(me, def.spell, &[me], None);
-                    true
-                } else {
-                    false
-                }
-            }
-            Kind::Thorns => {
-                if foes.first().is_some_and(|f| f.dist <= 8.0) {
-                    run.thorns = p.dmg;
-                    run.thorns_t = p.duration;
-                    run.thorns_spell = def.spell;
-                    fx.cast(me, def.spell, &[me], None);
-                    true
-                } else {
-                    false
-                }
-            }
-            Kind::Heal => {
-                if run.hp < stats.max_hp * 0.85 {
-                    if p.duration <= 0.0 {
-                        run.heal(p.dmg);
+                Kind::Orbit => {
+                    let targets = nearest(&foes, p.radius, p.count);
+                    if targets.is_empty() {
+                        false
                     } else {
-                        run.heal_rate = p.dmg / p.duration.max(1.0);
-                        run.heal_t = p.duration;
+                        for f in &targets {
+                            fx.impact(f.e, 403);
+                            let (dmg, crit) = roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
+                            hits.write(hit_for(def, &p, f.e, dmg, crit));
+                        }
+                        true
                     }
-                    fx.cast(me, def.spell, &[me], None);
-                    fx.number(me, p.dmg, false, COLOR_HEAL);
-                    true
-                } else {
-                    false
                 }
-            }
-            Kind::Totem => {
-                if foes
-                    .first()
-                    .is_some_and(|f| f.dist <= def.range.max(p.radius) + 6.0)
-                {
-                    fx.cast(me, def.spell, &[], None);
-                    let a = rng.range(0.0, std::f32::consts::TAU);
-                    let pos = hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 2.0;
-                    let serial = run.guid();
-                    let totem = units::spawn_unit(
-                        &mut commands,
-                        &UnitSpec {
-                            serial,
-                            display: def.totem.0,
-                            scale: 1.0,
-                            level: 60,
-                            faction: units::FACTION_FRIENDLY,
-                            bytes0: 0,
-                            weapons: &[],
-                            sheath: 0,
-                        },
-                        pos,
-                        0.0,
-                    );
-                    commands.entity(totem).insert(Totem {
-                        owner: run.owner,
-                        skill: def.key,
-                        crit: p.crit,
-                        crit_multiplier: p.crit_multiplier,
-                        cast: def.totem.1,
-                        damage: p.dmg,
-                        range: def.range,
-                        radius: p.radius,
-                        left: p.duration,
-                        tick: 0.3,
-                        pulse: def.key == "magma_totem",
-                    });
-                    if let Some(owner) = run.owner {
-                        commands
-                            .entity(totem)
-                            .insert(super::multiplayer::OwnedEffect(owner));
+                Kind::Shield => {
+                    if run.legendary.has(212) && run.legendary.effects.shield_lock > now {
+                        continue;
                     }
+                    run.legendary.events.shield_origin = Origin::Skill;
+                    super::talent_runtime::refreshed_shield(&mut run, p.dmg);
+                    run.shield = p.dmg;
+                    run.shield_t = p.duration;
+                    fx.cast(me, def.spell, &[me], None);
                     true
-                } else {
-                    false
+                }
+                Kind::Immune => {
+                    if foes.first().is_some_and(|f| f.dist <= 5.0) {
+                        run.immune_t = p.duration;
+                        fx.cast(me, def.spell, &[me], None);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Kind::Thorns => {
+                    if foes.first().is_some_and(|f| f.dist <= 8.0) {
+                        run.thorns = p.dmg;
+                        run.thorns_dot = p.direct_dot;
+                        run.thorns_t = p.duration;
+                        run.thorns_spell = def.spell;
+                        fx.cast(me, def.spell, &[me], None);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Kind::Heal => {
+                    if run.hp < stats.max_hp * 0.85 {
+                        if run.legendary.has(305) && def.key == "regrowth" {
+                            super::items::legendary::effects::seed(&mut run, p.dmg, p.duration);
+                        } else if run.legendary.has(152) || run.legendary.has(237) {
+                            run.legendary.effects.active_heals.push((p.dmg, p.duration));
+                        } else if p.duration <= 0.0 {
+                            legendary_events::active_heal(&mut run, p.dmg);
+                        } else {
+                            run.heal_rate = p.dmg / p.duration.max(1.0);
+                            run.heal_t = p.duration;
+                        }
+                        fx.cast(me, def.spell, &[me], None);
+                        fx.number(me, p.dmg, false, COLOR_HEAL);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Kind::Totem => {
+                    if foes
+                        .first()
+                        .is_some_and(|f| f.dist <= def.range.max(p.radius) + 6.0)
+                    {
+                        fx.cast(me, def.spell, &[], None);
+                        let a = rng.range(0.0, std::f32::consts::TAU);
+                        let pos = hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 2.0;
+                        let serial = run.guid();
+                        let totem = units::spawn_unit(
+                            &mut commands,
+                            &UnitSpec {
+                                serial,
+                                display: def.totem.0,
+                                scale: 1.0,
+                                level: 60,
+                                faction: units::FACTION_FRIENDLY,
+                                bytes0: 0,
+                                weapons: &[],
+                                sheath: 0,
+                            },
+                            pos,
+                            0.0,
+                        );
+                        commands.entity(totem).insert(Totem {
+                            direct_dot: p.direct_dot,
+                            tags: p.tags,
+                            owner: run.owner,
+                            skill: def.key,
+                            crit: p.crit,
+                            crit_multiplier: p.crit_multiplier,
+                            cast: def.totem.1,
+                            damage: p.dmg,
+                            range: def.range,
+                            radius: p.radius,
+                            left: p.duration,
+                            tick: 0.3,
+                            pulse: def.key == "magma_totem",
+                        });
+                        if let Some(owner) = run.owner {
+                            commands
+                                .entity(totem)
+                                .insert(super::multiplayer::OwnedEffect(owner));
+                        }
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
         };
+        if fired {
+            run.meter.cast(def.key);
+            run.legendary.events.position = hpos;
+            if !repeated {
+                run.legendary.events.serial = p.cast_id;
+            }
+            legendary_events::cast(&mut run, def, &p, primary, repeated);
+            super::items::legendary::casting::after_cast(&mut run, def, &p, primary, repeated);
+        }
         if !repeated {
             run.abilities[i].cd = if fired { p.cooldown } else { 0.2 };
             if fired && p.recast > 0.0 {
@@ -1275,17 +1761,21 @@ pub(super) fn cast_abilities(
 pub(super) fn tick_areas(
     mut commands: Commands,
     time: Res<Time>,
-    run: Res<Run>,
+    mut run: ResMut<Run>,
+    mut players: Option<ResMut<super::multiplayer::Companions>>,
     mut rng: ResMut<Rng>,
     spells: Option<Res<crate::ui_action::Spells>>,
-    mut areas: Query<(
-        Entity,
-        &Transform,
-        &mut GroundArea,
-        Option<&crate::net::Guid>,
-        Option<&mut crate::net::ObjectStore>,
-    )>,
-    mut totems: Query<(Entity, &Transform, &mut Totem), Without<GroundArea>>,
+    mut areas: Query<
+        (
+            Entity,
+            &Transform,
+            &mut GroundArea,
+            Option<&crate::net::Guid>,
+            Option<&mut crate::net::ObjectStore>,
+        ),
+        Without<Totem>,
+    >,
+    mut totems: Query<(Entity, &mut Transform, &mut Totem), Without<GroundArea>>,
     enemies: Query<(Entity, &Transform, &Enemy), (Without<GroundArea>, Without<Totem>)>,
     mut fx: Fx,
     mut pending: ResMut<PendingHits>,
@@ -1312,6 +1802,60 @@ pub(super) fn tick_areas(
     for (e, tf, mut area, guid, store) in &mut areas {
         area.left -= dt;
         area.next_tick -= dt;
+        if let Some(held) = area.held {
+            if area.left > 0.0 {
+                continue;
+            }
+            area.damage = held;
+            area.held = None;
+            area.next_tick = 0.0;
+        }
+        if area.trail && area.next_tick <= 0.0 && area.left > 0.0 {
+            area.next_tick += 1.0;
+            let pos = super::multiplayer::player_run(&mut run, players.as_deref_mut(), area.owner)
+                .map_or(tf.translation, |owner| owner.legendary.events.position);
+            let serial = run.guid();
+            let tile = units::spawn_area_object(
+                &mut commands,
+                serial,
+                data::ability(area.skill).spell,
+                area.radius * 0.4,
+                pos,
+            );
+            commands.entity(tile).insert(GroundArea {
+                direct_dot: area.direct_dot,
+                cast_id: 0,
+                held: None,
+                root_once: false,
+                trail: false,
+                tags: area.tags,
+                owner: area.owner,
+                skill: area.skill,
+                crit: area.crit,
+                crit_multiplier: area.crit_multiplier,
+                damage: area.damage * 0.5,
+                dot: 0.0,
+                dot_dur: 0.0,
+                radius: area.radius * 0.4,
+                left: 2.0,
+                every: 1.0,
+                next_tick: 0.0,
+                effect: Effect::None,
+                mark: 0,
+                impact: data::ability(area.skill).spell,
+            });
+            if let Some(owner) = area.owner {
+                commands
+                    .entity(tile)
+                    .insert(super::multiplayer::OwnedEffect(owner));
+            }
+        }
+        if area.trail {
+            if area.left <= 0.0 {
+                commands.entity(e).despawn();
+            }
+            continue;
+        }
         if area.next_tick <= 0.0 {
             area.next_tick += area.every;
             if area.skill == "explosive_trap" {
@@ -1319,6 +1863,10 @@ pub(super) fn tick_areas(
                     fx.trigger_trap(e, guid.0, &mut store, tf.translation, &mut fields);
                 }
             }
+            let primary = around(&live, tf.translation, area.radius)
+                .into_iter()
+                .max_by(|a, b| a.hp.total_cmp(&b.hp))
+                .map(|f| f.e);
             for (i, f) in around(&live, tf.translation, area.radius)
                 .into_iter()
                 .enumerate()
@@ -1331,9 +1879,16 @@ pub(super) fn tick_areas(
                     owner: area.owner,
                     skill: area.skill,
                     meter_source: None,
+                    tags: Some(area.tags),
                     triggered: false,
                     proc_resolved: false,
+                    direct_dot: area.direct_dot,
+                    dot_tags: None,
                     proc_chain: 0,
+                    item_source: None,
+                    origin: Origin::Skill,
+                    cast_id: area.cast_id,
+                    primary: Some(f.e) == primary && area.cast_id != 0,
                     target: f.e,
                     damage: dmg,
                     dot: area.dot,
@@ -1346,13 +1901,18 @@ pub(super) fn tick_areas(
                     color: COLOR_SPELL,
                 });
             }
+            area.cast_id = 0;
+            if area.root_once {
+                area.effect = Effect::None;
+                area.root_once = false;
+            }
         }
         if area.left <= 0.0 {
             commands.entity(e).despawn();
         }
     }
 
-    for (e, tf, mut totem) in &mut totems {
+    for (e, mut tf, mut totem) in &mut totems {
         totem.left -= dt;
         if totem.left <= 0.0 {
             commands
@@ -1363,9 +1923,46 @@ pub(super) fn tick_areas(
         }
         totem.tick -= dt;
         if totem.tick > 0.0 {
+            if let Some(owner) =
+                super::multiplayer::player_run(&mut run, players.as_deref_mut(), totem.owner)
+            {
+                if owner.legendary.has(82)
+                    && !live.iter().any(|f| {
+                        flat(f.pos - tf.translation).length() <= totem.range.max(totem.radius)
+                    })
+                {
+                    let delta = flat(owner.legendary.events.position - tf.translation);
+                    tf.translation +=
+                        delta.normalize_or_zero() * (dt * 1.5).min((delta.length() - 2.0).max(0.0));
+                }
+            }
             continue;
         }
         let pos = tf.translation;
+        if let Some(owner) =
+            super::multiplayer::player_run(&mut run, players.as_deref_mut(), totem.owner)
+        {
+            if owner.legendary.has(194) {
+                let every = if totem.pulse { 2.0 } else { 1.0 };
+                totem.tick = every;
+                let percent = super::procs::resolve(
+                    owner,
+                    "proc_totem_heal",
+                    0.02 * every,
+                    0.0,
+                    0.0,
+                    12.0,
+                    1,
+                )
+                .dmg;
+                owner
+                    .legendary
+                    .effects
+                    .heals
+                    .push((pos, percent, 12.0, true, false));
+                continue;
+            }
+        }
         if totem.pulse {
             let targets = around(&live, pos, totem.radius);
             totem.tick = 2.0;
@@ -1378,9 +1975,16 @@ pub(super) fn tick_areas(
                 hits.write(Hit {
                     owner: totem.owner,
                     skill: totem.skill,
+                    direct_dot: totem.direct_dot,
+                    tags: Some(totem.tags),
                     triggered: false,
                     proc_resolved: false,
+                    dot_tags: None,
                     proc_chain: 0,
+                    item_source: None,
+                    origin: Origin::Skill,
+                    cast_id: 0,
+                    primary: false,
                     color: COLOR_SPELL,
                     ..Hit::direct(totem.skill, f.e, dmg, crit)
                 });
@@ -1408,6 +2012,8 @@ pub(super) fn tick_areas(
                 Hit {
                     owner: totem.owner,
                     skill: totem.skill,
+                    direct_dot: totem.direct_dot,
+                    tags: Some(totem.tags),
                     color: COLOR_SPELL,
                     ..Hit::direct(totem.skill, f.e, dmg, crit)
                 },
@@ -1475,7 +2081,7 @@ pub(super) fn apply_hits(
     // repeats keep this snapshot, so they cannot apply bonuses or schedule repeats twice.
     let mut prepared = Vec::with_capacity(due.len());
     for mut h in due {
-        if h.triggered && super::procs::find(h.skill).is_none() {
+        if h.origin != Origin::Legendary && h.triggered && super::procs::find(h.skill).is_none() {
             if let Some(player) =
                 super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
             {
@@ -1502,9 +2108,17 @@ pub(super) fn apply_hits(
             (h.damage, h.crit) =
                 engine::critical_with_multiplier(p.dmg, p.crit, p.crit_multiplier, rng.f32());
             h.dot = p.dot;
+            h.direct_dot = p.direct_dot;
+            if h.direct_dot.is_some() {
+                h.damage = 0.0;
+            }
+            h.tags = Some(p.tags);
             h.dot_dur = p.duration;
             h.splash = p.radius;
             h.triggered = true;
+            if h.origin == Origin::Skill {
+                h.origin = Origin::Talent;
+            }
             h.proc_resolved = true;
             let repeats = engine::recast_count(p.recast, rng.f32(), false).min(64);
             if p.tags
@@ -1549,6 +2163,9 @@ pub(super) fn apply_hits(
                         copy.target = link.target.e;
                         copy.damage *= link.scale;
                         copy.dot *= link.scale;
+                        if let Some(dot) = copy.direct_dot.as_mut() {
+                            dot.dps *= link.scale;
+                        }
                         for repeat in 0..repeats {
                             pending.0.push((
                                 now + link.arrival + engine::RECAST_DELAY * (repeat + 1) as f32,
@@ -1570,21 +2187,54 @@ pub(super) fn apply_hits(
                     .push((now + engine::RECAST_DELAY * (repeat + 1) as f32, h.clone()));
             }
         }
+        if h.direct_dot.is_some() {
+            h.damage = 0.0;
+            if matches!(h.effect, Effect::Execute(_)) {
+                h.effect = Effect::None;
+            }
+        }
         prepared.push(h);
     }
     // Splash reaches the target's neighbours at seventy percent.
     let mut all = Vec::with_capacity(prepared.len());
     for h in prepared {
+        // The echo keeps the original target and splash profile, rather than recording
+        // separate echoes on the neighbours hit by the first explosion.
+        if h.proc_chain == u64::MAX
+            && h.skill == "fireball"
+            && enemies.get(h.target).is_ok_and(|(_, _, _, en, ..)| en.dead)
+        {
+            continue;
+        }
+        if !h.triggered && (h.damage > 0.0 || h.direct_dot.is_some()) && h.skill == "fireball" {
+            if let Some(player) =
+                super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
+            {
+                if player.legendary.has(1) {
+                    let mut echo = h.clone();
+                    echo.triggered = true;
+                    echo.origin = Origin::Legendary;
+                    echo.proc_resolved = true;
+                    echo.proc_chain = u64::MAX;
+                    pending.0.push((now + engine::RECAST_DELAY, echo));
+                }
+            }
+        }
         if h.splash > 0.0 {
             if let Ok((_, _, center, ..)) = enemies.get(h.target) {
                 let c = center.translation;
                 for (e, _, tf, en, ..) in enemies.iter() {
                     if e != h.target && !en.dead && flat(tf.translation - c).length() <= h.splash {
                         all.push(Hit {
+                            primary: false,
                             target: e,
                             damage: h.damage * 0.7,
                             splash: 0.0,
                             mark: 0,
+                            direct_dot: h.direct_dot.map(|mut dot| {
+                                dot.dps *= 0.7;
+                                dot
+                            }),
                             ..h.clone()
                         });
                     }
@@ -1594,26 +2244,37 @@ pub(super) fn apply_hits(
         all.push(Hit { splash: 0.0, ..h });
     }
 
-    let mut kill =
-        |commands: &mut Commands, run: &mut Run, e: Entity, pos: Vec3, en: &mut Enemy| {
+    let mut kill = |commands: &mut Commands,
+                    run: &mut Run,
+                    e: Entity,
+                    pos: Vec3,
+                    en: &mut Enemy,
+                    origin: Origin| {
+        super::items::legendary::periodic::death(run, e, en, pos);
+        if origin != Origin::Legendary {
             super::talent_runtime::on_death(run, en, pos);
-            en.dead = true;
-            en.hp = 0.0;
-            en.dots.clear();
-            enemies::mark_dying(commands, e);
-            loot.write(Loot {
-                pos,
-                xp: en.xp,
-                boss: en.boss,
-            });
-            run.kills += 1;
+        }
+        en.dead = true;
+        en.hp = 0.0;
+        en.dots.clear();
+        enemies::mark_dying(commands, e);
+        loot.write(Loot {
+            item_level: en.def.level,
+            pos,
+            xp: en.xp,
+            boss: en.boss,
+        });
+        run.kills += 1;
+        super::talents::penalize_kill(run, en.def.level);
+        if origin != Origin::Legendary {
             run.heal(run.equipment.life_on_kill);
-            if en.boss {
-                run.banner = Some((format!("{} is slain!", en.def.name), 3.0));
-            }
-        };
+        }
+        if en.boss {
+            run.banner = Some((format!("{} is slain!", en.def.name), 3.0));
+        }
+    };
 
-    for h in all {
+    for mut h in all {
         let Some(run) = super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
         else {
             continue;
@@ -1624,11 +2285,33 @@ pub(super) fn apply_hits(
         if en.dead {
             continue;
         }
-        let mods = *item_mods
-            .entry((h.owner, h.skill))
-            .or_insert_with(|| engine::on_hit::modifiers(h.skill, run.spell_modifiers.entries()));
+        let full = en.hp >= en.max_hp;
+        let was_rooted = en.root_t > 0.0;
+        let was_feared = en.fear_t > 0.0;
+        let mut dealt_effective = 0.0;
+        let tags = h.tags.unwrap_or_else(|| {
+            super::items::legendary::profile(run, super::data::ability(h.skill)).1
+        });
+        super::items::legendary::periodic::before_hit(run, &h, &mut en, tf.translation, tags);
+        super::items::legendary::effects::before_hit(run, &mut h, &mut en, tf.translation, tags);
+        let mut mods = *item_mods
+            .entry((h.owner, h.skill, tags.0))
+            .or_insert_with(|| {
+                engine::on_hit::modifiers_tagged(h.skill, tags, run.spell_modifiers.entries())
+            });
         let armour = en.def.level as f32 * if en.boss { 1.0 } else { 0.5 };
-        let talent_multiplier = super::talent_runtime::before_hit(run, &h, &en);
+        if h.origin == Origin::Legendary {
+            mods.leech = 0.0;
+            mods.bleed = 0.0;
+            mods.ignite = 0.0;
+            mods.chill = 0.0;
+            mods.knockback = 0.0;
+        }
+        let talent_multiplier = if h.origin == Origin::Legendary {
+            1.0
+        } else {
+            super::talent_runtime::before_hit(run, &h, &en)
+        };
         let raw = engine::on_hit::damage(
             h.damage * talent_multiplier,
             en.hp,
@@ -1645,10 +2328,18 @@ pub(super) fn apply_hits(
             } else {
                 dmg.min(en.hp.max(0.0))
             };
-            super::talent_runtime::periodic_leech(run, h.skill, effective);
+            dealt_effective = effective;
+            if h.origin != Origin::Legendary {
+                super::talent_runtime::periodic_leech(run, tags, effective);
+            }
             let now = run.elapsed;
-            run.meter
-                .record(h.meter_source.unwrap_or(h.skill), now, effective);
+            run.meter.record_hit(
+                h.meter_source.unwrap_or(h.skill),
+                now,
+                effective,
+                h.crit,
+                false,
+            );
             if immortal {
                 en.hp = en.max_hp;
             } else {
@@ -1656,12 +2347,16 @@ pub(super) fn apply_hits(
             }
             run.damage_done += f64::from(effective);
             fx.number(e, dmg, h.crit, h.color);
-            if let Effect::Drain(frac) = h.effect {
-                run.heal(effective * frac);
+            if h.origin != Origin::Legendary {
+                if let Effect::Drain(frac) = h.effect {
+                    if !(run.legendary.has(310) && h.skill == "death_coil") || h.primary {
+                        run.heal(effective * frac);
+                    }
+                }
             }
             super::items::combat::leech(run, effective * mods.leech);
             if !h.triggered {
-                super::items::combat::record_hit(run, h.skill, mods.tags);
+                super::items::combat::record_hit_from(run, h.skill, mods.tags, h.cast_id);
             }
             for (chance, factor, seconds, spell) in
                 [(mods.bleed, 0.20, 4.0, 1943), (mods.ignite, 0.25, 3.0, 133)]
@@ -1691,17 +2386,28 @@ pub(super) fn apply_hits(
                         })
                         .map(|d| d.tick)
                         .fold(1.0_f32, f32::min);
-                    if en.dots.len() >= 6 {
-                        en.dots.remove(0);
-                    }
-                    en.dots.push(enemies::Dot {
-                        owner: h.owner,
-                        skill: key,
-                        meter_source,
-                        dps: p.dot,
-                        left: p.duration,
-                        tick,
-                    });
+                    super::items::legendary::periodic::install(
+                        run,
+                        &mut en,
+                        e,
+                        tf.translation,
+                        enemies::Dot {
+                            owner: h.owner,
+                            skill: key,
+                            meter_source,
+                            tags: Some(p.tags),
+                            item_source: None,
+                            origin: if h.origin == Origin::Item {
+                                Origin::Item
+                            } else {
+                                Origin::Talent
+                            },
+                            meta: Default::default(),
+                            dps: p.dot,
+                            left: p.duration,
+                            tick,
+                        },
+                    );
                     marks.add(spell, p.duration);
                     fx.impact(e, spell);
                 }
@@ -1730,20 +2436,65 @@ pub(super) fn apply_hits(
             }
         }
         if h.dot > 0.0 && h.dot_dur > 0.0 {
-            if en.dots.len() >= 6 {
-                en.dots.remove(0);
-            }
-            en.dots.push(enemies::Dot {
-                owner: h.owner,
-                skill: h.skill,
-                meter_source: h.meter_source,
-                dps: h.dot,
-                left: h.dot_dur,
-                tick: 1.0,
-            });
+            super::items::legendary::periodic::install(
+                run,
+                &mut en,
+                e,
+                tf.translation,
+                enemies::Dot {
+                    owner: h.owner,
+                    skill: h.skill,
+                    meter_source: h.meter_source,
+                    tags: Some(h.dot_tags.unwrap_or(tags)),
+                    item_source: h.item_source,
+                    origin: h.origin,
+                    meta: Default::default(),
+                    dps: h.dot,
+                    left: h.dot_dur,
+                    tick: 1.0,
+                },
+            );
         }
-        super::talent_runtime::on_hit(run, &h, &mut en, tf.translation, &mut rng, &mut pending);
+        if let Some(dot) = h.direct_dot {
+            super::items::legendary::periodic::install(
+                run,
+                &mut en,
+                e,
+                tf.translation,
+                enemies::Dot {
+                    owner: h.owner,
+                    skill: h.skill,
+                    meter_source: h.meter_source,
+                    tags: Some(dot.tags),
+                    origin: h.origin,
+                    item_source: h.item_source,
+                    meta: default(),
+                    dps: dot.dps,
+                    left: dot.duration,
+                    tick: 1.0,
+                },
+            );
+        }
+        if h.origin != Origin::Legendary {
+            super::talent_runtime::on_hit(run, &h, &mut en, tf.translation, &mut rng, &mut pending);
+        }
         let boss = en.boss;
+        if run.legendary.has(159) && h.origin != Origin::Legendary {
+            if let Effect::Fear(duration) = h.effect {
+                h.effect = Effect::None;
+                if boss {
+                    super::items::legendary::effects::fear_boss(run, e, tf.translation);
+                } else if run.legendary.effects.allies.len() > 1 {
+                    commands.entity(e).insert(super::talent_runtime::Taunted {
+                        owner: run.owner,
+                        until: run.elapsed + duration,
+                    });
+                } else {
+                    en.slow = en.slow.min(0.5);
+                    en.slow_t = en.slow_t.max(duration);
+                }
+            }
+        }
         match h.effect {
             Effect::Slow(m, t) => {
                 let m = if boss { m.max(0.75) } else { m };
@@ -1762,8 +2513,39 @@ pub(super) fn apply_hits(
         if h.mark != 0 {
             marks.add(h.mark, h.mark_dur);
         }
+        let rooted_by_skill = !was_rooted && en.root_t > 0.0;
+        super::items::legendary::effects::hit(
+            run,
+            &h,
+            &mut en,
+            tf.translation,
+            tags,
+            dealt_effective,
+            was_feared,
+            &mut rng,
+        );
+        legendary_events::hit(
+            run,
+            &h,
+            tags,
+            tf.translation,
+            dealt_effective,
+            full,
+            rooted_by_skill,
+            &mut rng,
+        );
         if en.hp <= 0.0 {
-            kill(&mut commands, run, e, tf.translation, &mut en);
+            if h.origin == Origin::Skill && !h.triggered {
+                super::items::legendary::effects::death(
+                    run,
+                    e,
+                    tf.translation,
+                    h.skill,
+                    dealt_effective,
+                );
+            }
+            legendary_events::killed(run, e, tf.translation, h.origin, &mut rng);
+            kill(&mut commands, run, e, tf.translation, &mut en, h.origin);
             units::kill_unit(&mut store);
             marks.clear();
         }
@@ -1779,7 +2561,9 @@ pub(super) fn apply_hits(
         let immortal = super::training::dummy(&en);
         let mut remaining_hp = en.hp.max(0.0);
         let mut last_owner = None;
+        let mut last_origin = Origin::Skill;
         let (max_hp, boss) = (en.max_hp, en.boss);
+        let rooted = en.root_t > 0.0;
         for d in &mut en.dots {
             d.left -= dt;
             d.tick -= dt;
@@ -1791,10 +2575,28 @@ pub(super) fn apply_hits(
                     continue;
                 };
                 d.tick += 1.0;
-                let mods = *item_mods.entry((d.owner, d.skill)).or_insert_with(|| {
-                    engine::on_hit::modifiers(d.skill, run.spell_modifiers.entries())
+                let tick_damage = super::items::legendary::periodic::tick(
+                    run,
+                    e,
+                    d,
+                    tf.translation,
+                    rooted,
+                    boss,
+                );
+                let tags = d.tags.unwrap_or_else(|| {
+                    super::items::legendary::profile(run, super::data::ability(d.skill)).1
                 });
-                let amount = engine::on_hit::damage(d.dps, remaining_hp, max_hp, boss, 0.0, mods);
+                let mods = *item_mods
+                    .entry((d.owner, d.skill, tags.0))
+                    .or_insert_with(|| {
+                        engine::on_hit::modifiers_tagged(
+                            d.skill,
+                            tags,
+                            run.spell_modifiers.entries(),
+                        )
+                    });
+                let amount =
+                    engine::on_hit::damage(tick_damage, remaining_hp, max_hp, boss, 0.0, mods);
                 dealt += amount;
                 let effective = if immortal {
                     amount.max(0.0)
@@ -1802,15 +2604,46 @@ pub(super) fn apply_hits(
                     amount.min(remaining_hp).max(0.0)
                 };
                 let now = run.elapsed;
-                run.meter
-                    .record(d.meter_source.unwrap_or(d.skill), now, effective);
+                run.meter.record_hit(
+                    d.meter_source.unwrap_or(d.skill),
+                    now,
+                    effective,
+                    false,
+                    true,
+                );
                 if !immortal {
                     remaining_hp = (remaining_hp - effective).max(0.0);
                 }
                 run.damage_done += f64::from(effective);
-                super::talent_runtime::periodic_leech(run, d.skill, effective);
+                if d.origin != Origin::Legendary {
+                    super::talent_runtime::periodic_leech(run, tags, effective);
+                }
+                if d.origin == Origin::Skill {
+                    super::items::legendary::effects::periodic_hit(
+                        run,
+                        e,
+                        tf.translation,
+                        d.skill,
+                        tags,
+                        effective,
+                        d.left,
+                    );
+                }
+                let mut periodic = Hit::direct(d.skill, e, effective, false);
+                periodic.origin = d.origin;
+                legendary_events::hit(
+                    run,
+                    &periodic,
+                    tags,
+                    tf.translation,
+                    effective,
+                    false,
+                    false,
+                    &mut rng,
+                );
                 if effective > 0.0 {
                     last_owner = d.owner;
+                    last_origin = d.origin;
                 }
             }
         }
@@ -1826,11 +2659,24 @@ pub(super) fn apply_hits(
                 if let Some(run) =
                     super::multiplayer::player_run(&mut run, players.as_deref_mut(), last_owner)
                 {
-                    kill(&mut commands, run, e, tf.translation, &mut en);
+                    legendary_events::killed(run, e, tf.translation, last_origin, &mut rng);
+                    kill(&mut commands, run, e, tf.translation, &mut en, last_origin);
                 }
                 units::kill_unit(&mut store);
                 marks.clear();
                 marks.flush(e, guid.0, &mut store, &mut fields);
+            }
+        }
+        if !en.dead {
+            for d in en.dots.iter().filter(|d| d.left <= 0.0) {
+                if let Some(player) =
+                    super::multiplayer::player_run(&mut run, players.as_deref_mut(), d.owner)
+                {
+                    if !d.meta.transferred {
+                        legendary_events::expired(player, tf.translation, d.origin);
+                        super::items::legendary::periodic::expired(player, e, d, tf.translation);
+                    }
+                }
             }
         }
         en.dots.retain(|d| d.left > 0.0);

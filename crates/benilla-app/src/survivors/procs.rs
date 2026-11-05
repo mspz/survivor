@@ -301,15 +301,22 @@ pub(super) static SPELLS: &[Spell] = &[
 pub(super) fn find(key: &str) -> Option<&'static Spell> {
     SPELLS.iter().find(|s| s.def.key == key)
 }
-pub(super) fn source_key(run: &Run, source: Option<&str>) -> Option<&'static str> {
+pub(super) fn source_key(_run: &Run, source: Option<&str>) -> Option<&'static str> {
     let name = source?;
     super::talent_design::DESIGNS
         .iter()
-        .flat_map(|d| d.milestones.iter())
-        .find(|m| m.name == name)
-        .map(|m| key(run, m.mechanic))
+        .enumerate()
+        .find_map(|(index, d)| {
+            d.milestones
+                .iter()
+                .find(|m| m.name == name)
+                .map(|m| key_for_class(super::data::CLASSES[index / 3].id, m.mechanic))
+        })
 }
 pub(super) fn key(run: &Run, m: M) -> &'static str {
+    key_for_class(super::items::legendary::milestones::source_class(run, m), m)
+}
+fn key_for_class(class: u8, m: M) -> &'static str {
     match m {
         M::Bleed | M::Pet => "proc_bleed",
         M::Ignite => "proc_ignite",
@@ -327,14 +334,14 @@ pub(super) fn key(run: &Run, m: M) -> &'static str {
         M::Flurry => "proc_flurry",
         M::Execution => "proc_execution",
         M::Windfury => "proc_windfury",
-        M::Seal if run.class.id == 7 => "proc_flametongue",
+        M::Seal if class == 7 => "proc_flametongue",
         M::Seal => "proc_seal",
         M::SealStorm => "proc_seal_storm",
         M::Stormstrike => "proc_stormstrike",
         M::ArcaneBlast => "proc_arcane_blast",
         M::Starfall => "proc_starfall",
         M::Cataclysm => "proc_cataclysm",
-        M::Bulwark if run.class.id == 1 => "proc_thunder_fortress",
+        M::Bulwark if class == 1 => "proc_thunder_fortress",
         M::Bulwark => "proc_sanctuary",
         M::Shieldburst | M::ShieldNova => "proc_shieldburst",
         M::HolyBurst => "proc_holy_burst",
@@ -371,10 +378,26 @@ pub(super) fn resolve(
     def.radius = radius;
     def.count = count as u32;
     // No second weapon roll: weapon damage is already included in attack-derived payloads.
-    let mut p = spell_engine::resolve(&def, 1, &run.stats(), run.spell_modifiers.entries());
-    let balance = run.balance.multiplier(run.class, key);
+    let (def, tags) = super::items::legendary::profile(run, &def);
+    let mut p = spell_engine::resolve_tagged(
+        &def,
+        1,
+        &run.stats(),
+        run.spell_modifiers.entries(),
+        0.0,
+        tags,
+    );
+    let balance = run.balance.multiplier_tagged(run.class, key, p.tags);
     p.dmg *= balance;
     p.dot *= balance;
+    if run.legendary.has(70) && p.tags.contains(Tags::DAMAGE) && p.dmg > 0.0 {
+        p.direct_dot = Some(spell_engine::PeriodicSnapshot {
+            dps: super::items::legendary::events::dot_conversion(run, key, p.tags, p.dmg) / 3.0,
+            duration: 3.0,
+            tags: p.tags | Tags::DOT | Tags::DURATION,
+        });
+        p.crit = 0.0;
+    }
     p
 }
 pub(super) fn radius(run: &Run, key: &str, base: f32) -> f32 {
@@ -437,6 +460,32 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 _ => {}
             }
             keys.insert(key(run, m));
+        }
+    }
+    for grant in &run.legendary.grants {
+        let m = grant.milestone().mechanic;
+        if matches!(
+            m,
+            M::None
+                | M::Weapon
+                | M::Titans
+                | M::Focus
+                | M::ArcaneFocus
+                | M::Shatter
+                | M::SlowCast
+                | M::FeralGuard
+        ) {
+            continue;
+        }
+        keys.insert(key_for_class(grant.class(), m));
+        if matches!(m, M::Pet | M::Pack) {
+            keys.insert("proc_pet_bite");
+        }
+        if matches!(m, M::DualTotem | M::SpiritTotem) {
+            keys.insert("proc_totem_heal");
+        }
+        if m == M::Grove {
+            keys.insert("proc_bloom");
         }
     }
     keys.into_iter()

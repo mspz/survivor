@@ -1,0 +1,169 @@
+RÈGLES DE CONCEPTION DES UNIQUES RETENUS
+
+Ce fichier précise les propositions du catalogue, pas des fonctionnalités déjà implémentées.
+Les nouveaux effets et buffs ci-dessous pourront avoir leurs propres identifiants : ils
+ne prétendent pas être des sorts actifs déjà présents dans ABILITIES.
+Les valeurs chiffrées des nouveaux procs sont des bases d'équilibrage proposées.
+
+SOURCES ET PROPRIÉTÉ
+- Chaque effet conserve son propriétaire, sa source de compétence, sa source d'objet et
+  son origine : compétence active, effet périodique natif, talent, invocation ou proc ajouté.
+- Un transfert ne vole jamais un effet d'un autre joueur. « Tes effets » signifie ceux
+  du propriétaire de l'objet, même lorsque plusieurs joueurs utilisent la même compétence.
+- Déplacer un effet conserve son budget et sa durée restants ; ce n'est pas une application
+  neuve. Sa suppression par transfert ne déclenche pas un proc d'expiration.
+- Les libellés français renvoient à une clé de gameplay. holy_fire désigne le sort appelé
+  Feu sacré dans ces propositions ; Starfall désigne le milestone et son effet proc_starfall.
+
+FAMILLES D'EFFETS
+Les champs actuels de Dot ne constituent pas un registre de familles. Le registre suivant
+devra être ajouté à la spécification d'exécution, sans déduire une famille de la seule couleur.
+- Saignement : les DoTs de rend, rupture, hemorrhage et proc_bleed, lorsqu'une instance
+  périodique existe effectivement pour cette source. Il ne suffit pas qu'un impact soit physique.
+- Poison : les instances de Deadly Poison reconnues comme proc_poison/deadly_poison.
+  serpent_sting et insect_swarm sont des DoTs de nature, pas cette famille Poison.
+- Brûlure : une instance de dégâts périodiques dont l'école finale est Feu. Les pulsations
+  d'une zone au sol et les impacts directs de feu ne sont pas des instances de cette famille.
+- Maladie : les instances proc_plague produites par Devouring Plague ou Unstable Affliction.
+  shadow_word_pain et les autres DoTs d'ombre ne deviennent pas automatiquement des maladies.
+- Malédiction : curse_of_agony et la Condamnation propre au 235, dont le payload est défini
+  par cet objet. Aucun nouveau sort de classe n'est supposé pour cette Condamnation.
+- La conversion absolue 094 change les familles périodiques en Brûlure et ne duplique pas
+  leurs anciennes versions. Les conversions d'école seules ne recréent jamais leurs dégâts.
+- Le 063 conserve explicitement Poison pendant sa conversion froide. Le 142 emploie une
+  marque Givre brûlant pour retrouver les seules instances qu'il a converties temporairement.
+- L'infection du 323 est un DoT de proc distinct, ni Poison ni Maladie de classe.
+
+SOINS
+- « Compétence active de soin » signifie une compétence Kind::Heal possédée par le joueur,
+  y compris si sa durée est positive. holy_light, lesser_healing_wave et regrowth ne sont
+  pas supposés avoir une portion instantanée que leur exécution actuelle ne produit pas.
+- Un déclenchement « à l'activation » se produit une fois quand l'autocast réussit, pas
+  à chaque tick. La condition native de lancement sous 85 % de vie reste inchangée sauf
+  exception explicitement annoncée. Aucun nouveau ciblage manuel n'est supposé.
+- Le budget total d'un soin périodique est son montant résolu, pas son débit par seconde.
+- Pour le 203 : première compétence Kind::Heal selon l'ordre d'apprentissage ; le soin
+  copié vaut 25 % de son budget total et touche le propriétaire et ses alliés dans 6 yards.
+- Pour le 207 : un sceau par bénéficiaire et propriétaire ; il libère 25 % du budget du soin
+  et ne peut pas se reposer lui-même. Les ticks du soin d'origine ne créent pas de sceau.
+- Pour le 152 : chercher dans 12 yards autour du bénéficiaire prévu. Sans victime portant
+  un saignement personnel, conserver le soin normal et son comportement d'autocast.
+- Pour le 237 : transférer la plus ancienne maladie personnelle proche vers une cible
+  distincte valide. Si l'une des deux cibles manque, conserver le soin et ne rien retirer.
+- Le surplus du 078 est calculé après les modificateurs de soin, avant plafonnement à la vie
+  manquante. Le retour de Run::heal seul ne donne pas ce surplus ; il faut une mesure dédiée.
+- Le 310 crée sa réserve à partir des dégâts effectifs des ticks de drain_life. Il ne
+  suppose pas que le soin natif de ces ticks soit déjà appliqué et ne modifie pas le drain
+  de base hors de cet objet. La réserve n'est pas un soin et ne produit aucun proc de soin.
+
+CONTRÔLES ET AURAS
+- Le 159 ne déclare pas tous les boss immunisés à tout : peur, provocation, immobilisation
+  et étourdissement conservent leurs règles natives sauf remplacement explicitement décrit.
+  Son impact de remplacement vaut 30 dégâts d'ombre, une fois par activation de compétence
+  au maximum, avec un délai interne global de 2 secondes. Aucun contrôle converti ne repasse
+  dans la table de conversion. Le ralentissement solo remplace seulement la peur concernée.
+- Le 057 vise les compétences Aura à dégâts. Il pose une zone au début du combat éligible,
+  puis toutes les 4 secondes ; sa zone vit 4 secondes et garde la cadence de l'aura. Une seule
+  zone par source est active. L'ancien emplacement reçoit un dernier impact de pulsation.
+- Le 309 change aussi l'origine de la recherche de cibles de hellfire, pas seulement les
+  particules. La pluie choisie est la plus ancienne instance personnelle rain_of_fire vivante.
+
+TOTEMS
+- Le 082 ne modifie que les composants Totem offensifs temporisés. Il n'ajoute pas une seconde
+  IA au Summon de soin déjà géré par les talents. Durée et compteur de tir continuent à courir.
+- Le 194 nécessite deux adaptateurs, car ces familles n'utilisent pas le même composant :
+  * Les totems offensifs temporisés deviennent des sources de soin à 2 % de vie maximale
+    du bénéficiaire par seconde dans un rayon de 12 yards autour de leur position.
+  * Le totem de restauration de milestone devient une tourelle émettant une décharge ciblée
+    de 24 dégâts de foudre par seconde dans 20 yards, sans son soin de restauration.
+  * Les valeurs sont des bases ; conserver les variantes supérieures du milestone comme
+    améliorations de leur source, sans supprimer Bloom, Living Grove ni les autres soins.
+  * Une source ne peut pas être inversée plusieurs fois. Une copie ne crée pas de totem.
+
+ARMES ET ÉQUIPEMENT
+- Les objets 026, 071, 224, 280 et 308 quittent leur slot de caster impossible en main secondaire.
+  Aucun type Focus ni contournement via Legacy n'est supposé par ces corrections.
+- Le 213 est un bouclier de type Shield. Son blocage enregistre l'attaquant et les dégâts
+  avant mitigation dans un événement dédié : le booléen blocked et zéro dégât reçu ne suffisent pas.
+- Le 046 et la partie Titan's Grip du 279 apportent une permission d'objet pour TwoHand
+  accessible à la classe, pas Staff. L'exception doit être indépendante du test class == 1.
+  Le bonus natif de vitesse d'attaque fait partie du milestone et ne se cumule pas avec sa copie.
+- Le 279 demande de conserver les plages et sources de procs de chaque main séparément.
+  Les affixes permanents restent actifs ; les payloads de frappe utilisent la main choisie.
+  Ce n'est pas une propriété déjà disponible dans le Loadout qui additionne actuellement les mains.
+- Quand un objet devient inéquipable ou quitte le slot, retirer sa permission et vérifier
+  le loadout, sans effacer les armes et sans conserver une combinaison devenue interdite.
+
+BUDGETS, PILES ET RÉSERVES
+- Distinguer la puissance résolue, les dégâts effectivement infligés et le budget de ticks
+  prévu. Une réserve ne réapplique pas les modificateurs du propriétaire une deuxième fois.
+- Une victime réellement visée subit sa propre mitigation une fois pour le nouvel impact.
+- Le 017 stocke le budget de la zone elle-même, pas la somme de dégâts hypothétiques sur tous
+  les ennemis qui seraient entrés et sortis de son cercle.
+- Le 222 remplace les piles du même saignement par deux plaies gérées par l'objet ; il ne
+  réserve pas deux copies supplémentaires en plus des piles ordinaires. Conserver un budget fini.
+- Le 230 ne prétend pas qu'une application native rafraîchit toujours le DoT. Il remplace
+  explicitement l'application par une instance et un compteur de cinq clous maximum.
+- Réserves d'effets transférés : pas plus que le budget de six instances de source, pas
+  de duplication à la mort, et pas de mélange des propriétaires. Les réserves sans limite
+  chiffrée propre à leur objet expirent après six secondes.
+- Le 235 copie le montant effectivement infligé, sans relancer le critique ni les effets
+  secondaires du coup initial. La Condamnation est remplaçable, pas empilable indéfiniment.
+- Le 176 conserve le coup de base d'Exécution mais retire son finisher immédiat. La Sentence
+  ne tue jamais un boss et est consommée au premier autre coup de mêlée, même sans exécution.
+
+RÈGLES DES 30 NOUVEAUX PROCS, 311 À 340
+- Une seule copie équipée par identifiant d'unique ; les variantes d'affixes ne doublent pas
+  les compteurs. Chaque propriétaire conserve son propre état, ses charges et ses délais.
+- Par défaut, les dégâts de procs ne sont pas critiques et ne déclenchent ni un autre proc
+  d'objet, ni une chaîne de talents supplémentaires. Leurs DoTs, kills, soins et expirations
+  héritent de cette origine : les exclure aussi des déclenchements indirects.
+- Un buff de proc peut modifier une future compétence normale : cette compétence garde
+  son origine normale. Un même événement ne réévalue jamais rétroactivement le proc qui l'a créé.
+- Un simple booléen sur le hit ne suffit pas pour les morts, buffs et boucliers : propager
+  explicitement l'origine jusqu'à ces événements lors de l'implémentation.
+- Une activation réussie est un lancement réellement exécuté. Un cooldown prêt sans cible
+  et une tentative refusée ne comptent pas. Les copies et répétitions déclenchées ne comptent
+  pas comme de nouvelles activations pour les séquences des objets 311 à 340.
+- Un jet par activation, pas un jet par ennemi d'une nova. Pour un compteur de critique,
+  employer l'impact direct sur la cible principale. Un tick ne compte pas comme un hit direct.
+- Un compteur seuil est déterministe : sa chance est 100 % quand la condition est remplie.
+  Les pourcentages indiqués sont des chances explicites ; enregistrer l'ICD avant le payload.
+- Les délais internes indiqués sont globaux au propriétaire et à l'objet, pas par victime.
+  À défaut de délai explicite, les compteurs sont la limite ; aucune réserve ne se duplique.
+- Un buff identique ne cumule pas sa puissance avec lui-même ; il se renouvelle seulement
+  quand sa description le permet. Un buff consommable est retiré avant la compétence copiée.
+- Les changements de cooldown, zone, critique ou DoT respectent les règles et plafonds du
+  moteur. Les valeurs sont capturées à la résolution ; ne pas renforcer rétroactivement
+  une zone ou un DoT déjà créé, ni recalculer un cooldown déjà attribué sans règle explicite.
+- Foudre et Nature sont un seul élément pour les compteurs d'écoles distinctes. Les procs
+  lisent l'école finale après conversion, pas le nom ou la couleur d'origine du sort.
+- Le 331 accorde une régénération de base de 8 % de vie maximale par seconde pendant 3 secondes.
+  Le 338 modifie seulement le rayon de ramassage d'EXP en run ; son augmentation de 200 %
+  correspond à un facteur trois hors autres modificateurs, pas à un bonus d'EXP méta.
+- Une expiration naturelle est la fin de la durée, pas une mort, un remplacement, un retrait
+  d'objet, un transfert ou une éviction par limite de piles. Une rupture de bouclier n'en est pas une.
+- Un buff sans cible ennemie peut agir sur son propriétaire. Un proc offensif sans cible
+  valide ne crée pas d'impact fantôme ; pour le 321, le budget est partagé entre les cibles valides.
+- Les trajectoires restent des visuels guidés. Zones retardées et cônes font une recherche
+  de cibles à leur déclenchement ; pas de missile à collision, de mur d'arène ni de ricochet physique.
+
+BASES DE DÉGÂTS PROPOSÉES POUR LES NOUVEAUX PAYLOADS
+311 : 35 physiques, cercle de 5 yards.
+312 : 18 de froid par éclat ; portée de sélection 20 yards.
+313 : 35 de feu, cercle de 5 yards, délai de 0,6 seconde.
+314 : 30 d'ombre, cercle de 5 yards.
+315 : 24 de foudre sur la première cible, décroissance de chaîne native aux deux sauts suivants.
+316 : 24 de nature, cible dans 20 yards.
+317 : 60 arcaniques, cible dans 24 yards.
+318 : 30 physiques, cercle de 4 yards.
+319 : 45 sacrés, cercle de 6 yards.
+320 : 30 arcaniques, cercle de 4 yards, délai d'une seconde.
+321 : budget total = protection restante, plafonné à 25 % de la vie maximale du propriétaire.
+322 : 40 d'ombre, cercle de 6 yards, délai de 0,3 seconde.
+323 : 8 de nature par seconde pendant 4 secondes.
+324 : 45 de feu, cône de forme native et de portée 8 yards.
+325 : 22 d'ombre par projectile, sélection dans 20 yards.
+
+Ces bases sont proposées pour concevoir les effets ; leur réglage par Ilvl et leur équilibre
+ne sont pas implémentés ici. Conserver les milestones de 301 à leurs valeurs natives.

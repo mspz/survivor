@@ -58,9 +58,13 @@ pub(super) fn scale_enemies(run: Res<Run>, mut enemies: Query<(&mut Enemy, &Expe
 
 #[derive(Clone)]
 pub(super) struct Dot {
+    pub item_source: Option<u16>,
+    pub meta: super::items::legendary::periodic::Meta,
+    pub origin: super::items::legendary::events::Origin,
     pub owner: Option<u64>,
     pub skill: &'static str,
     pub meter_source: Option<&'static str>,
+    pub tags: Option<super::spell_engine::Tags>,
     pub dps: f32,
     pub left: f32,
     pub tick: f32,
@@ -78,6 +82,7 @@ pub(super) struct Spawner {
 /// An enemy died here, worth this much.
 #[derive(Message, Clone, Copy)]
 pub(super) struct Loot {
+    pub item_level: u32,
     pub pos: Vec3,
     pub xp: u32,
     pub boss: bool,
@@ -88,6 +93,7 @@ pub(super) enum GemKind {
     Xp(u32),
     Heal(f32),
     Vacuum,
+    Shield(Option<u64>, u64),
 }
 
 #[derive(Component)]
@@ -105,6 +111,7 @@ fn look_for(kind: GemKind) -> (u32, f32) {
         GemKind::Heal(_) => (114, 2.5),
         // A large purple wisp, distinct from the small experience motes.
         GemKind::Vacuum => (1307, 3.0),
+        GemKind::Shield(..) => (1267, 2.0),
         // `BFD_WispSmallPurple.mdx`.
         GemKind::Xp(xp) if xp >= 20 => (1307, 1.0),
         // `BFD_WispSmallGreen.mdx`.
@@ -294,6 +301,7 @@ pub(super) fn spawn_enemies(
 /// swinging when in reach.
 #[allow(clippy::type_complexity)]
 pub(super) fn move_enemies(
+    mut commands: Commands,
     time: Res<Time>,
     mut run: ResMut<Run>,
     mut rng: ResMut<Rng>,
@@ -503,12 +511,33 @@ pub(super) fn move_enemies(
             } else {
                 1.0
             };
+            target_run.legendary.events.attacker = Some(ent);
             let taken = hero::hurt_hero_with_block(target_run, raw, roll);
+            target_run.legendary.events.attacker = None;
             fx.swing(ent, hero_e, taken);
             if taken > 0.0 {
                 fx.number(hero_e, taken, false, COLOR_HURT);
             }
-            if target_run.thorns_t > 0.0 {
+            if target_run.thorns_t > 0.0 && target_run.legendary.has(220) {
+                let amount = target_run.thorns * target_run.stats().might;
+                if target_run.legendary.effects.allies.len() > 1 {
+                    target_run.legendary.effects.heals.push((
+                        target_run.legendary.events.position,
+                        amount,
+                        24.0,
+                        false,
+                        true,
+                    ));
+                } else {
+                    let serial = target_run.guid();
+                    spawn_gem(
+                        &mut commands,
+                        serial,
+                        target_run.legendary.events.position,
+                        GemKind::Heal(amount),
+                    );
+                }
+            } else if target_run.thorns_t > 0.0 {
                 let source = data::ABILITIES
                     .iter()
                     .find(|def| def.spell == target_run.thorns_spell)
@@ -519,6 +548,7 @@ pub(super) fn move_enemies(
                     target_run.thorns * target_run.stats().might,
                     false,
                 );
+                hit.direct_dot = target_run.thorns_dot;
                 hit.owner = target_run.owner;
                 hits.write(hit);
             }
@@ -599,7 +629,7 @@ pub(super) fn drop_loot(
     }
 }
 
-fn spawn_gem(commands: &mut Commands, serial: u64, pos: Vec3, kind: GemKind) {
+pub(super) fn spawn_gem(commands: &mut Commands, serial: u64, pos: Vec3, kind: GemKind) {
     let (display, scale) = look_for(kind);
     let e = units::spawn_object(commands, serial, display, scale, pos + Vec3::Y * 0.5);
     commands.entity(e).insert(Gem {
@@ -628,9 +658,17 @@ pub(super) fn collect_gems(
     let mut vacuum = false;
     let mut collected = Vec::new();
     for (e, mut tf, mut g) in &mut gems {
+        if matches!(g.kind,GemKind::Shield(owner,_) if owner!=run.owner) {
+            continue;
+        }
         let d = target - tf.translation;
         let dist = d.length();
-        if !g.pulled && flat(d).length() <= stats.magnet {
+        let pickup = if matches!(g.kind, GemKind::Xp(_)) {
+            super::items::legendary::events::pickup(&run)
+        } else {
+            1.0
+        };
+        if !g.pulled && flat(d).length() <= stats.magnet * pickup {
             g.pulled = true;
         }
         if !g.pulled {
@@ -643,6 +681,11 @@ pub(super) fn collect_gems(
                     run.heal(hp);
                 }
                 GemKind::Vacuum => vacuum = true,
+                GemKind::Shield(_, generation) => {
+                    if generation == run.legendary.effects.shield_generation {
+                        run.legendary.effects.shield_lock = 0.0;
+                    }
+                }
             }
             collected.push(e);
             commands.entity(e).despawn();
@@ -723,6 +766,21 @@ mod pickup_tests {
             .id()
     }
     #[test]
+    fn an_old_shield_fragment_cannot_unlock_a_later_broken_shield() {
+        let mut world = world();
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.effects.shield_generation = 2;
+            run.legendary.effects.shield_lock = 8.0;
+        }
+        gem(&mut world, GemKind::Shield(None, 1), Vec3::Y);
+        world.run_system_once(collect_gems).unwrap();
+        assert_eq!(world.resource::<Run>().legendary.effects.shield_lock, 8.0);
+        gem(&mut world, GemKind::Shield(None, 2), Vec3::Y);
+        world.run_system_once(collect_gems).unwrap();
+        assert_eq!(world.resource::<Run>().legendary.effects.shield_lock, 0.0);
+    }
+    #[test]
     fn vacuum_collects_near_and_distant_xp_once_with_growth_but_leaves_other_pickups() {
         let mut world = world();
         {
@@ -780,6 +838,7 @@ mod pickup_tests {
         });
         for _ in 0..100_000 {
             world.resource_mut::<Messages<Loot>>().write(Loot {
+                item_level: 1,
                 pos: Vec3::ZERO,
                 xp: 1,
                 boss: false,

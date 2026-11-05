@@ -19,6 +19,9 @@ pub fn modifiers(skill: &str, entries: &[Modifier]) -> HitModifiers {
         .find(|d| d.key == skill)
         .or_else(|| super::super::procs::find(skill).map(|s| &s.def))
         .map_or(Tags(0), |d| tags::for_spell(d));
+    modifiers_tagged(skill, tags, entries)
+}
+pub fn modifiers_tagged(skill: &str, tags: Tags, entries: &[Modifier]) -> HitModifiers {
     let mut out = HitModifiers {
         tags,
         ..Default::default()

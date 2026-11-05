@@ -2301,14 +2301,14 @@ static ROSTERS: std::sync::LazyLock<Vec<Roster>> = std::sync::LazyLock::new(|| {
                     bosses: ladder(m.bosses, BOSSES),
                 }
             };
-            if let Some(tier) = CAMPAIGN.iter().position(|&i| i == index) {
-                let low = tier as u32 * 10;
+            if let Some((low, high)) = campaign_levels(index) {
                 let count = roster.enemies.len().saturating_sub(1).max(1);
                 for (i, enemy) in roster.enemies.iter_mut().enumerate() {
-                    enemy.level = (low + (i * 9 / count) as u32).max(1);
+                    enemy.level = low + (i as u32 * (high - low) / count as u32);
                 }
-                for boss in &mut roster.bosses {
-                    boss.level = low + 9;
+                let count = roster.bosses.len() as u32;
+                for (i, boss) in roster.bosses.iter_mut().enumerate() {
+                    boss.level = low + ((i + 1) as u32 * (high - low) / count);
                 }
             }
             roster
@@ -2325,9 +2325,13 @@ pub(crate) const CAMPAIGN: &[usize] = &[5, 11, 13, 12, 4, 1];
 pub(crate) fn campaign_levels(map: usize) -> Option<(u32, u32)> {
     CAMPAIGN.iter().position(|&i| i == map).map(|tier| {
         let low = tier as u32 * 10;
-        (low, low + 9)
+        (low.max(1), low + 9)
     })
 }
+
+#[cfg(test)]
+#[path = "zone_level_tests.rs"]
+mod zone_level_tests;
 
 /// Number a roster off a tuned ladder: each creature takes the health, damage and experience at
 /// its own place along it, from the ladder's running peak so no later tier comes out softer.

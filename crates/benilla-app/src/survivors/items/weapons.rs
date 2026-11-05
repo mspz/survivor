@@ -71,18 +71,22 @@ impl Item {
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::survivors) struct Loadout {
     melee: DamageRange,
+    hands: [DamageRange; 2],
     ranged: DamageRange,
 }
 impl Loadout {
     pub(super) fn equip(&mut self, slot: &str, damage: DamageRange) {
         match slot {
-            "Main hand" | "Off hand" => self.melee = self.melee.plus(damage),
+            "Main hand" | "Off hand" => {
+                self.melee = self.melee.plus(damage);
+                self.hands[usize::from(slot == "Off hand")] = damage;
+            }
             "Ranged" => self.ranged = damage,
             _ => {}
         }
     }
-    fn for_spell(self, def: &AbilityDef) -> DamageRange {
-        if !spell_engine::tags::for_spell(def).contains(Tags::ATTACK) || def.damage <= 0.0 {
+    fn for_spell(self, def: &AbilityDef, tags: Tags) -> DamageRange {
+        if !tags.contains(Tags::ATTACK) || def.damage <= 0.0 {
             return DamageRange::default();
         }
         if matches!(
@@ -103,7 +107,12 @@ impl Loadout {
 }
 impl Run {
     pub(in crate::survivors) fn weapon_damage_range(&self, def: &AbilityDef) -> DamageRange {
-        self.weapon_damage.for_spell(def)
+        let (profile, tags) = super::legendary::profile(self, def);
+        if self.legendary.has(279) && tags.contains(Tags::ATTACK | Tags::MELEE) && def.damage > 0.0
+        {
+            return self.weapon_damage.hands[self.legendary.casting.melee as usize % 2];
+        }
+        self.weapon_damage.for_spell(&profile, tags)
     }
     pub fn resolve_spell_for_cast(
         &self,
@@ -124,8 +133,9 @@ impl Run {
         level: u8,
         roll: f32,
     ) -> spell_engine::Resolved {
-        let mut resolved = spell_engine::resolve_with_weapon_damage(
-            def,
+        let (profile, tags) = super::legendary::profile(self, def);
+        let mut resolved = spell_engine::resolve_tagged(
+            &profile,
             level,
             &self.stats(),
             self.spell_modifiers.entries(),
@@ -138,10 +148,56 @@ impl Run {
                 } else {
                     1.0
                 },
+            tags,
         );
-        let multiplier = self.balance.multiplier(self.class, def.key);
+        let multiplier = self
+            .balance
+            .multiplier_tagged(self.class, def.key, resolved.tags);
         resolved.dmg *= multiplier;
         resolved.dot *= multiplier;
+        if (self.legendary.has(265) && def.kind == crate::survivors::data::Kind::Dot)
+            || (self.legendary.has(303) && def.key == "entangling_roots")
+        {
+            resolved.dmg = resolved.dot;
+            resolved.dot = 0.0;
+        }
+        if self.legendary.has(70) && resolved.tags.contains(Tags::DAMAGE) && def.damage > 0.0 {
+            let direct = super::legendary::events::dot_conversion(
+                self,
+                def.key,
+                resolved.tags,
+                resolved.dmg,
+            ) / 3.0;
+            resolved.direct_dot = Some(spell_engine::PeriodicSnapshot {
+                dps: direct,
+                duration: 3.0,
+                tags: resolved.tags | Tags::DOT | Tags::DURATION,
+            });
+            resolved.dmg = 0.0;
+            resolved.crit = 0.0;
+            if def.dot > 0.0 {
+                let mut native_def = def.clone();
+                native_def.damage = 0.0;
+                let (native_def, original_tags) = super::legendary::profile(self, &native_def);
+                let native = spell_engine::resolve_tagged(
+                    &native_def,
+                    level,
+                    &self.stats(),
+                    self.spell_modifiers.entries(),
+                    0.0,
+                    original_tags,
+                );
+                resolved.dot = native.dot
+                    * self
+                        .balance
+                        .multiplier_tagged(self.class, def.key, original_tags);
+                resolved.dot_tags = Some(original_tags);
+            }
+        }
+        super::legendary::events::modify(self, &profile, &mut resolved);
+        if resolved.direct_dot.is_some() {
+            resolved.primary_critical = false;
+        }
         resolved
     }
 }

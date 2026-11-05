@@ -14,6 +14,8 @@ pub(super) mod armour;
 pub(super) mod combat;
 mod config;
 mod equipment;
+mod item_level;
+pub(super) mod legendary;
 mod starter;
 mod tooltip;
 pub(super) mod visuals;
@@ -92,14 +94,14 @@ impl Rarity {
             Self::Normal => 1,
             Self::Magic => 2,
             Self::Epic => 4,
-            Self::Legendary => 0,
+            Self::Legendary => 4,
         }
     }
     fn primary_count(self) -> usize {
         match self {
             Self::Normal | Self::Magic => 1,
             Self::Epic => 2,
-            Self::Legendary => 0,
+            Self::Legendary => 2,
         }
     }
 }
@@ -151,6 +153,7 @@ pub(super) enum Effect {
     PickupRadius,
     Experience,
     Luck,
+    MagicFind,
     Proc,
 }
 impl Effect {
@@ -234,6 +237,7 @@ impl Effect {
                 | Self::PickupRadius
                 | Self::Experience
                 | Self::Luck
+                | Self::MagicFind
         )
     }
     fn valid_slot(self, slot: SlotKind) -> bool {
@@ -299,6 +303,7 @@ pub(super) struct Bonuses {
     pub pickup: f32,
     pub experience: f32,
     pub luck: f32,
+    pub magic_find: f32,
 }
 impl Bonuses {
     fn add(&mut self, effect: Effect, value: f32) {
@@ -312,6 +317,7 @@ impl Bonuses {
             Effect::PickupRadius => self.pickup += value,
             Effect::Experience => self.experience += value,
             Effect::Luck => self.luck += value,
+            Effect::MagicFind => self.magic_find += value,
             _ => {}
         }
     }
@@ -332,6 +338,8 @@ pub(super) struct Affix {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Item {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legendary: Option<legendary::Roll>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_damage: Option<weapons::DamageRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -386,6 +394,7 @@ pub(super) struct Inventory {
     pub revision: u64,
     pub notice: String,
     blocked: bool,
+    native_titan_grip: bool,
 }
 impl Default for Inventory {
     fn default() -> Self {
@@ -397,6 +406,7 @@ impl Default for Inventory {
             revision: 0,
             notice: String::new(),
             blocked: false,
+            native_titan_grip: false,
         }
     }
 }
@@ -438,6 +448,7 @@ impl Inventory {
             revision: 0,
             notice: String::new(),
             blocked: false,
+            native_titan_grip: false,
         }
     }
     pub fn all(&self) -> &[Item] {
@@ -469,7 +480,23 @@ impl Inventory {
         crate::local_state::write_atomic(&home.join(format!("characters/{id}-items.toml")), &text)
             .map_err(|e| e.to_string())
     }
-    fn commit(&mut self, save: Save) -> Result<(), String> {
+    fn commit(&mut self, mut save: Save) -> Result<(), String> {
+        legendary::validate_loadout(&save)?;
+        let previous_permission = self.save.titan_grip;
+        save.titan_grip = self.native_titan_grip || legendary::titan_grip(&save);
+        if previous_permission && !save.titan_grip {
+            if save.equipped.get("Off hand").is_some_and(|id| {
+                save.items
+                    .iter()
+                    .any(|item| item.id == *id && item.equipment_type == EquipmentType::TwoHand)
+            }) || save.equipped.get("Main hand").is_some_and(|id| {
+                save.items
+                    .iter()
+                    .any(|item| item.id == *id && item.equipment_type.two_handed())
+            }) {
+                save.equipped.remove("Off hand");
+            }
+        }
         self.validate_loadout(&save)?;
         self.persist(&save)?;
         self.save = save;
@@ -527,7 +554,17 @@ impl Inventory {
         self.revision = self.revision.wrapping_add(1);
     }
     fn decode(text: &str) -> Result<Save, String> {
-        let save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
+        // Identity is the saved unique ID; display names can change or be translated.
+        for item in &mut save.items {
+            if let Some(definition) = item
+                .legendary
+                .as_ref()
+                .and_then(|roll| legendary::definition(roll.unique))
+            {
+                item.name = definition.name.into();
+            }
+        }
         if save.version != 1 || save.next_id == 0 {
             return Err("unsupported inventory".into());
         }
@@ -543,7 +580,7 @@ impl Inventory {
                     .loot_class
                     .is_some_and(|id| !super::data::CLASSES.iter().any(|c| c.id == id))
                 || item.level == 0
-                || item.rarity == Rarity::Legendary
+                || !legendary::validate_item(item)
                 || (item.affixes.len() != item.rarity.count() && !starter::is_plain(item))
             {
                 return Err("invalid item".into());
@@ -607,6 +644,7 @@ impl Inventory {
             }
         }
         save.validate_hands()?;
+        legendary::validate_loadout(&save)?;
         Ok(save)
     }
     pub(in crate::survivors) fn collect(&mut self, mut item: Item) -> Result<(), String> {
@@ -753,11 +791,49 @@ impl Inventory {
             return;
         }
         let old_max = run.stats().max_hp;
+        run.legendary.weapon_items = self
+            .save
+            .equipped
+            .iter()
+            .filter_map(|(slot, id)| match slot.as_str() {
+                "Main hand" => Some((*id, 0)),
+                "Off hand" => Some((*id, 1)),
+                _ => None,
+            })
+            .collect();
+        run.legendary.levels = self
+            .save
+            .equipped
+            .values()
+            .filter_map(|id| self.item(*id))
+            .filter_map(|item| {
+                item.legendary
+                    .as_ref()
+                    .map(|roll| (roll.unique, item.level))
+            })
+            .collect();
+        run.legendary.equipped = self
+            .save
+            .equipped
+            .iter()
+            .filter_map(|(name, id)| {
+                let item = self.item(*id)?;
+                if !SLOTS
+                    .iter()
+                    .any(|(slot, kind)| slot == name && self.can_equip(item, *kind))
+                {
+                    return None;
+                }
+                item.legendary.clone().map(|roll| (roll.unique, roll))
+            })
+            .collect();
+        legendary::milestones::equip(run);
         let mut modifiers = Vec::new();
         let (mut hp, mut armour) = (0.0, 0.0);
         let mut bonuses = Bonuses::default();
         let mut procs = Vec::new();
         let mut weapons = weapons::Loadout::default();
+        let mut uniques = BTreeMap::new();
         for (name, id) in &self.save.equipped {
             let Some(item) = self.item(*id) else { continue };
             if !SLOTS
@@ -767,6 +843,9 @@ impl Inventory {
                 continue;
             }
             bonuses.block += item.base_block;
+            if let Some(roll) = &item.legendary {
+                uniques.entry(roll.unique).or_insert_with(|| roll.clone());
+            }
             armour += item.armour();
             weapons.equip(name, item.weapon_damage());
             for (index, a) in item.affixes.iter().enumerate() {
@@ -828,6 +907,19 @@ impl Inventory {
         bonuses.block = bonuses.block.clamp(0.0, 0.75);
         run.equipment = bonuses;
         combat::equip(run, procs);
+        run.legendary.equipped = uniques;
+        legendary::events::equip(run);
+        legendary::casting::equip(run);
+        legendary::effects::equip(run);
+        if (run.legendary.has(46) || run.legendary.has(279))
+            && !super::talent_runtime::active(run, super::talent_design::Mechanic::Titans)
+        {
+            modifiers.push(Modifier {
+                source: SOURCE,
+                filter: Filter::requiring(Tags::ATTACK),
+                change: Change::IncreasedAttackSpeed(0.25),
+            });
+        }
         run.replace_spell_modifiers(SOURCE, modifiers);
         run.equipment_version = Some(signature);
         let max = run.stats().max_hp;
@@ -874,12 +966,16 @@ fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<R
         inventory.bind(roster.active)
     }
     if roster.current().is_some_and(|c| c.starter_equipment) {
-        if let Err(error) = inventory.grant_starter() {
+        if let Err(error) = inventory.grant_starter(
+            roster
+                .current()
+                .is_some_and(|c| super::characters::is_test_character(&c.name)),
+        ) {
             inventory.notice = error;
         }
     }
-    let titan = super::talent_runtime::active(&run, super::talent_design::Mechanic::Titans)
-        && inventory.class == 1;
+    inventory.native_titan_grip = run.talent_build[1][18] > 0 && inventory.class == 1;
+    let titan = inventory.native_titan_grip || legendary::titan_grip(&inventory.save);
     if inventory.save.titan_grip != titan {
         let mut save = inventory.save.clone();
         save.titan_grip = titan;
@@ -926,10 +1022,12 @@ fn boss_drops(
         {
             continue;
         }
-        match inventory
-            .config
-            .generate_for_class(run.level, run.class.id, &mut rng)
-        {
+        match inventory.config.generate_loot(
+            drop.item_level,
+            run.class.id,
+            run.equipment.magic_find,
+            &mut rng,
+        ) {
             Ok(item) => {
                 let e = super::units::spawn_object(
                     &mut commands,
@@ -1007,6 +1105,7 @@ mod tests {
             revision: 0,
             notice: String::new(),
             blocked: false,
+            native_titan_grip: false,
         }
     }
     pub(super) fn affix(
@@ -1028,6 +1127,7 @@ mod tests {
     }
     pub(super) fn item(slot: SlotKind, affixes: Vec<Affix>) -> Item {
         Item {
+            legendary: None,
             base_damage: None,
             base_armour: None,
             appearance: None,
@@ -1228,6 +1328,7 @@ mod tests {
             (SlotKind::Waist, "Waist", Effect::PickupRadius, 0.2),
             (SlotKind::MainHand, "Main hand", Effect::LifeOnKill, 5.0),
             (SlotKind::Ring, "Ring 1", Effect::Luck, 0.1),
+            (SlotKind::Ring, "Ring 2", Effect::MagicFind, 0.2),
         ];
         let mut inventory = Inventory::fixture(
             mods.iter()
@@ -1254,6 +1355,7 @@ mod tests {
         assert_eq!(run.stats().regen, 2.0);
         assert_eq!(run.stats().growth, 1.1);
         assert_eq!(run.equipment.luck, 0.1);
+        assert_eq!(run.equipment.magic_find, 0.2);
         assert_eq!(run.equipment.life_on_kill, 5.0);
         assert_eq!(super::super::hero::hurt_hero(&mut run, 40.0), 30.0);
         assert_eq!(run.heal(10.0), 15.0);
@@ -1264,6 +1366,7 @@ mod tests {
         inventory.apply(&mut run);
         assert_eq!(run.stats().regen, base.regen);
         assert_eq!(run.equipment.luck, 0.0);
+        assert_eq!(run.equipment.magic_find, 0.0);
         assert_eq!(run.heal(10.0), 10.0);
     }
     #[test]
@@ -1449,11 +1552,13 @@ mod tests {
         world.insert_resource(Rng(123));
         world.init_resource::<Messages<Loot>>();
         world.resource_mut::<Messages<Loot>>().write(Loot {
+            item_level: 1,
             pos: Vec3::ZERO,
             xp: 1,
             boss: false,
         });
         world.resource_mut::<Messages<Loot>>().write(Loot {
+            item_level: 9,
             pos: Vec3::X * 100.0,
             xp: 1,
             boss: true,
