@@ -15,7 +15,9 @@ pub(super) fn extra_spell(run: &Run, source: usize, tags: Tags, rng: &mut Rng) -
         .iter()
         .enumerate()
         .filter(|(index, owned)| {
-            *index != source && legendary::profile(run, owned.def).1.contains(Tags::SPELL)
+            *index != source
+                && !run.disabled_spells.contains(owned.def.key)
+                && legendary::profile(run, owned.def).1.contains(Tags::SPELL)
         })
         .map(|(index, _)| index)
         .collect();
@@ -23,7 +25,10 @@ pub(super) fn extra_spell(run: &Run, source: usize, tags: Tags, rng: &mut Rng) -
         return run
             .abilities
             .get(source)
-            .filter(|owned| legendary::profile(run, owned.def).1.contains(Tags::SPELL))
+            .filter(|owned| {
+                !run.disabled_spells.contains(owned.def.key)
+                    && legendary::profile(run, owned.def).1.contains(Tags::SPELL)
+            })
             .map(|_| source);
     }
     Some(candidates[rng.index(candidates.len())])
@@ -87,6 +92,18 @@ mod tests {
         assert_eq!(extra_spell(&run, 0, Tags::SPELL, &mut rng), Some(0));
         run.abilities.clear();
         assert_eq!(extra_spell(&run, 0, Tags::SPELL, &mut rng), None);
+    }
+    #[test]
+    fn companion_respects_disabled_training_spells() {
+        let mut run = run();
+        let mut rng = Rng(912);
+        run.disabled_spells
+            .extend(["fireball", "flash_heal", "ice_barrier"]);
+        assert_eq!(extra_spell(&run, 0, Tags::SPELL, &mut rng), Some(0));
+        run.disabled_spells.insert("arcane_missiles");
+        assert_eq!(extra_spell(&run, 0, Tags::SPELL, &mut rng), None);
+        run.disabled_spells.remove("fireball");
+        assert_eq!(extra_spell(&run, 0, Tags::SPELL, &mut rng), Some(1));
     }
     #[test]
     fn cascade_scales_direct_and_periodic_damage_without_overflow() {
