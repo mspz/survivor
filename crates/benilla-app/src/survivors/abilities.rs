@@ -173,6 +173,152 @@ mod spell_engine_integration_tests {
         }
     }
     #[test]
+    fn healing_casts_above_eighty_five_percent_and_selects_allies_including_the_host() {
+        use super::super::multiplayer::{Companion, Companions, HostPlayer};
+        for guest in [false, true] {
+            for skill in ["flash_heal", "rejuvenation"] {
+                let (mut world, _) = legendary_world(skill, 286, &[]);
+                {
+                    let mut caster = world.resource_mut::<Run>();
+                    caster.legendary.equipped.clear();
+                    caster.class = &data::CLASSES[4];
+                    caster.talent_build[0][0] = 1; // Discipline has no blessing exception.
+                    caster.owner = guest.then_some(42);
+                    caster.equipment.healing = 0.5;
+                    caster.hp = caster.stats().max_hp;
+                }
+                let mut players = Companions::default();
+                let mut chosen = Entity::PLACEHOLDER;
+                for (id, distance, fraction, dead) in [
+                    (10, 4.0, 0.9, false),
+                    (11, 50.0, 0.1, false),
+                    (12, 2.0, 0.0, true),
+                    (13, 6.0, 0.95, false),
+                ] {
+                    let entity = world.spawn(Transform::from_xyz(distance, 0.0, 0.0)).id();
+                    let mut run = Run {
+                        owner: Some(id),
+                        ..default()
+                    };
+                    run.equipment.healing = 0.8;
+                    run.hp = run.stats().max_hp * fraction;
+                    run.dead_t = dead.then_some(1.0);
+                    if id == 10 {
+                        chosen = entity;
+                        if guest {
+                            run.owner = None;
+                            world.insert_resource(HostPlayer { entity, run });
+                            continue;
+                        }
+                    }
+                    players.0.insert(
+                        id,
+                        Companion {
+                            entity,
+                            run,
+                            physics: Hero { vy: 0.0, air: 0.0 },
+                            offer: default(),
+                            offer_id: 0,
+                        },
+                    );
+                }
+                world.insert_resource(players);
+                let power = world
+                    .resource::<Run>()
+                    .resolve_spell(data::ability(skill), 1);
+                world.run_system_once(cast_abilities).unwrap();
+                assert!(world.resource::<Run>().abilities[0].cd > 0.0);
+                let go = world
+                    .resource_mut::<Messages<SpellGoTargets>>()
+                    .drain()
+                    .next()
+                    .unwrap();
+                assert_eq!(go.hits, vec![chosen]);
+                let target = if guest {
+                    &world.resource::<HostPlayer>().run
+                } else {
+                    &world.resource::<Companions>().0[&10].run
+                };
+                if power.duration > 0.0 {
+                    assert_eq!(world.resource::<Run>().heal_t, 0.0);
+                    assert_eq!(target.heal_t, power.duration);
+                    assert!(
+                        (target.heal_rate * power.duration * 1.8 - power.dmg * 1.5).abs() < 0.001
+                    );
+                } else {
+                    assert!(target.hp > target.stats().max_hp * 0.9);
+                }
+            }
+        }
+    }
+    #[test]
+    fn reward_selection_stops_casts_hits_and_dots_for_host_and_guests() {
+        use super::super::multiplayer::{Companion, Companions};
+        for owner in [None, Some(42)] {
+            let (mut world, targets) = legendary_world("frostbolt", 286, &[2.0]);
+            world.resource_mut::<Run>().legendary.equipped.clear();
+            world.resource_mut::<Run>().pending_levels = 1;
+            world.run_system_once(cast_abilities).unwrap();
+            assert!(world.resource::<Messages<SpellGoTargets>>().is_empty());
+            assert!(world.resource::<Messages<Hit>>().is_empty());
+            if let Some(id) = owner {
+                let mut guest_run = world.remove_resource::<Run>().unwrap();
+                guest_run.owner = owner;
+                world.insert_resource(Run::default());
+                let entity = world.spawn(Transform::default()).id();
+                let mut players = Companions::default();
+                players.0.insert(
+                    id,
+                    Companion {
+                        entity,
+                        run: guest_run,
+                        physics: Hero { vy: 0.0, air: 0.0 },
+                        offer: default(),
+                        offer_id: 0,
+                    },
+                );
+                world.insert_resource(players);
+            }
+            let target = targets[0];
+            world
+                .get_mut::<Enemy>(target)
+                .unwrap()
+                .dots
+                .push(enemies::Dot {
+                    owner,
+                    skill: "fireball",
+                    meter_source: None,
+                    tags: Some(engine::Tags::FIRE | engine::Tags::DOT),
+                    item_source: None,
+                    origin: Origin::Skill,
+                    meta: default(),
+                    dps: 100.0,
+                    left: 10.0,
+                    tick: 0.0,
+                });
+            let mut hit = Hit::direct("fireball", target, 100.0, false);
+            hit.owner = owner;
+            world.resource_mut::<Messages<Hit>>().write(hit.clone());
+            world.run_system_once(apply_hits).unwrap();
+            assert_eq!(world.get::<Enemy>(target).unwrap().hp, 1000.0);
+            assert!(world.get::<Enemy>(target).unwrap().dots[0].left < 10.0);
+            if let Some(id) = owner {
+                world
+                    .resource_mut::<Companions>()
+                    .0
+                    .get_mut(&id)
+                    .unwrap()
+                    .run
+                    .pending_levels = 0;
+            } else {
+                world.resource_mut::<Run>().pending_levels = 0;
+            }
+            world.resource_mut::<Messages<Hit>>().write(hit);
+            world.run_system_once(apply_hits).unwrap();
+            assert!(world.get::<Enemy>(target).unwrap().hp < 1000.0);
+        }
+    }
+    #[test]
     fn healer_blessings_cast_at_full_health_buff_allies_and_expire_without_recasting() {
         use super::super::{
             healer_buffs,
@@ -1608,9 +1754,10 @@ pub(super) fn cast_abilities(
     mut fx: Fx,
     mut pending: ResMut<PendingHits>,
     mut hits: MessageWriter<Hit>,
+    mut healing: super::healing::PartyHealing,
 ) {
     let dt = time.delta_secs();
-    if run.dead_t.is_some() || dt <= 0.0 {
+    if run.dead_t.is_some() || run.pending_levels > 0 || dt <= 0.0 {
         return;
     }
     let Ok((me, htf)) = hero.single() else { return };
@@ -1691,7 +1838,6 @@ pub(super) fn cast_abilities(
         } else {
             foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
         }
-        let stats = run.stats();
         let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
         if let Some(ordinal) = ordinal {
             super::arcane_repeats::empower(&run, &mut p, ordinal);
@@ -2050,27 +2196,12 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Heal => {
-                    if run.hp < stats.max_hp * 0.85
-                        || super::healer_buffs::can_buff(&run, original_def)
-                    {
-                        let level = run.abilities[i].level;
-                        super::healer_buffs::on_heal_cast(&mut run, original_def, level);
-                        if run.legendary.has(305) && def.key == "regrowth" {
-                            super::items::legendary::effects::seed(&mut run, p.dmg, p.duration);
-                        } else if run.legendary.has(152) || run.legendary.has(237) {
-                            run.legendary.effects.active_heals.push((p.dmg, p.duration));
-                        } else if p.duration <= 0.0 {
-                            legendary_events::active_heal(&mut run, p.dmg);
-                        } else {
-                            run.heal_rate = p.dmg / p.duration.max(1.0);
-                            run.heal_t = p.duration;
-                        }
-                        fx.cast(me, def.spell, &[me], None);
-                        fx.number(me, p.dmg, false, COLOR_HEAL);
-                        true
-                    } else {
-                        false
-                    }
+                    let level = run.abilities[i].level;
+                    super::healer_buffs::on_heal_cast(&mut run, original_def, level);
+                    let target = healing.cast(&mut run, me, def, p.dmg, p.duration, p.range);
+                    fx.cast(me, def.spell, &[target], None);
+                    fx.number(target, p.dmg, false, COLOR_HEAL);
+                    true
                 }
                 Kind::Totem => {
                     if foes
@@ -2479,6 +2610,11 @@ pub(super) fn apply_hits(
     // repeats keep this snapshot, so they cannot apply bonuses or schedule repeats twice.
     let mut prepared = Vec::with_capacity(due.len());
     for mut h in due {
+        if super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
+            .is_none_or(|player| player.pending_levels > 0)
+        {
+            continue;
+        }
         if h.origin != Origin::Legendary && h.triggered && super::procs::find(h.skill).is_none() {
             if let Some(player) =
                 super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
@@ -2997,6 +3133,9 @@ pub(super) fn apply_hits(
                     continue;
                 };
                 d.tick += 1.0;
+                if run.pending_levels > 0 {
+                    continue;
+                }
                 let tick_damage = super::items::legendary::periodic::tick(
                     run,
                     e,

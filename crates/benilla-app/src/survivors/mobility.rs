@@ -219,6 +219,7 @@ pub(super) fn cast_mobility(
     if !super::multiplayer::runs_in(*phase.get(), role.as_deref().copied().unwrap_or_default())
         || selection.in_hub
         || run.dead_t.is_some()
+        || run.pending_levels > 0
         || !command.mobility
     {
         return;

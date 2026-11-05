@@ -158,7 +158,7 @@ pub(in crate::survivors) fn tick(
     mut pending: ResMut<PendingHits>,
     mut hits: MessageWriter<Hit>,
 ) {
-    if time.delta_secs() <= 0.0 || run.dead_t.is_some() {
+    if time.delta_secs() <= 0.0 || run.dead_t.is_some() || run.pending_levels > 0 {
         return;
     }
     let now = run.elapsed;

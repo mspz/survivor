@@ -109,7 +109,7 @@ impl Pending {
     }
 }
 pub(super) fn impact(missile: Missile, run: &mut Run, fx: &mut Fx) {
-    if run.dead_t.is_some() {
+    if run.dead_t.is_some() || run.pending_levels > 0 {
         return;
     }
     run.legendary.events.attacker = Some(missile.attacker);
@@ -178,6 +178,99 @@ mod tests {
             .resource_mut::<Time>()
             .advance_by(std::time::Duration::from_millis(50));
         (world, hero, enemy)
+    }
+    #[test]
+    fn reward_selection_hides_host_and_guests_from_melee_casters_bosses_and_taunts() {
+        use super::super::{
+            multiplayer::{Companion, Companions, RemoteOwner},
+            talent_runtime::Taunted,
+        };
+        use crate::creature_anim::{MovementState, SpellGoTargets, SwingMessage};
+        for protect_guest in [false, true] {
+            for boss in [false, true] {
+                for ranged in [false, true] {
+                    let (mut world, host, enemy) = combat();
+                    let guest = world
+                        .spawn((RemoteOwner(42), Transform::from_xyz(12.0, 0.0, 0.0)))
+                        .id();
+                    let mut guest_run = Run {
+                        owner: Some(42),
+                        ..default()
+                    };
+                    guest_run.pending_levels = u32::from(protect_guest);
+                    world.resource_mut::<Run>().pending_levels = u32::from(!protect_guest);
+                    let mut players = Companions::default();
+                    players.0.insert(
+                        42,
+                        Companion {
+                            entity: guest,
+                            run: guest_run,
+                            physics: hero::Hero { vy: 0.0, air: 0.0 },
+                            offer: default(),
+                            offer_id: 0,
+                        },
+                    );
+                    world.insert_resource(players);
+                    world.get_mut::<enemies::Enemy>(enemy).unwrap().boss = boss;
+                    world.entity_mut(enemy).insert(Taunted {
+                        owner: protect_guest.then_some(42),
+                        until: 10.0,
+                    });
+                    if !ranged {
+                        world.entity_mut(enemy).remove::<Caster>();
+                        world.get_mut::<Transform>(enemy).unwrap().translation.x =
+                            if protect_guest { 0.1 } else { 11.9 };
+                    }
+                    let system = world.register_system(enemies::move_enemies);
+                    world.run_system(system).unwrap();
+                    let expected = if protect_guest { host } else { guest };
+                    if ranged {
+                        let cast = world
+                            .resource_mut::<Messages<SpellGoTargets>>()
+                            .drain()
+                            .next()
+                            .unwrap();
+                        assert_eq!(cast.hits, vec![expected]);
+                    } else {
+                        let swing = world
+                            .resource_mut::<Messages<SwingMessage>>()
+                            .drain()
+                            .next()
+                            .unwrap();
+                        assert_eq!(swing.victim, Some(expected));
+                    }
+                    world.resource_mut::<Run>().pending_levels = 1;
+                    world
+                        .resource_mut::<Companions>()
+                        .0
+                        .get_mut(&42)
+                        .unwrap()
+                        .run
+                        .pending_levels = 1;
+                    world.get_mut::<enemies::Enemy>(enemy).unwrap().attack_cd = 0.0;
+                    let before = world.get::<Transform>(enemy).unwrap().translation;
+                    world.run_system(system).unwrap();
+                    assert!(world.resource::<Messages<SpellGoTargets>>().is_empty());
+                    assert!(world.resource::<Messages<SwingMessage>>().is_empty());
+                    assert_eq!(world.get::<MovementState>(enemy).unwrap().speed, 0.0);
+                    assert_eq!(world.get::<Transform>(enemy).unwrap().translation, before);
+                    world.resource_mut::<Run>().pending_levels = 0;
+                    world
+                        .resource_mut::<Companions>()
+                        .0
+                        .get_mut(&42)
+                        .unwrap()
+                        .run
+                        .pending_levels = 0;
+                    world.run_system(system).unwrap();
+                    assert!(
+                        !world.resource::<Messages<SpellGoTargets>>().is_empty()
+                            || !world.resource::<Messages<SwingMessage>>().is_empty()
+                            || world.get::<MovementState>(enemy).unwrap().speed > 0.0
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn casters_hold_range_and_projectiles_use_resistance_instead_of_armour_or_melee_block() {

@@ -622,7 +622,7 @@ pub(super) fn tick(
     mut fx: Fx,
 ) {
     let dt = time.delta_secs();
-    if dt <= 0.0 || run.dead_t.is_some() {
+    if dt <= 0.0 || run.dead_t.is_some() || run.pending_levels > 0 {
         return;
     }
     let Ok((me, tf)) = hero.single() else {

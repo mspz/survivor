@@ -89,10 +89,29 @@ pub(in crate::survivors::talent_ui) fn render(
     if !selection.talents_open {
         return;
     }
+    let level = talents::level(account.xp);
+    let (progress, experience) = if level >= 60 {
+        (100.0, "Niveau global 60 · niveau maximum".to_owned())
+    } else {
+        let earned = account.xp.saturating_sub(talents::threshold(level));
+        let required = talents::threshold(level + 1) - talents::threshold(level);
+        let progress = earned as f32 / required as f32 * 100.0;
+        (
+            progress,
+            format!(
+                "XP globale · niveau {level} → {} : {earned} / {required} ({progress:.0} %)",
+                level + 1
+            ),
+        )
+    };
     commands.spawn((Root,Button,GlobalZIndex(600),BackgroundColor(Color::srgba(0.0,0.0,0.0,0.94)),Node{position_type:PositionType::Absolute,width:Val::Percent(100.0),height:Val::Percent(100.0),padding:UiRect::all(Val::Px(12.0)),flex_direction:FlexDirection::Column,row_gap:Val::Px(8.0),..default()})).with_children(|modal| {
         modal.spawn(Node{width:Val::Percent(100.0),justify_content:JustifyContent::SpaceBetween,align_items:AlignItems::Center,..default()}).with_children(|header| {
             header.spawn(text(f,format!("{} · niveau {} · {} points disponibles",data::CLASSES[class].name,talents::level(account.xp),account.available(class)),21.0,GOLD));
             header.spawn((button(Action::Toggle,Color::srgb(0.2,0.04,0.03)),Node{padding:UiRect::axes(Val::Px(14.0),Val::Px(6.0)),..default()})).with_children(|b|{b.spawn(text(f,"Fermer [T / Échap]",15.0,GOLD));});
+        });
+        modal.spawn((Node{width:Val::Percent(100.0),height:Val::Px(25.0),flex_shrink:0.0,border:UiRect::all(Val::Px(1.0)),overflow:Overflow::clip(),..default()},BackgroundColor(Color::srgb(0.08,0.04,0.12)),BorderColor::all(GOLD))).with_children(|bar| {
+            bar.spawn((Node{width:Val::Percent(progress),height:Val::Percent(100.0),..default()},BackgroundColor(Color::srgb(0.48,0.22,0.75))));
+            bar.spawn(Node{position_type:PositionType::Absolute,left:Val::Px(0.0),top:Val::Px(0.0),width:Val::Percent(100.0),height:Val::Percent(100.0),justify_content:JustifyContent::Center,align_items:AlignItems::Center,..default()}).with_children(|label| {label.spawn(text(f,experience,14.0,Color::WHITE));});
         });
         modal.spawn(Node{width:Val::Percent(100.0),flex_grow:1.0,min_height:Val::Px(0.0),column_gap:Val::Px(12.0),..default()}).with_children(|row| {
             for tree in 0..3 {

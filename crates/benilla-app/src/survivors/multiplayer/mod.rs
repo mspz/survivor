@@ -19,6 +19,13 @@ pub(super) struct Companion {
 #[derive(Resource, Default)]
 pub(super) struct Companions(pub BTreeMap<u64, Companion>);
 
+/// Keeps the host available as an ally while registered rules simulate a guest's run.
+#[derive(Resource)]
+pub(super) struct HostPlayer {
+    pub entity: Entity,
+    pub run: super::Run,
+}
+
 pub(super) fn player_run<'a>(
     host: &'a mut super::Run,
     players: Option<&'a mut Companions>,

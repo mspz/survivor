@@ -2398,7 +2398,10 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
             "When enemies close in, deals {d} damage to every attacker for {} sec",
             num(c.duration)
         ),
-        Kind::Heal => format!("Below 85% health, heals you for {d} over {} sec", num(c.duration)),
+        Kind::Heal => {
+            let target = format!("Heals you or the living ally with the lowest health percentage within {} yd for {d}", num(c.range));
+            if c.duration > 0.0 { format!("{target} over {} sec", num(c.duration)) } else { target }
+        },
         Kind::Totem if def.key == "magma_totem" => format!(
             "Drops a totem for {} sec that burns every enemy within {} yd for {d} damage every 2 sec",
             num(c.duration),

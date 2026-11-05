@@ -66,10 +66,11 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             Update,
-            (enemies::reap_dead, enemies::still_gems)
+            enemies::reap_dead
                 .after(WorldStage::Input)
                 .run_if(multiplayer::authoritative),
         )
+        .add_systems(Update, enemies::still_gems.after(WorldStage::Input))
         .add_systems(
             OnEnter(Phase::Playing),
             (unpause, talents::prepare).run_if(multiplayer::authoritative),

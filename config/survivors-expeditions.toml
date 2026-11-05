@@ -10,8 +10,8 @@ ranged_monster_chance = 0.02
 # Armour uses the hero formula; physical penetration applies before mitigation.
 monster_armour_per_level = 50
 boss_armour_per_level = 10.0
-monster_health = 60
-monster_damage = 10
+monster_health = 30
+monster_damage = 2
 boss_health = 1000.0
 boss_damage = 50.0
 population_start = 18

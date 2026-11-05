@@ -654,9 +654,13 @@ fn simulate(world: &mut World) {
             continue;
         };
         world.entity_mut(companion.entity).insert(companion.physics);
-        let mut host_run = world.remove_resource::<Run>().unwrap();
+        let host_run = world.remove_resource::<Run>().unwrap();
         companion.run.next_guid = host_run.next_guid;
         world.insert_resource(companion.run);
+        world.insert_resource(super::HostPlayer {
+            entity: local_entity,
+            run: host_run,
+        });
         let host_session = world.remove_resource::<session::LocalSession>().unwrap();
         world.insert_resource(peer.session.take().unwrap());
         let next = world.remove_resource::<NextState<Phase>>().unwrap();
@@ -684,6 +688,7 @@ fn simulate(world: &mut World) {
             hit.owner = Some(id);
         }
         companion.run = world.remove_resource::<Run>().unwrap();
+        let mut host_run = world.remove_resource::<super::HostPlayer>().unwrap().run;
         host_run.next_guid = companion.run.next_guid;
         world.insert_resource(host_run);
         companion.physics = world
@@ -1034,10 +1039,12 @@ fn publish(world: &mut World) {
             Option<&MovementState>,
             Option<&RemoteOwner>,
             Option<&game::unit_frames::Status>,
+            Has<game::enemies::StillPickup>,
         ), With<RunEntity>>()
         .iter(world)
         .map(
-            |(guid, net, store, tf, movement, owner, status)| wire::Unit {
+            |(guid, net, store, tf, movement, owner, status, static_pickup)| wire::Unit {
+                static_pickup,
                 status: status.cloned(),
                 guid: guid.0,
                 owner: owner.map(|o| o.0),
@@ -1144,6 +1151,19 @@ fn encode_phase(phase: Phase, companion: &Companion) -> u8 {
         Phase::Playing => 2,
         Phase::LevelUp | Phase::Paused | Phase::CharacterSheet => 2,
         Phase::GameOver => 6,
+    }
+}
+
+fn received_phase(remote: u8, in_hub: bool, choosing_reward: bool) -> Phase {
+    // A snapshot can announce world transitions and this guest's rewards, never host menus.
+    if remote == 6 {
+        Phase::GameOver
+    } else if in_hub {
+        Phase::Hub
+    } else if choosing_reward {
+        Phase::LevelUp
+    } else {
+        Phase::Playing
     }
 }
 
@@ -1286,6 +1306,13 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             guest.entities.insert(unit.guid, entity);
             entity
         };
+        if unit.static_pickup {
+            world.entity_mut(entity).insert(game::enemies::StillPickup);
+        } else {
+            world
+                .entity_mut(entity)
+                .remove::<game::enemies::StillPickup>();
+        }
         if let Some(status) = unit.status {
             world.entity_mut(entity).insert(status);
         } else {
@@ -1393,6 +1420,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             run.version = run.version.wrapping_add(1);
         }
     }
+    let choosing_reward = !stats.dead && !stats.choices.is_empty();
     if offer_changed {
         world.resource_mut::<game::cards::PendingPick>().clear();
         world.resource_mut::<hud::Offer>().choices = stats
@@ -1401,13 +1429,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             .filter_map(decode_choice)
             .collect();
     }
-    let phase = match snapshot.phase {
-        0 | 1 => Phase::Hub,
-        2 => Phase::Playing,
-        3 => Phase::LevelUp,
-        6 => Phase::GameOver,
-        _ => Phase::Paused,
-    };
+    let phase = received_phase(snapshot.phase, snapshot.in_hub, choosing_reward);
     let current = *world.resource::<State<Phase>>().get();
     let phase = local_phase(current, phase, offer_changed);
     if current != phase {
@@ -1537,6 +1559,20 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use std::time::Instant;
+
+    #[test]
+    fn host_menus_never_open_a_guest_menu_or_reward_picker() {
+        for remote in [0, 1, 2, 3, 4, 5, 255] {
+            assert_eq!(received_phase(remote, false, false), Phase::Playing);
+            assert_eq!(received_phase(remote, true, false), Phase::Hub);
+            assert_eq!(received_phase(remote, false, true), Phase::LevelUp);
+            assert_eq!(
+                local_phase(Phase::Paused, received_phase(remote, false, false), false),
+                Phase::Paused
+            );
+        }
+        assert_eq!(received_phase(6, false, true), Phase::GameOver);
+    }
 
     #[test]
     fn snapshots_preserve_personal_menus_but_end_them_when_the_run_ends() {
@@ -1741,6 +1777,16 @@ mod tests {
     #[test]
     fn two_tcp_guests_move_independently_and_receive_authoritative_avatars() {
         let mut host = world();
+        host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            let serial = run.guid();
+            game::enemies::spawn_gem(
+                &mut commands,
+                serial,
+                Vec3::X * 10_000.0,
+                game::enemies::GemKind::Xp(1),
+            );
+        })
+        .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         host.insert_resource(network(listener));
@@ -1897,7 +1943,15 @@ mod tests {
                 .query_filtered::<Entity, With<Replicated>>()
                 .iter(&guest_world)
                 .count(),
-            3
+            4
+        );
+        assert_eq!(
+            guest_world
+                .query_filtered::<Entity, With<game::enemies::StillPickup>>()
+                .iter(&guest_world)
+                .count(),
+            1,
+            "replicated pickups retain their animation-free presentation"
         );
         // Disconnection reaps the controlled character and invalidates its input.
         let owned_effect = host.spawn(super::super::OwnedEffect(ids[0])).id();

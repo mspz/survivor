@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,6 +69,8 @@ pub enum ToServer {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Unit {
+    #[serde(default)]
+    pub static_pickup: bool,
     pub status: Option<super::super::unit_frames::Status>,
     pub guid: u64,
     pub owner: Option<u64>,
@@ -218,6 +220,7 @@ mod tests {
     #[test]
     fn target_status_roundtrips_with_real_health_and_debuff_durations() {
         let unit = Unit {
+            static_pickup: true,
             status: Some(super::super::super::unit_frames::Status {
                 name: "Training Boss".into(),
                 health: 1234.0,
@@ -239,6 +242,7 @@ mod tests {
             fields: vec![],
         };
         let decoded: Unit = serde_json::from_slice(&serde_json::to_vec(&unit).unwrap()).unwrap();
+        assert!(decoded.static_pickup);
         let status = decoded.status.unwrap();
         assert_eq!(status.name, "Training Boss");
         assert_eq!(status.health, 1234.0);

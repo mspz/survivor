@@ -93,10 +93,6 @@ fn family(run: &Run, def: &AbilityDef) -> Option<Family> {
         _ => return None,
     })
 }
-pub(super) fn can_buff(run: &Run, def: &AbilityDef) -> bool {
-    family(run, def).is_some()
-}
-
 fn resolve(run: &Run, family: Family, def: &AbilityDef, level: u8) -> Blessing {
     let mut def = def.clone();
     def.damage = BASE_POWER;

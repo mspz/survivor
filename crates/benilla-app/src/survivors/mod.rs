@@ -19,6 +19,7 @@ mod fill;
 mod forms;
 mod grade;
 mod healer_buffs;
+mod healing;
 mod hero;
 mod hub_ground;
 mod hud;

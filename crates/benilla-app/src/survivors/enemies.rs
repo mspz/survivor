@@ -15,6 +15,13 @@ use super::{Phase, Rng, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
 use crate::net::{FieldChanged, Guid, ObjectStore};
 
+fn targetable(run: &Run, boss: bool) -> bool {
+    run.hp > 0.0
+        && run.dead_t.is_none()
+        && run.pending_levels == 0
+        && (boss || run.mobile.vanish_t <= 0.0)
+}
+
 #[derive(Component)]
 pub(super) struct Enemy {
     pub def: &'static EnemyDef,
@@ -103,6 +110,9 @@ pub(super) struct Gem {
     pulled: bool,
     speed: f32,
 }
+
+#[derive(Component)]
+pub(super) struct StillPickup;
 
 /// The `GameObjectDisplayInfo` row and scale a pickup wears: a wisp per experience tier, the
 /// bigger tiers rarer, and a turkey leg for health.
@@ -426,9 +436,9 @@ pub(super) fn move_enemies(
             mv.flags = 0;
             continue;
         }
-        let mut target = (None, hero_e, hpos);
-        let host_down = run.dead_t.is_some();
-        let mut nearest = if host_down {
+        let host_visible = targetable(&run, e.boss);
+        let mut target = host_visible.then_some((None, hero_e, hpos));
+        let mut nearest = if !host_visible {
             f32::INFINITY
         } else {
             flat(hpos - tf.translation).length_squared()
@@ -438,13 +448,13 @@ pub(super) fn move_enemies(
                 let Some(player) = players.0.get(&owner.0) else {
                     continue;
                 };
-                if player.run.dead_t.is_some() || (!e.boss && player.run.mobile.vanish_t > 0.0) {
+                if !targetable(&player.run, e.boss) {
                     continue;
                 }
                 let distance = flat(transform.translation - tf.translation).length_squared();
                 if distance < nearest {
                     nearest = distance;
-                    target = (Some(owner.0), entity, transform.translation);
+                    target = Some((Some(owner.0), entity, transform.translation));
                 }
             }
         }
@@ -452,17 +462,22 @@ pub(super) fn move_enemies(
             if let Some(id) = taunt.owner {
                 if companions
                     .as_deref()
-                    .is_some_and(|p| p.0.get(&id).is_some_and(|p| p.run.dead_t.is_none()))
+                    .is_some_and(|p| p.0.get(&id).is_some_and(|p| targetable(&p.run, e.boss)))
                 {
                     if let Some((entity, tf, _)) = remotes.iter().find(|(_, _, o)| o.0 == id) {
-                        target = (Some(id), entity, tf.translation);
+                        target = Some((Some(id), entity, tf.translation));
                     }
                 }
-            } else if !host_down {
-                target = (None, hero_e, hpos);
+            } else if host_visible {
+                target = Some((None, hero_e, hpos));
             }
         }
-        let (owner, hero_e, hpos) = target;
+        let Some((owner, hero_e, hpos)) = target else {
+            mv.speed = 0.0;
+            mv.flags = 0;
+            e.attack_cd -= dt;
+            continue;
+        };
         let target_run = if let Some(owner) = owner {
             &mut companions
                 .as_deref_mut()
@@ -675,14 +690,38 @@ pub(super) fn drop_loot(
 pub(super) fn spawn_gem(commands: &mut Commands, serial: u64, pos: Vec3, kind: GemKind) {
     let (display, scale) = look_for(kind);
     let e = units::spawn_object(commands, serial, display, scale, pos + Vec3::Y * 0.5);
-    commands.entity(e).insert(Gem {
-        kind,
-        pulled: false,
-        speed: 6.0,
-    });
+    commands.entity(e).insert((
+        StillPickup,
+        Gem {
+            kind,
+            pulled: false,
+            speed: 6.0,
+        },
+    ));
 }
 
-/// Gems in the magnet's reach fly to the hero; levels bank as they land.
+fn bank_levels(run: &mut Run) {
+    while run.xp >= data::xp_to_next(run.level) {
+        run.xp -= data::xp_to_next(run.level);
+        run.gain_expedition_level();
+        run.pending_levels += 1;
+        if run.level == super::mobility::LEARN_LEVEL {
+            if let Some(m) = super::mobility::for_class(run.class.id) {
+                run.banner = Some((
+                    format!("You have learned {}! Use your movement skill key.", m.name),
+                    4.0,
+                ));
+            }
+        }
+    }
+}
+
+fn grant_pickup_xp(run: &mut Run, xp: u64) {
+    run.xp += xp as f32 * data::XP_RATE * run.stats().growth;
+    bank_levels(run);
+}
+
+/// XP is collected immediately in magnet range and shared once with every connected player.
 pub(super) fn collect_gems(
     mut commands: Commands,
     time: Res<Time>,
@@ -691,6 +730,8 @@ pub(super) fn collect_gems(
     hero: Query<&Transform, (With<Hero>, Without<Gem>)>,
     mut gems: Query<(Entity, &mut Transform, &mut Gem)>,
     phase: Option<Res<State<Phase>>>,
+    mut players: Option<ResMut<super::multiplayer::Companions>>,
+    mut host: Option<ResMut<super::multiplayer::HostPlayer>>,
 ) {
     let Ok(h) = hero.single() else { return };
     if run.dead_t.is_some() || run.hp <= 0.0 {
@@ -701,6 +742,7 @@ pub(super) fn collect_gems(
     let target = h.translation + Vec3::Y * 1.0;
     let mut vacuum = false;
     let mut collected = Vec::new();
+    let mut collected_xp = 0u64;
     for (e, mut tf, mut g) in &mut gems {
         if matches!(g.kind,GemKind::Shield(owner,_) if owner!=run.owner) {
             continue;
@@ -712,6 +754,14 @@ pub(super) fn collect_gems(
         } else {
             1.0
         };
+        if let GemKind::Xp(xp) = g.kind {
+            if flat(d).length() <= stats.magnet * pickup {
+                collected_xp += u64::from(xp);
+                collected.push(e);
+                commands.entity(e).despawn();
+            }
+            continue;
+        }
         if !g.pulled && flat(d).length() <= stats.magnet * pickup {
             g.pulled = true;
         }
@@ -720,7 +770,7 @@ pub(super) fn collect_gems(
         }
         if dist < 0.9 {
             match g.kind {
-                GemKind::Xp(xp) => run.xp += xp as f32 * data::XP_RATE * stats.growth,
+                GemKind::Xp(_) => unreachable!("XP is collected without travelling"),
                 GemKind::Heal(hp) => {
                     run.heal(hp);
                 }
@@ -745,22 +795,20 @@ pub(super) fn collect_gems(
                 continue;
             }
             if let GemKind::Xp(xp) = gem.kind {
-                run.xp += xp as f32 * data::XP_RATE * stats.growth;
+                collected_xp += u64::from(xp);
                 commands.entity(entity).despawn();
             }
         }
         run.banner = Some(("Experience Magnet: collected all map XP!".to_owned(), 3.0));
     }
-    while run.xp >= data::xp_to_next(run.level) {
-        run.xp -= data::xp_to_next(run.level);
-        run.gain_expedition_level();
-        run.pending_levels += 1;
-        if run.level == super::mobility::LEARN_LEVEL {
-            if let Some(m) = super::mobility::for_class(run.class.id) {
-                run.banner = Some((
-                    format!("You have learned {}! Use your movement skill key.", m.name),
-                    4.0,
-                ));
+    grant_pickup_xp(&mut run, collected_xp);
+    if collected_xp > 0 {
+        if let Some(host) = host.as_deref_mut() {
+            grant_pickup_xp(&mut host.run, collected_xp);
+        }
+        if let Some(players) = players.as_deref_mut() {
+            for player in players.0.values_mut() {
+                grant_pickup_xp(&mut player.run, collected_xp);
             }
         }
     }
@@ -772,8 +820,20 @@ pub(super) fn collect_gems(
 /// Pickups hang still: a wisp's own loop (its circling motes and their trails) stops on its first
 /// frame, clip and global sequences alike, as soon as the model attaches.
 pub(super) fn still_gems(
-    mut players: Query<&mut AnimationPlayer, (With<Gem>, Added<AnimationPlayer>)>,
-    mut drives: Query<&mut GlobalSeqDrive, (With<Gem>, Added<GlobalSeqDrive>)>,
+    mut players: Query<
+        &mut AnimationPlayer,
+        (Or<(With<Gem>, With<StillPickup>)>, Added<AnimationPlayer>),
+    >,
+    mut drives: Query<
+        &mut GlobalSeqDrive,
+        (Or<(With<Gem>, With<StillPickup>)>, Added<GlobalSeqDrive>),
+    >,
+    pickups: Query<Entity, Or<(With<Gem>, With<StillPickup>)>>,
+    parents: Query<&ChildOf>,
+    mut emitters: Query<
+        &mut benilla_world::particles::ParticleEmitter,
+        Added<benilla_world::particles::ParticleEmitter>,
+    >,
 ) {
     for mut player in &mut players {
         for (_, active) in player.playing_animations_mut() {
@@ -782,6 +842,17 @@ pub(super) fn still_gems(
     }
     for mut drive in &mut drives {
         drive.set_paused(true);
+    }
+    for mut emitter in &mut emitters {
+        let mut anchor = emitter.anchor().or(emitter.emit_host());
+        for _ in 0..32 {
+            let Some(entity) = anchor else { break };
+            if pickups.contains(entity) {
+                emitter.set_frozen(true);
+                break;
+            }
+            anchor = parents.get(entity).ok().map(|parent| parent.parent());
+        }
     }
 }
 
@@ -823,6 +894,75 @@ mod pickup_tests {
         gem(&mut world, GemKind::Shield(None, 2), Vec3::Y);
         world.run_system_once(collect_gems).unwrap();
         assert_eq!(world.resource::<Run>().legendary.effects.shield_lock, 0.0);
+    }
+    #[test]
+    fn pickups_share_xp_once_from_host_or_guest_without_travel_or_reviving_fallen_players() {
+        use super::super::multiplayer::{Companion, Companions, HostPlayer};
+        for guest_collects in [false, true] {
+            let mut world = world();
+            world.resource_mut::<Run>().level = 50;
+            if guest_collects {
+                world.resource_mut::<Run>().owner = Some(42);
+                let host = world.spawn(Transform::from_xyz(100.0, 0.0, 0.0)).id();
+                world.insert_resource(HostPlayer {
+                    entity: host,
+                    run: Run {
+                        level: 50,
+                        ..default()
+                    },
+                });
+            }
+            let entity = world.spawn(Transform::from_xyz(100.0, 0.0, 0.0)).id();
+            let mut fallen = Run {
+                owner: Some(77),
+                level: 50,
+                hp: 0.0,
+                dead_t: Some(1.0),
+                ..default()
+            };
+            fallen.passives.push((
+                data::PASSIVES.iter().find(|p| p.key == "wisdom").unwrap(),
+                1,
+            ));
+            let growth = fallen.stats().growth;
+            let mut players = Companions::default();
+            players.0.insert(
+                77,
+                Companion {
+                    entity,
+                    run: fallen,
+                    physics: Hero { vy: 0.0, air: 0.0 },
+                    offer: default(),
+                    offer_id: 0,
+                },
+            );
+            world.insert_resource(players);
+            let xp = gem(&mut world, GemKind::Xp(3), Vec3::X * 2.0 + Vec3::Y);
+            world.run_system_once(collect_gems).unwrap();
+            assert!(
+                world.get_entity(xp).is_err(),
+                "XP is collected immediately in magnet range"
+            );
+            world.run_system_once(collect_gems).unwrap();
+            assert_eq!(world.resource::<Run>().xp, 3.0 * data::XP_RATE);
+            let players = world.resource::<Companions>();
+            assert_eq!(players.0[&77].run.xp, 3.0 * data::XP_RATE * growth);
+            assert_eq!(players.0[&77].run.hp, 0.0);
+            if guest_collects {
+                assert_eq!(world.resource::<HostPlayer>().run.xp, 3.0 * data::XP_RATE);
+            }
+            gem(&mut world, GemKind::Vacuum, Vec3::Y);
+            gem(&mut world, GemKind::Xp(2), Vec3::X * 10_000.0);
+            world.run_system_once(collect_gems).unwrap();
+            assert_eq!(world.resource::<Run>().xp, 5.0 * data::XP_RATE);
+            assert!(
+                (world.resource::<Companions>().0[&77].run.xp - 5.0 * data::XP_RATE * growth).abs()
+                    < 0.001
+            );
+            if guest_collects {
+                assert_eq!(world.resource::<HostPlayer>().run.xp, 5.0 * data::XP_RATE);
+            }
+        }
     }
     #[test]
     fn vacuum_collects_near_and_distant_xp_once_with_growth_but_leaves_other_pickups() {
