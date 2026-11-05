@@ -37,6 +37,7 @@ mod ranged_enemies;
 mod resistances;
 mod revival;
 mod reward_config;
+mod runes;
 mod server;
 mod session;
 mod spell_engine;

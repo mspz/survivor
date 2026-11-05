@@ -135,6 +135,7 @@ pub(super) fn render(
     target: Res<preview::Target>,
     roots: Query<Entity, With<Root>>,
     mut cache: Local<String>,
+    runes: Option<Res<super::super::runes::Runes>>,
 ) {
     let Some(font) = font else {
         return;
@@ -154,7 +155,12 @@ pub(super) fn render(
         view.selected_item,
         inventory.as_ref().map(|i| (i.revision, &i.notice))
     );
-    let key = format!("{key} {}", view.stats_collapsed);
+    let key = format!(
+        "{key} {} {} {:?}",
+        view.stats_collapsed,
+        view.rune_page,
+        runes.as_ref().map(|r| r.revision)
+    );
     if *cache == key {
         return;
     }
@@ -310,20 +316,45 @@ pub(super) fn render(
                     text(f, "Equipment", 12.0, GREY),
                     rect(42.0, 491.0, 360.0, 20.0),
                 ));
-                frame
-                    .spawn(rect(35.0, 516.0, 126.0, 30.0))
-                    .with_children(|tab| {
-                        skin::art(
-                            tab,
-                            "Interface\\PaperDollInfoFrame\\UI-Character-ActiveTab",
-                            rect(0.0, 0.0, 126.0, 30.0),
-                            [0.0, 1.0, 0.0, 0.75],
-                        );
-                        tab.spawn((
-                            text(f, "Character", 14.0, Color::WHITE),
-                            rect(16.0, 6.0, 100.0, 22.0),
-                        ));
-                    });
+                if view.rune_page {
+                    if let Some(runes) = runes.as_deref() {
+                        rune_page(frame, f, runes);
+                    }
+                }
+                // Classic-style tabs under the frame: Character | Runes.
+                for (i, (label, page)) in [("Character", false), ("Runes", true)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let active = view.rune_page == page;
+                    frame
+                        .spawn((
+                            Button,
+                            Click::SheetPage(page),
+                            rect(35.0 + i as f32 * 120.0, 516.0, 126.0, 30.0),
+                        ))
+                        .with_children(|tab| {
+                            skin::art(
+                                tab,
+                                if active {
+                                    "Interface\\PaperDollInfoFrame\\UI-Character-ActiveTab"
+                                } else {
+                                    "Interface\\PaperDollInfoFrame\\UI-Character-InActiveTab"
+                                },
+                                rect(0.0, 0.0, 126.0, 30.0),
+                                [0.0, 1.0, 0.0, if active { 0.75 } else { 1.0 }],
+                            );
+                            tab.spawn((
+                                text(
+                                    f,
+                                    label,
+                                    14.0,
+                                    if active { Color::WHITE } else { GREY },
+                                ),
+                                rect(16.0, if active { 6.0 } else { 4.0 }, 100.0, 22.0),
+                            ));
+                        });
+                }
             });
             root.spawn(rect(448.0, 0.0, 376.0, panel_height))
                 .with_children(|panel| {
@@ -337,6 +368,97 @@ pub(super) fn render(
                 });
         });
 }
+/// The Runes tab: the equipped rune in full over the paper doll, then the account's slots
+/// with an Equip button each. Placing, swapping and upgrading happen at the results.
+fn rune_page(
+    frame: &mut ChildSpawnerCommands,
+    f: &Handle<Font>,
+    runes: &super::super::runes::Runes,
+) {
+    use super::super::runes::{ui as rune_ui, RuneAction};
+    frame
+        .spawn((
+            Interaction::default(),
+            bevy::ui::FocusPolicy::Block,
+            BackgroundColor(Color::srgba(0.02, 0.015, 0.01, 0.97)),
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(4.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                overflow: Overflow::clip(),
+                ..rect(22.0, 72.0, 392.0, 440.0)
+            },
+        ))
+        .with_children(|page| {
+            page.spawn(text(f, "Equipped rune", 15.0, GOLD));
+            match runes.save.equipped_rune() {
+                Some(rune) => rune_ui::rune_lines(page, f, runes, rune),
+                None => {
+                    page.spawn(text(f, "No rune equipped", 13.0, GREY));
+                }
+            }
+            page.spawn(Node {
+                height: Val::Px(8.0),
+                ..default()
+            });
+            page.spawn(text(f, "Rune slots", 15.0, GOLD));
+            for slot in 0..runes.save.slots.len() {
+                let equipped = runes.save.equipped == Some(slot);
+                page.spawn(Node {
+                    width: Val::Percent(100.0),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(8.0),
+                    ..default()
+                })
+                .with_children(|row| match runes.save.rune(slot) {
+                    Some(rune) => {
+                        row.spawn(Node {
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(6.0),
+                            ..default()
+                        })
+                        .with_children(|name| {
+                            rune_ui::rune_icon(name, runes, rune);
+                            name.spawn(text(
+                                f,
+                                format!(
+                                    "{}. {}{}",
+                                    slot + 1,
+                                    runes.name(rune),
+                                    if equipped { " (equipped)" } else { "" }
+                                ),
+                                13.0,
+                                Color::WHITE,
+                            ));
+                        });
+                        skin::button(
+                            row,
+                            f,
+                            if equipped { "Unequip" } else { "Equip" },
+                            RuneAction::Equip(slot),
+                            90.0,
+                        );
+                    }
+                    None => {
+                        row.spawn(text(f, format!("{}. Empty", slot + 1), 13.0, GREY));
+                    }
+                });
+            }
+            page.spawn(Node {
+                flex_grow: 1.0,
+                ..default()
+            });
+            page.spawn(text(
+                f,
+                "Win a campaign zone to earn runes. Hover an icon for its stat ranges.",
+                11.0,
+                GREY,
+            ));
+        });
+}
+
 /// Compact skill values; all final values come from the combat resolver.
 pub(super) fn spell_stats(run: &Run, index: usize) -> String {
     let Some(owned) = run.abilities.get(index) else {

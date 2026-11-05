@@ -702,6 +702,7 @@ pub(super) enum Click {
     Map(usize),
     Launch,
     Talents,
+    Runes,
     Logout,
     Back,
     Options,
@@ -721,6 +722,7 @@ pub(super) fn input(
     mut run: ResMut<Run>,
     mut rig: Option<ResMut<hero::CamRig>>,
     mut lobby: Option<ResMut<super::multiplayer::lobby::Lobby>>,
+    mut runes: Option<ResMut<super::runes::Runes>>,
 ) {
     if lobby.as_ref().is_some_and(|l| l.joining) {
         typing.clear();
@@ -931,6 +933,16 @@ pub(super) fn input(
             Click::Talents if *phase.get() == Phase::Hub => {
                 selection.sheet_open = false;
                 selection.talents_open = !selection.talents_open;
+                roster.expeditions = false;
+            }
+            Click::Runes if *phase.get() == Phase::Hub => {
+                if let Some(runes) = runes.as_deref_mut() {
+                    runes.open = !runes.open;
+                    if !runes.open {
+                        runes.message.clear();
+                    }
+                }
+                selection.talents_open = false;
                 roster.expeditions = false;
             }
             Click::Rotate(delta) if *phase.get() == Phase::Menu => {
@@ -1179,6 +1191,7 @@ pub(super) fn render(
                     roster.expeditions,
                 );
                 button(bar, f, Click::Talents, "Talents", selection.talents_open);
+                button(bar, f, Click::Runes, "Runes [R]", false);
                 button(bar, f, Click::Options, "Game menu [Esc]", false);
                 button(bar, f, Click::Logout, "Log out", false);
             });

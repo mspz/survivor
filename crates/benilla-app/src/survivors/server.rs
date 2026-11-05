@@ -154,6 +154,8 @@ pub(super) struct Run {
     pub(super) equipment_armour: f32,
     pub(super) weapon_damage: items::weapons::Loadout,
     pub(super) equipment: items::Bonuses,
+    /// The equipped account rune's hero-stat effects (its spell effects are spell modifiers).
+    pub(super) rune: runes::Applied,
     pub(super) item_runtime: items::combat::Runtime,
     pub(super) recasts: spell_engine::Recasts,
     pub(super) talent_build: [[u8; talents::NODES]; 3],
@@ -216,6 +218,7 @@ impl Default for Run {
             equipment_armour: 0.0,
             weapon_damage: items::weapons::Loadout::default(),
             equipment: items::Bonuses::default(),
+            rune: runes::Applied::default(),
             item_runtime: items::combat::Runtime::default(),
             recasts: spell_engine::Recasts::default(),
             talent_build: [[0; talents::NODES]; 3],
@@ -290,6 +293,8 @@ impl Run {
         s.regen += self.equipment.regeneration;
         s.magnet *= 1.0 + self.equipment.pickup;
         s.growth += self.equipment.experience;
+        s.speed *= 1.0 + self.rune.movement;
+        s.growth += self.rune.experience;
         for &(p, level) in &self.passives {
             let data::PassiveEffect::Stat(stat, per_level) = p.effect else {
                 continue;

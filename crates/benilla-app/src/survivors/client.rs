@@ -80,6 +80,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(combat_ui::plugin)
         .add_plugins(unit_frames::plugin)
         .add_plugins(items::plugin)
+        .add_plugins(runes::plugin)
         .add_plugins(talent_ui::plugin)
         .init_resource::<hero::CamRig>()
         .init_resource::<hero::AimPoint>()
