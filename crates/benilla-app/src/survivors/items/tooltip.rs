@@ -280,10 +280,7 @@ impl Item {
                 lines.push((affix.description(), Color::WHITE));
             }
         }
-        if !SLOTS
-            .iter()
-            .any(|(_, slot)| inventory.can_equip(self, *slot))
-        {
+        if !inventory.equippable(self) {
             lines.push((
                 "Cannot equip this item".into(),
                 Color::srgb(1.0, 0.15, 0.15),

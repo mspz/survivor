@@ -660,6 +660,11 @@ pub(in crate::survivors) fn tick_world(
                         serial,
                         crate::survivors::data::ability("consecration").spell,
                         f.radius,
+                        (f.radius
+                            / crate::survivors::data::ability("consecration")
+                                .radius
+                                .max(0.001))
+                        .clamp(0.25, 8.0),
                         f.pos,
                     )
                 };

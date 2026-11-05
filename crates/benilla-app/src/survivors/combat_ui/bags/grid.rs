@@ -49,7 +49,7 @@ pub(super) fn panel(
             ));
             if let Some(item) = item {
                 cell.insert((Action::Select(item.id), ItemTip(item.id)))
-                    .with_children(|ui| icon(ui, item, 28.0));
+                    .with_children(|ui| icon(ui, item, 28.0, inventory.equippable(item)));
             } else {
                 cell.with_children(|ui| {
                     skin::art(

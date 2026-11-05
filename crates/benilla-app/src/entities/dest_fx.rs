@@ -87,10 +87,25 @@ pub(super) struct ShardEmitter {
 /// at the point when field 6, the missile, is 0 (`0x6e8088`..`0x6e8143`).
 #[derive(Message, Clone)]
 pub(crate) struct GroundBurst {
+    /// The caster and spell, the [`AreaVisualScales`] key.
+    pub(crate) caster: Entity,
+    pub(crate) spell_id: u32,
     /// The field-12 `SpellVisualEffectName` model path.
     pub(crate) path: String,
     /// The dest point, in Bevy coordinates.
     pub(crate) pos: Vec3,
+}
+
+/// How much bigger than authored a caster's area spell looks, by (caster, spell). Survivors'
+/// radius modifiers grow an area past its model's fixed size; a spell with no entry is 1.0, so the
+/// MMO client never sees a difference. Local casts only: a remote caster's spells stay at 1.0.
+#[derive(Resource, Default)]
+pub(crate) struct AreaVisualScales(pub(crate) std::collections::HashMap<(Entity, u32), f32>);
+
+impl AreaVisualScales {
+    pub(crate) fn get(&self, caster: Entity, spell_id: u32) -> f32 {
+        self.0.get(&(caster, spell_id)).copied().unwrap_or(1.0)
+    }
 }
 
 /// Arm each new DynamicObject off its create's fields: visual A, the shard emitter and the area
@@ -129,6 +144,12 @@ pub(super) fn arm_ground_effects(
             .dynamicobject_position()
             .map(|(_, f)| f)
             .unwrap_or(0.0);
+        // `OBJECT_FIELD_SCALE_X`: 1.0 from a server; survivors grows it with the area modifiers.
+        let scale = store
+            .0
+            .object_scale_x()
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or(1.0);
         // Visual A (`0x5d57c0`): field 12's model when field 11 is set, at the object's position
         // with no terrain projection, turned by `DYNAMICOBJECT_FACING` (`0x613ef0`, `0x7bdd60`);
         // as a child it goes with the anchor.
@@ -139,7 +160,8 @@ pub(super) fn arm_ground_effects(
                 let child = commands
                     .spawn((
                         GroundFx::new(path, true),
-                        Transform::from_rotation(Quat::from_rotation_y(facing)),
+                        Transform::from_rotation(Quat::from_rotation_y(facing))
+                            .with_scale(Vec3::splat(scale)),
                         Visibility::default(),
                     ))
                     .id();
@@ -156,7 +178,8 @@ pub(super) fn arm_ground_effects(
                 commands.entity(anchor).insert(ShardEmitter {
                     path,
                     radius: store.0.dynamicobject_radius().unwrap_or(0.0),
-                    rate: proc.params[1] * level_scale,
+                    // The disc grows with the square of the scale: keep the shard density.
+                    rate: proc.params[1] * level_scale * scale * scale,
                     accum: 0.0,
                     rng: 0x9e3779b97f4a7c15 ^ anchor.to_bits(),
                 });
@@ -184,13 +207,17 @@ pub(super) fn spawn_ground_bursts(
     mut bursts: MessageReader<GroundBurst>,
     fx: Option<ResMut<SpellFx>>,
     asset_server: Res<AssetServer>,
+    scales: Option<Res<AreaVisualScales>>,
 ) {
     let Some(mut fx) = fx else { return };
     for burst in bursts.read() {
         ensure_model(&mut fx, &asset_server, &burst.path);
+        let scale = scales
+            .as_ref()
+            .map_or(1.0, |s| s.get(burst.caster, burst.spell_id));
         commands.spawn((
             GroundFx::new(burst.path.clone(), false),
-            Transform::from_translation(burst.pos),
+            Transform::from_translation(burst.pos).with_scale(Vec3::splat(scale)),
             Visibility::default(),
         ));
     }
@@ -295,6 +322,23 @@ pub(super) fn attach_ground_fx_models(
                 commands.entity(entity).despawn();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod area_scale_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_caster_and_spell_that_set_a_scale_get_it() {
+        let mut world = World::new();
+        let (hero, other) = (world.spawn_empty().id(), world.spawn_empty().id());
+        let mut scales = AreaVisualScales::default();
+        assert_eq!(scales.get(hero, 122), 1.0);
+        scales.0.insert((hero, 122), 1.5);
+        assert_eq!(scales.get(hero, 122), 1.5);
+        assert_eq!(scales.get(other, 122), 1.0);
+        assert_eq!(scales.get(hero, 1449), 1.0);
     }
 }
 

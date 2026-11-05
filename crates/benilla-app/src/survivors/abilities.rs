@@ -1576,6 +1576,12 @@ pub(super) fn cast_abilities(
             p.recast += 1.0;
         }
         let speed = speed_of(def.spell);
+        let area_scale = if def.radius > 0.0 {
+            (p.radius / def.radius).clamp(0.25, 8.0)
+        } else {
+            1.0
+        };
+        fx.area_scale(me, def.spell, area_scale);
         let intercepted =
             super::items::legendary::casting::intercept(&mut run, def, p, &foes, hpos, repeated);
         let fired = if let Some((fired, target)) = intercepted {
@@ -1706,9 +1712,13 @@ pub(super) fn cast_abilities(
                                     serial,
                                     def.spell,
                                     p.radius,
+                                    area_scale,
                                     center,
                                 )
                             };
+                            if trap {
+                                fx.area_scale(area, def.spell, area_scale);
+                            }
                             let burst = def.duration <= 0.0;
                             commands.entity(area).insert(GroundArea {
                                 direct_dot: p.direct_dot,
@@ -1847,6 +1857,7 @@ pub(super) fn cast_abilities(
                                 serial,
                                 def.spell,
                                 p.radius,
+                                area_scale,
                                 center,
                             );
                             run.legendary
@@ -2079,6 +2090,7 @@ pub(super) fn tick_areas(
                 serial,
                 data::ability(area.skill).spell,
                 area.radius * 0.4,
+                (area.radius * 0.4 / data::ability(area.skill).radius.max(0.001)).clamp(0.25, 8.0),
                 pos,
             );
             commands.entity(tile).insert(GroundArea {

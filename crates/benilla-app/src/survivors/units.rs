@@ -172,12 +172,13 @@ pub(super) fn kill_unit(store: &mut ObjectStore) {
 }
 
 /// A dynamic object, as a ground spell's server would place it: the dest-effect systems arm the
-/// spell's area visuals on it.
+/// spell's area visuals on it. `scale` sizes those visuals: the radius over the spell's base.
 pub(super) fn spawn_area_object(
     commands: &mut Commands,
     serial: u64,
     spell: u32,
     radius: f32,
+    scale: f32,
     pos: Vec3,
 ) -> Entity {
     let guid = HIGH_DYNAMIC | serial;
@@ -195,7 +196,7 @@ pub(super) fn spawn_area_object(
                 (1, (guid >> 32) as u32),
                 (2, 0x41),
                 (3, spell),
-                (4, 1.0f32.to_bits()),
+                (4, scale.to_bits()),
                 (8, 1),
                 (9, spell),
                 (10, radius.to_bits()),
@@ -328,12 +329,20 @@ pub(super) struct Fx<'w> {
     gos: MessageWriter<'w, SpellGoTargets>,
     swings: MessageWriter<'w, SwingMessage>,
     text: MessageWriter<'w, CombatTextSpawn>,
+    area_scales: Option<ResMut<'w, crate::entities::dest_fx::AreaVisualScales>>,
 }
 
 /// More impacts than this per cast only cost frames.
 const MAX_VISUAL_HITS: usize = 12;
 
 impl Fx<'_> {
+    /// Size `caster`'s visuals of `spell` for the radius it will cast at.
+    pub fn area_scale(&mut self, caster: Entity, spell: u32, scale: f32) {
+        if let Some(scales) = self.area_scales.as_mut() {
+            scales.0.insert((caster, spell), scale);
+        }
+    }
+
     pub fn trigger_trap(
         &mut self,
         entity: Entity,

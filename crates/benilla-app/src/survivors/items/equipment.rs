@@ -512,6 +512,10 @@ impl Inventory {
                 && item.equipment_type == EquipmentType::TwoHand
                 && slot == SlotKind::OffHand
     }
+    /// Whether the current class can wear `item` in at least one slot.
+    pub fn equippable(&self, item: &Item) -> bool {
+        SLOTS.iter().any(|(_, slot)| self.can_equip(item, *slot))
+    }
     pub(super) fn validate_loadout(&self, save: &Save) -> Result<(), String> {
         legendary::validate_loadout(save)?;
         save.validate_hands()?;
