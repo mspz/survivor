@@ -44,8 +44,10 @@ restaurent le contexte local avant les systèmes de présentation. Les GUID sont
 alloués par le monde de l'hôte, y compris pour les effets des invités. Les dégâts,
 zones, totems et dégâts périodiques conservent leur propriétaire.
 
-Les invités désactivent la simulation locale et appliquent les états reçus à des
-entités de rendu distinctes. Seul leur propre avatar reçoit le marqueur `Hero`,
+Les invités désactivent la simulation de combat locale et appliquent les états reçus à des
+entités de rendu distinctes. `native/prediction.rs` prédit leur déplacement et leur
+saut avec les règles partagées de `hero::step_motion`, puis réconcilie les états
+autoritaires. Seul leur propre avatar reçoit le marqueur `Hero`,
 pour la caméra et l'interface. Les autres avatars utilisent le même pipeline
 d'animation, sans être pris pour le joueur local.
 
@@ -59,4 +61,6 @@ quand un état est renvoyé. Ils ne constituent pas un contrôle anti-triche.
 L'hôte partage toujours son monde ECS entre simulation et présentation. Un serveur
 dédié nécessitera d'extraire les dépendances au renderer et au chargement du
 terrain. Le mode solo conserve ses accès directs aux ressources ; dans le mode
-invité, les déplacements et les récompenses passent par le protocole serveur.
+invité, les intentions de déplacement et les récompenses passent par le protocole serveur.
+Les menus sont locaux et ne suspendent jamais la simulation multijoueur. Les nombres
+de combat sont répliqués avant filtrage pour respecter les préférences de chaque client.

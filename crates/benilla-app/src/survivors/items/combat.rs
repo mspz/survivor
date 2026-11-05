@@ -143,7 +143,7 @@ pub(super) fn plugin(app: &mut App) {
         Update,
         tick.after(super::super::enemies::move_enemies)
             .before(super::super::abilities::cast_abilities)
-            .run_if(in_state(Phase::Playing))
+            .run_if(super::super::multiplayer::simulating)
             .run_if(super::super::multiplayer::authoritative),
     );
 }

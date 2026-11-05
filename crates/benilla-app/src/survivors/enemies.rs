@@ -690,6 +690,7 @@ pub(super) fn collect_gems(
     mut next: ResMut<NextState<Phase>>,
     hero: Query<&Transform, (With<Hero>, Without<Gem>)>,
     mut gems: Query<(Entity, &mut Transform, &mut Gem)>,
+    phase: Option<Res<State<Phase>>>,
 ) {
     let Ok(h) = hero.single() else { return };
     if run.dead_t.is_some() || run.hp <= 0.0 {
@@ -763,7 +764,7 @@ pub(super) fn collect_gems(
             }
         }
     }
-    if run.pending_levels > 0 {
+    if run.pending_levels > 0 && phase.is_none_or(|p| *p.get() == Phase::Playing) {
         next.set(Phase::LevelUp);
     }
 }

@@ -59,7 +59,7 @@ pub(super) fn plugin(app: &mut App) {
             )
                 .chain()
                 .after(WorldStage::Input)
-                .run_if(in_state(Phase::Playing))
+                .run_if(multiplayer::simulating)
                 .run_if(multiplayer::authoritative)
                 // Entering a battleground raises its loading screen: the run waits behind it.
                 .run_if(|l: Res<crate::loading_screen::LoadingScreen>| !l.covering()),
@@ -380,8 +380,12 @@ impl Rng {
     }
 }
 
-pub(super) fn pause(mut time: ResMut<Time<Virtual>>) {
-    time.pause();
+pub(super) fn pause(mut time: ResMut<Time<Virtual>>, role: Option<Res<multiplayer::Role>>) {
+    if role.is_some_and(|r| *r != multiplayer::Role::Solo) {
+        time.unpause();
+    } else {
+        time.pause();
+    }
 }
 
 pub(super) fn unpause(mut time: ResMut<Time<Virtual>>) {

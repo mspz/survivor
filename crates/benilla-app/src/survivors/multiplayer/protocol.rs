@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,6 +85,12 @@ pub struct Unit {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Effect {
+    Number {
+        target: u64,
+        amount: f32,
+        crit: bool,
+        color: u32,
+    },
     Cast {
         caster: u64,
         spell: u32,
@@ -104,6 +110,7 @@ pub enum Effect {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stats {
+    pub movement_speed: f32,
     pub meter: super::super::combat_ui::Meter,
     pub earned: u64,
     pub hp: f32,

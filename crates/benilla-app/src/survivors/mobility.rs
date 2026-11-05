@@ -208,6 +208,7 @@ pub(super) fn cast_mobility(
     mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Hero>>,
     selection: Res<super::Selection>,
     mut fx: Fx,
+    role: Option<Res<super::multiplayer::Role>>,
 ) {
     let command = input.for_client(session.id());
     let dt = time.delta_secs();
@@ -215,7 +216,11 @@ pub(super) fn cast_mobility(
     m.cd = (m.cd - dt).max(0.0);
     m.haste_t = (m.haste_t - dt).max(0.0);
     m.vanish_t = (m.vanish_t - dt).max(0.0);
-    if *phase.get() != Phase::Playing || run.dead_t.is_some() || !command.mobility {
+    if !super::multiplayer::runs_in(*phase.get(), role.as_deref().copied().unwrap_or_default())
+        || selection.in_hub
+        || run.dead_t.is_some()
+        || !command.mobility
+    {
         return;
     }
     let Some(def) = run.mobility() else { return };

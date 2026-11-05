@@ -72,7 +72,8 @@ pub(super) fn input(
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.init_resource::<session::LocalSession>()
+    app.add_message::<units::CombatNumber>()
+        .init_resource::<session::LocalSession>()
         .add_plugins(grade::plugin)
         .add_plugins(characters::plugin)
         .add_plugins(hub_ground::plugin)

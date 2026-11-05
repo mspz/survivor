@@ -2,7 +2,7 @@
 version = 1
 end_multiplier = 3.0 # 300% health and damage at 15 minutes; capped thereafter.
 # Solo x1; 2 players x2.5, 3 players x5, 4 players x7.5. Connected fallen players still count.
-multiplayer_health_per_extra_player = 2.5
+multiplayer_health_per_extra_player = 1.5
 # Chance per ordinary monster spawn after the first zone; never replaces bosses.
 ranged_monster_chance = 0.02
 # Deliberately hard: aim above the zone's level range and farm its early bosses for equipment.
@@ -10,10 +10,10 @@ ranged_monster_chance = 0.02
 # Armour uses the hero formula; physical penetration applies before mitigation.
 monster_armour_per_level = 50
 boss_armour_per_level = 10.0
-monster_health = 200.0
-monster_damage = 25.0
-boss_health = 10000.0
-boss_damage = 150.0
+monster_health = 30
+monster_damage = 2
+boss_health = 1000.0
+boss_damage = 50.0
 population_start = 18
 population_end = 280
 max_monsters = 450
@@ -22,7 +22,7 @@ max_monsters = 450
 # Final reduction of all damage, unaffected by penetration.
 damage_reduction = 0.0
 monster_quantity = 1.05
-monster_health = 0.8
+monster_health = 0.5
 monster_damage = 0.8
 boss_quantity = 1
 boss_health = 1.0
@@ -30,9 +30,9 @@ boss_damage = 1.0
 
 [[zones]] # 10-19: Westfall
 # Final reduction of all damage, unaffected by penetration.
-damage_reduction = 0.2
+damage_reduction = 0.0
 monster_quantity = 1.15
-monster_health = 2.0
+monster_health = 1.2
 monster_damage = 1.65
 boss_quantity = 1
 boss_health = 2.0
@@ -40,9 +40,9 @@ boss_damage = 1.7
 
 [[zones]] # 20-29: Redridge Mountains
 # Final reduction of all damage, unaffected by penetration.
-damage_reduction = 0.4
+damage_reduction = 0.1
 monster_quantity = 1.25
-monster_health = 3.6
+monster_health = 2
 monster_damage = 2.6
 boss_quantity = 1
 boss_health = 3.8
@@ -50,9 +50,9 @@ boss_damage = 2.8
 
 [[zones]] # 30-39: Duskwood
 # Final reduction of all damage, unaffected by penetration.
-damage_reduction = 0.6
+damage_reduction = 0.2
 monster_quantity = 1.35
-monster_health = 6.2
+monster_health = 3
 monster_damage = 3.9
 boss_quantity = 1
 boss_health = 6.8
@@ -60,9 +60,9 @@ boss_damage = 4.3
 
 [[zones]] # 40-49: Stranglethorn Vale
 # Final reduction of all damage, unaffected by penetration.
-damage_reduction = 0.8
+damage_reduction = 0.3
 monster_quantity = 1.45
-monster_health = 10.0
+monster_health = 5
 monster_damage = 5.8
 boss_quantity = 1
 boss_health = 11.5
@@ -70,9 +70,9 @@ boss_damage = 6.5
 
 [[zones]] # 50-59: Blasted Lands
 # Final reduction of all damage, unaffected by penetration.
-damage_reduction = 0.9
+damage_reduction = 0.5
 monster_quantity = 1.55
-monster_health = 16.0
+monster_health = 8
 monster_damage = 8.5
 boss_quantity = 1
 boss_health = 18.0

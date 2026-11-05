@@ -9,7 +9,7 @@ melee = 1.0
 projectile = 1.0
 area = 0.5
 chain = 1.0
-dot = 3.0
+dot = 1.0
 duration = 1.0
 totem = 1.0
 trap = 1.0
@@ -46,7 +46,7 @@ mortal_strike = 1.0
 retaliation = 1.0
 
 [classes.paladin]
-multiplier = 1.2
+multiplier = 1.0
 
 [classes.paladin.spells]
 holy_light = 1.0
@@ -75,12 +75,12 @@ concussive_shot = 1.0
 aimed_shot = 1.0
 
 [classes.rogue]
-multiplier = 1.2
+multiplier = 1.5
 
 [classes.rogue.spells]
 backstab = 1.0
 hemorrhage = 1.0
-sinister_strike = 1.0
+sinister_strike = 1.2
 eviscerate = 1.0
 blade_flurry = 1.0
 rupture = 1.0
@@ -88,7 +88,7 @@ gouge = 1.0
 kidney_shot = 1.0
 
 [classes.priest]
-multiplier = 1.0
+multiplier = 1.1
 
 [classes.priest.spells]
 mind_flay = 1.0
@@ -102,7 +102,7 @@ psychic_scream = 1.0
 power_word_shield = 1.0
 
 [classes.shaman]
-multiplier = 1.0
+multiplier = 1.1
 
 [classes.shaman.spells]
 stormstrike = 1.0
@@ -117,12 +117,12 @@ magma_totem = 1.0
 lightning_shield = 1.0
 
 [classes.mage]
-multiplier = 1.0
+multiplier = 1.2
 
 [classes.mage.spells]
 scorch = 1.0
 ice_barrier = 1.0
-frostbolt = 1.0
+frostbolt = 1.2
 fireball = 1.0
 arcane_missiles = 1.0
 frost_nova = 1.0
@@ -135,7 +135,7 @@ blast_wave = 1.0
 pyroblast = 1.0
 
 [classes.warlock]
-multiplier = 1.0
+multiplier = 1.1
 
 [classes.warlock.spells]
 drain_life = 1.0
@@ -151,13 +151,13 @@ searing_pain = 1.0
 shadowburn = 1.0
 
 [classes.druid]
-multiplier = 1.0
+multiplier = 1.2
 
 [classes.druid.spells]
 claw = 1.0
 swipe = 1.0
 regrowth = 1.0
-wrath = 1.0
+wrath = 1.2
 moonfire = 1.0
 starfire = 1.0
 hurricane = 1.0

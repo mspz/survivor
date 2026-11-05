@@ -1092,16 +1092,25 @@ pub(super) fn plugin(app: &mut App) {
             chest_drops
                 .after(super::abilities::apply_hits)
                 .before(super::enemies::drop_loot)
-                .run_if(in_state(Phase::Playing)),
+                .run_if(super::multiplayer::simulating),
         )
         .add_systems(
             Update,
             collect_drops
                 .after(chest_drops)
                 .before(super::hero::hero_vitals)
-                .run_if(|phase: Res<State<Phase>>| {
-                    matches!(*phase.get(), Phase::Playing | Phase::GameOver)
-                }),
+                .run_if(
+                    |phase: Res<State<Phase>>,
+                     role: Option<Res<super::multiplayer::Role>>,
+                     selection: Res<super::Selection>| {
+                        *phase.get() == Phase::GameOver
+                            || (!selection.in_hub
+                                && super::multiplayer::runs_in(
+                                    *phase.get(),
+                                    role.as_deref().copied().unwrap_or_default(),
+                                ))
+                    },
+                ),
         );
 }
 fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {

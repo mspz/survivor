@@ -77,9 +77,15 @@ ancien clic ne peut pas appliquer une deuxième récompense.
 
 Les ennemis ciblent le joueur vivant le plus proche. La mort de l'hôte ne termine
 pas la partie tant qu'un invité est vivant. Une nouvelle expédition réinitialise
-les personnages de la session. Les pauses et les changements de carte décidés
-par l'hôte concernent tout le groupe ; un invité ne peut pas mettre le serveur
-en pause en ouvrant son interface.
+les personnages de la session. Les changements de carte décidés par l'hôte
+concernent tout le groupe. En multijoueur, aucun joueur ne peut mettre la partie
+en pause : menus, inventaire, talents et choix de récompense laissent le combat
+continuer. Le solo conserve sa pause habituelle.
+
+Chaque joueur ouvre et modifie ses propres options. Les mises à jour de l'hôte
+ne referment pas ses menus et ne remplacent pas ses préférences. Les nombres
+de dégâts, de soins et de coups critiques sont transmis aux invités ; chacun
+les affiche selon ses propres filtres, indépendamment de ceux de l'hôte.
 
 Les sauvegardes appartiennent aux clients, comme en solo. L'invité transmet son
 équipement, ses rolls, ses talents, son XP de personnage et son apparence à la
@@ -92,7 +98,7 @@ talents ou de la provenance des objets : la session est prévue entre amis.
 à l'hôte. À réception, les statistiques du personnage concerné sont recalculées,
 sans redémarrer la partie ni ses cooldowns en cours. Les anciens bonus sont
 remplacés et les PV courants sont plafonnés si le maximum diminue. Les champs de
-vie répliqués sont actualisés dès la réception, même pendant une pause de l'hôte.
+vie répliqués sont actualisés dès la réception, même lorsque l'hôte ouvre un menu.
 
 L'XP de personnage, les victoires de zone et les objets gagnés en coopération sont
 enregistrés sur le client dans les mêmes fichiers `benilla-config/characters/`
@@ -126,10 +132,14 @@ orientations, états de mouvement et champs de jeu de toutes les unités. Les
 événements de sorts, impacts et attaques sont également transmis. Le client
 reconstruit ses propres entités et utilise le pipeline existant de rendu et
 d'animation ; aucun identifiant d'entité Bevy ne traverse le réseau. Les positions
-sont interpolées sur 100 ms, les téléportations sont appliquées directement.
+sont interpolées sur 100 ms pour les autres unités. Le déplacement et le saut
+du personnage local sont prédits à chaque frame, avec les mêmes règles que
+l'hôte et la vitesse qu'il transmet. À réception d'un état, les mouvements non
+acquittés sont rejoués et les petites corrections sont lissées. Les téléportations,
+changements de zone et changements d'état de mort réinitialisent cette prédiction.
 
-Cette première version utilise des états complets, sans prédiction locale ni
-compression/différentiel. La latence se ressent donc sur le personnage invité.
+Le combat et les compétences de mobilité restent validés par l'hôte. Les états
+complets ne sont pas encore compressés ni envoyés sous forme différentielle.
 Le transport navigateur et le serveur dédié sans renderer ne font pas partie de
 ce mode natif hébergé par un joueur.
 
@@ -142,7 +152,8 @@ cargo test -p benilla-app --lib survivors::multiplayer
 
 Les tests couvrent le protocole, le transport TCP sur boucle locale, deux invités
 déplacés indépendamment par les règles existantes, la reconstruction des avatars,
-la déconnexion et le rejet des anciennes offres de récompense. Ils ne remplacent
+la prédiction sans nouvel état réseau, les menus sans pause, les filtres de
+nombres de combat, la déconnexion et le rejet des anciennes offres de récompense. Ils ne remplacent
 pas une vérification visuelle avec les données du jeu et plusieurs fenêtres.
 
 ## Unit-frame status

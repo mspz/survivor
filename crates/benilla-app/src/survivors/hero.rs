@@ -202,6 +202,87 @@ pub(super) fn aim_cursor(
     }
 }
 
+/// Identical movement rules for authoritative simulation and guest prediction.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn step_motion(
+    tf: &mut Transform,
+    mv: &mut MovementState,
+    hm: &mut Hero,
+    command: super::session::Command,
+    dt: f32,
+    speed: f32,
+    map: &data::MapDef,
+    ground_at: impl Fn(Vec3) -> Option<f32>,
+) {
+    let interactive = command.active;
+    if let Some(facing) = command.facing {
+        tf.rotation = Quat::from_rotation_y(yaw_toward(facing));
+    } else {
+        tf.rotate_y(command.turn * 2.5 * dt);
+    }
+    let forward = tf.rotation * Vec3::NEG_Z;
+    let dir =
+        command.direction + forward * command.axes.y + forward.cross(Vec3::Y) * command.axes.x;
+    let mut pos = tf.translation;
+    let face = (!command.automatic).then_some(forward);
+    if let Some(look) = face {
+        let target = Quat::from_rotation_y(yaw_toward(look));
+        tf.rotation = target;
+    }
+    if dir != Vec3::ZERO && dt > 0.0 {
+        let dir = dir.normalize();
+        pos += dir * speed * dt;
+        mv.speed = speed;
+        mv.flags = match face {
+            Some(look) => gait(look, dir),
+            None => {
+                let target = Quat::from_rotation_y(yaw_toward(dir));
+                tf.rotation = tf.rotation.slerp(target, (dt * 20.0).min(1.0));
+                move_flags::FORWARD
+            }
+        };
+    } else if mv.speed != 0.0 || mv.flags != 0 {
+        mv.speed = 0.0;
+        mv.flags = 0;
+    }
+
+    let center = arena(map);
+    let off = flat(pos - center);
+    if off.length() > map.leash * 2.0 {
+        // Just entered another battleground: start at its centre.
+        pos = center;
+    } else if off.length() > map.leash {
+        let held = center + off.normalize() * map.leash;
+        pos.x = held.x;
+        pos.z = held.z;
+    }
+    let ground = ground_at(pos).unwrap_or(pos.y - hm.air);
+    let playing = interactive;
+    // Space hops: lift off the terrain, then gravity brings the hero back down.
+    if playing && command.jump && hm.vy == 0.0 && hm.air == 0.0 {
+        hm.vy = JUMP_SPEED;
+    }
+    if hm.vy != 0.0 || hm.air > 0.0 {
+        hm.vy -= GRAVITY * dt;
+        hm.air += hm.vy * dt;
+        if hm.air <= 0.0 {
+            hm.air = 0.0;
+            hm.vy = 0.0;
+        }
+    } else {
+        hm.air = 0.0;
+        hm.vy = 0.0;
+    }
+    pos.y = ground + hm.air;
+    // Feed the animation driver: `vertical_speed`'s sign and the `FALLING` flag are what
+    // select the Jump (37/38) / Fall (40) animation (`creature_anim::select`).
+    mv.vertical_speed = hm.vy;
+    if hm.vy != 0.0 {
+        mv.flags |= move_flags::FALLING;
+    }
+    tf.translation = pos;
+}
+
 /// WASD over the terrain within the battleground's leash, and the streaming focus on the hero.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drive_hero(
@@ -215,81 +296,23 @@ pub(super) fn drive_hero(
     mut hero: Query<(&mut Transform, &mut MovementState, &mut Hero)>,
 ) {
     let command = input.for_client(session.id());
-    let interactive = command.active;
     let focus = match hero.single_mut() {
         Ok((mut tf, mut mv, mut hm)) => {
             let dt = time.delta_secs();
-            if let Some(facing) = command.facing {
-                tf.rotation = Quat::from_rotation_y(yaw_toward(facing));
-            } else {
-                tf.rotate_y(command.turn * 2.5 * dt);
-            }
-            let forward = tf.rotation * Vec3::NEG_Z;
-            let dir = command.direction
-                + forward * command.axes.y
-                + forward.cross(Vec3::Y) * command.axes.x;
-            let mut pos = tf.translation;
-            let face = (!command.automatic).then_some(forward);
-            if let Some(look) = face {
-                let target = Quat::from_rotation_y(yaw_toward(look));
-                tf.rotation = target;
-            }
-            if dir != Vec3::ZERO && dt > 0.0 {
-                let dir = dir.normalize();
-                let speed = run.stats().speed * run.haste_mult();
-                pos += dir * speed * dt;
-                mv.speed = speed;
-                mv.flags = match face {
-                    Some(look) => gait(look, dir),
-                    None => {
-                        let target = Quat::from_rotation_y(yaw_toward(dir));
-                        tf.rotation = tf.rotation.slerp(target, (dt * 20.0).min(1.0));
-                        move_flags::FORWARD
-                    }
-                };
-            } else if mv.speed != 0.0 || mv.flags != 0 {
-                mv.speed = 0.0;
-                mv.flags = 0;
-            }
-            let map = selection.stage_def();
-            let center = arena(map);
-            let off = flat(pos - center);
-            if off.length() > map.leash * 2.0 {
-                // Just entered another battleground: start at its centre.
-                pos = center;
-            } else if off.length() > map.leash {
-                let held = center + off.normalize() * map.leash;
-                pos.x = held.x;
-                pos.z = held.z;
-            }
-            let ground = world.terrain_height_under(pos).unwrap_or(pos.y);
-            let playing = interactive && run.dead_t.is_none();
-            // Space hops: lift off the terrain, then gravity brings the hero back down.
-            if playing && command.jump && hm.vy == 0.0 && hm.air == 0.0 {
-                hm.vy = JUMP_SPEED;
-            }
-            if playing && (hm.vy != 0.0 || hm.air > 0.0) {
-                hm.vy -= GRAVITY * dt;
-                hm.air += hm.vy * dt;
-                if hm.air <= 0.0 {
-                    hm.air = 0.0;
-                    hm.vy = 0.0;
-                }
-            } else {
-                hm.air = 0.0;
-                hm.vy = 0.0;
-            }
-            pos.y = ground + hm.air;
-            // Feed the animation driver: `vertical_speed`'s sign and the `FALLING` flag are what
-            // select the Jump (37/38) / Fall (40) animation (`creature_anim::select`).
-            mv.vertical_speed = hm.vy;
-            if hm.vy != 0.0 {
-                mv.flags |= move_flags::FALLING;
-            }
-            super::items::legendary::events::walk(&mut run, tf.translation, pos, dt);
-            if tf.translation != pos {
-                tf.translation = pos;
-            }
+            let before = tf.translation;
+            let speed = run.stats().speed * run.haste_mult();
+            step_motion(
+                &mut tf,
+                &mut mv,
+                &mut hm,
+                command,
+                dt,
+                speed,
+                selection.stage_def(),
+                |p| world.terrain_height_under(p),
+            );
+            let pos = tf.translation;
+            super::items::legendary::events::walk(&mut run, before, pos, dt);
             pos
         }
         Err(_) => {

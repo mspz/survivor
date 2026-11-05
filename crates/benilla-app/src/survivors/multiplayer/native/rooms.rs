@@ -171,6 +171,7 @@ mod tests {
             casts: default(),
             gos: default(),
             swings: default(),
+            numbers: default(),
             loot: default(),
         }
     }
@@ -268,6 +269,7 @@ mod tests {
             casts: default(),
             gos: default(),
             swings: default(),
+            numbers: default(),
             loot: default(),
         };
         close(&mut world, &mut network);

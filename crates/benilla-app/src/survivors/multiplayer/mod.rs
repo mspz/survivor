@@ -42,6 +42,24 @@ pub(super) fn authoritative(role: Option<Res<Role>>) -> bool {
     role.is_none_or(|r| *r != Role::Guest)
 }
 
+/// Menus are local overlays in co-op; the expedition keeps running underneath them.
+pub(super) fn runs_in(phase: super::Phase, role: Role) -> bool {
+    phase == super::Phase::Playing
+        || (role != Role::Solo
+            && matches!(
+                phase,
+                super::Phase::Paused | super::Phase::CharacterSheet | super::Phase::LevelUp
+            ))
+}
+
+pub(super) fn simulating(
+    phase: Res<State<super::Phase>>,
+    role: Option<Res<Role>>,
+    selection: Res<super::Selection>,
+) -> bool {
+    !selection.in_hub && runs_in(*phase.get(), role.as_deref().copied().unwrap_or_default())
+}
+
 #[derive(Resource, Default)]
 pub(super) struct GuestActions {
     pub pick: Option<usize>,
@@ -62,4 +80,30 @@ pub(super) fn plugin(app: &mut App) {
     app.add_plugins(lobby::plugin);
     #[cfg(not(target_arch = "wasm32"))]
     native::plugin(app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::survivors::{server, Phase};
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn coop_menus_keep_the_clock_and_simulation_running() {
+        for role in [Role::Solo, Role::Host, Role::Guest] {
+            let mut world = World::new();
+            world.init_resource::<Time<Virtual>>();
+            world.insert_resource(role);
+            world.run_system_once(server::pause).unwrap();
+            assert_eq!(
+                world.resource::<Time<Virtual>>().is_paused(),
+                role == Role::Solo
+            );
+            for phase in [Phase::Paused, Phase::LevelUp, Phase::CharacterSheet] {
+                assert_eq!(runs_in(phase, role), role != Role::Solo);
+            }
+            assert!(!runs_in(Phase::GameOver, role));
+            assert!(!runs_in(Phase::Hub, role));
+        }
+    }
 }

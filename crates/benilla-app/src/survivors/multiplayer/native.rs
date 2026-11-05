@@ -25,6 +25,7 @@ use std::{
     time::Duration,
 };
 pub(super) mod address;
+mod prediction;
 mod rooms;
 mod saves;
 
@@ -72,6 +73,7 @@ struct Network {
     gos: MessageCursor<SpellGoTargets>,
     swings: MessageCursor<SwingMessage>,
     loot: MessageCursor<game::enemies::Loot>,
+    numbers: MessageCursor<units::CombatNumber>,
 }
 
 #[derive(Resource)]
@@ -167,6 +169,7 @@ pub(super) fn plugin(app: &mut App) {
         casts: default(),
         gos: default(),
         swings: default(),
+        numbers: default(),
         loot: default(),
     });
     register_rules(app.world_mut());
@@ -183,6 +186,12 @@ pub(super) fn plugin(app: &mut App) {
             .before(game::enemies::spawn_enemies),
     )
     .add_systems(Update, interpolate.after(pump).before(hero::place_camera))
+    .add_systems(
+        Update,
+        prediction::predict
+            .after(pump)
+            .in_set(session::Stage::Simulate),
+    )
     .add_systems(PostUpdate, publish.after(game::forms::sync));
     app.add_systems(Update, rooms::update.after(super::lobby::input));
 }
@@ -601,7 +610,8 @@ fn simulate(world: &mut World) {
         return;
     }
     let phase = *world.resource::<State<Phase>>().get();
-    if !matches!(phase, Phase::Playing | Phase::Hub)
+    let combat = !world.resource::<Selection>().in_hub && super::runs_in(phase, Role::Host);
+    if !(phase == Phase::Hub || super::runs_in(phase, Role::Host))
         || world
             .resource::<crate::loading_screen::LoadingScreen>()
             .covering()
@@ -657,7 +667,7 @@ fn simulate(world: &mut World) {
         let focus = world.resource::<crate::player::Player>().pos;
         // Registered systems keep their query/message cursors; this does not rebuild systems per frame.
         for (index, system) in ids.into_iter().enumerate() {
-            if index >= 2 && phase != Phase::Playing {
+            if index >= 2 && !combat {
                 continue;
             }
             if let Err(error) = world.run_system(system) {
@@ -847,6 +857,7 @@ fn decode_choice(choice: wire::Choice) -> Option<hud::Choice> {
 
 fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
     wire::Stats {
+        movement_speed: run.stats().speed * run.haste_mult(),
         meter: run.meter.clone(),
         earned: game::talents::earned(run),
         hp: run.hp,
@@ -955,6 +966,18 @@ fn publish(world: &mut World) {
         .map(|(e, g)| (e, g.0))
         .collect();
     let guid = |e: Entity| entity_guids.get(&e).copied();
+    if let Some(numbers) = world.get_resource::<Messages<units::CombatNumber>>() {
+        for number in network.numbers.read(numbers) {
+            if let Some(target) = guid(number.anchor) {
+                network.effects.push(wire::Effect::Number {
+                    target,
+                    amount: number.amount,
+                    crit: number.crit,
+                    color: number.color,
+                });
+            }
+        }
+    }
     for go in network
         .gos
         .read(world.resource::<Messages<SpellGoTargets>>())
@@ -997,7 +1020,11 @@ fn publish(world: &mut World) {
     }
     network.since_snapshot = 0.0;
     network.tick += 1;
-    let phase = *world.resource::<State<Phase>>().get();
+    let phase = if world.resource::<Selection>().in_hub {
+        Phase::Hub
+    } else {
+        *world.resource::<State<Phase>>().get()
+    };
     let units: Vec<wire::Unit> = world
         .query_filtered::<(
             &Guid,
@@ -1115,8 +1142,21 @@ fn encode_phase(phase: Phase, companion: &Companion) -> u8 {
         Phase::Menu => 0,
         Phase::Hub => 1,
         Phase::Playing => 2,
-        Phase::LevelUp | Phase::Paused | Phase::CharacterSheet => 4,
+        Phase::LevelUp | Phase::Paused | Phase::CharacterSheet => 2,
         Phase::GameOver => 6,
+    }
+}
+
+fn local_phase(current: Phase, remote: Phase, offer_changed: bool) -> Phase {
+    // Only expedition transitions belong to the host. Personal menus stay on this machine.
+    if matches!(current, Phase::Paused | Phase::CharacterSheet)
+        && matches!(remote, Phase::Hub | Phase::Playing | Phase::LevelUp)
+    {
+        current
+    } else if current == Phase::LevelUp && remote == Phase::LevelUp && !offer_changed {
+        current
+    } else {
+        remote
     }
 }
 
@@ -1254,10 +1294,19 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
                 .remove::<game::unit_frames::Status>();
         }
         if unit.owner == guest.id && guest.id.is_some() {
-            world.entity_mut(entity).insert(hero::Hero {
-                vy: unit.vertical_speed,
-                air: 0.0,
-            });
+            prediction::receive(
+                world,
+                entity,
+                prediction::Authority {
+                    transform: to,
+                    vertical_speed: unit.vertical_speed,
+                    acknowledged: snapshot.acknowledged,
+                    speed: snapshot.stats.movement_speed,
+                    map: snapshot.map,
+                    in_hub: snapshot.in_hub,
+                    dead: snapshot.stats.dead,
+                },
+            );
             let selection = world.resource::<Selection>();
             if let (Some(class), Some(&(display, race, sex))) = (
                 selection.class,
@@ -1360,6 +1409,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         _ => Phase::Paused,
     };
     let current = *world.resource::<State<Phase>>().get();
+    let phase = local_phase(current, phase, offer_changed);
     if current != phase {
         world.resource_mut::<NextState<Phase>>().set(phase);
     }
@@ -1371,6 +1421,29 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
 fn play_effect(world: &mut World, entities: &BTreeMap<u64, Entity>, effect: wire::Effect) {
     let seq = world.resource_mut::<PlaySeq>().next();
     match effect {
+        wire::Effect::Number {
+            target,
+            amount,
+            crit,
+            color,
+        } => {
+            if world
+                .get_resource::<game::options::Settings>()
+                .is_some_and(|s| {
+                    !s.numbers(color == units::COLOR_HEAL, color == units::COLOR_HURT, crit)
+                })
+            {
+                return;
+            }
+            if let Some(&anchor) = entities.get(&target) {
+                world.write_message(crate::combat_text::CombatTextSpawn {
+                    anchor,
+                    text: (amount.round().max(1.0) as i64).to_string(),
+                    category: if crit { 2 } else { 0 },
+                    color: Some(color),
+                });
+            }
+        }
         wire::Effect::Cast {
             caster,
             spell,
@@ -1433,10 +1506,9 @@ fn play_effect(world: &mut World, entities: &BTreeMap<u64, Entity>, effect: wire
 
 fn interpolate(
     time: Res<Time<Real>>,
-    mut units: Query<(&mut Transform, &mut Interpolation, Has<hero::Hero>)>,
-    mut player: ResMut<crate::player::Player>,
+    mut units: Query<(&mut Transform, &mut Interpolation), Without<hero::Hero>>,
 ) {
-    for (mut tf, mut interpolation, local) in &mut units {
+    for (mut tf, mut interpolation) in &mut units {
         interpolation.elapsed += time.delta_secs();
         let alpha = (interpolation.elapsed / 0.1).min(1.0);
         // Large jumps are teleports, not motion to interpolate across the map.
@@ -1457,13 +1529,6 @@ fn interpolate(
                 .rotation
                 .slerp(interpolation.to.rotation, alpha);
         }
-        if local {
-            player.active = true;
-            player.detached = false;
-            player.settling = false;
-            player.world_stale = false;
-            player.pos = tf.translation;
-        }
     }
 }
 
@@ -1472,6 +1537,68 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use std::time::Instant;
+
+    #[test]
+    fn snapshots_preserve_personal_menus_but_end_them_when_the_run_ends() {
+        for menu in [Phase::Paused, Phase::CharacterSheet] {
+            for remote in [Phase::Hub, Phase::Playing, Phase::LevelUp] {
+                assert_eq!(local_phase(menu, remote, true), menu);
+            }
+            assert_eq!(local_phase(menu, Phase::GameOver, false), Phase::GameOver);
+        }
+        assert_eq!(
+            local_phase(Phase::Playing, Phase::LevelUp, true),
+            Phase::LevelUp
+        );
+        assert_eq!(
+            local_phase(Phase::LevelUp, Phase::Playing, true),
+            Phase::Playing
+        );
+    }
+
+    #[test]
+    fn combat_numbers_use_the_receivers_filters_even_if_the_host_hides_them() {
+        let mut world = world();
+        world.init_resource::<Messages<units::CombatNumber>>();
+        let mut settings = game::options::Settings::default();
+        settings.damage = false;
+        world.insert_resource(settings);
+        let anchor = world.spawn_empty().id();
+        world
+            .run_system_once(move |mut fx: units::Fx| {
+                fx.number(anchor, 26.6, true, units::COLOR_SPELL);
+            })
+            .unwrap();
+        assert!(world
+            .resource::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .is_empty());
+        let number = world
+            .resource_mut::<Messages<units::CombatNumber>>()
+            .drain()
+            .next()
+            .unwrap();
+        let entities = BTreeMap::from([(42, anchor)]);
+        let effect = wire::Effect::Number {
+            target: 42,
+            amount: number.amount,
+            crit: number.crit,
+            color: number.color,
+        };
+        play_effect(&mut world, &entities, effect.clone());
+        assert!(world
+            .resource::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .is_empty());
+        world.resource_mut::<game::options::Settings>().damage = true;
+        play_effect(&mut world, &entities, effect);
+        let text = world
+            .resource_mut::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .drain()
+            .next()
+            .unwrap();
+        assert_eq!(text.anchor, anchor);
+        assert_eq!(text.text, "27");
+        assert_eq!(text.category, 2);
+    }
 
     fn world() -> World {
         let mut world = World::new();
@@ -1590,6 +1717,7 @@ mod tests {
             casts: default(),
             gos: default(),
             swings: default(),
+            numbers: default(),
             loot: default(),
         }
     }
@@ -1648,6 +1776,12 @@ mod tests {
             .unwrap();
         let local_before = host.get::<Transform>(local).unwrap().translation;
         for sequence in 1..=4 {
+            host.insert_resource(State::new(match sequence {
+                1 => Phase::Playing,
+                2 => Phase::Paused,
+                3 => Phase::CharacterSheet,
+                _ => Phase::LevelUp,
+            }));
             for (index, client) in clients.iter_mut().enumerate() {
                 client
                     .send(&wire::ToServer::Input(wire::Input {
@@ -1687,6 +1821,7 @@ mod tests {
             assert!(Instant::now() < deadline);
         }
         let snapshot = snapshot.unwrap();
+        assert_eq!(snapshot.phase, 2, "the host's menu never pauses guests");
         assert!(ids
             .iter()
             .all(|id| snapshot.units.iter().any(|u| u.owner == Some(*id))));
@@ -1707,6 +1842,49 @@ mod tests {
             receipts: default(),
         };
         apply_snapshot(&mut guest_world, &mut guest, snapshot);
+        let local_guest = guest_world
+            .query_filtered::<Entity, With<hero::Hero>>()
+            .single(&guest_world)
+            .unwrap();
+        assert!(guest_world.get::<Interpolation>(local_guest).is_none());
+        let guest_before = guest_world
+            .get::<Transform>(local_guest)
+            .unwrap()
+            .translation;
+        let mut guest_network = network(TcpListener::bind("127.0.0.1:0").unwrap());
+        guest_network.listener = None;
+        guest_network.guest = Some(guest);
+        guest_world.insert_resource(guest_network);
+        guest_world.insert_resource(Role::Guest);
+        let command = session::Command {
+            active: true,
+            axes: Vec2::Y,
+            jump: true,
+            ..default()
+        };
+        guest_world.resource_scope(|world, session: Mut<session::LocalSession>| {
+            session
+                .submit(&mut world.resource_mut::<session::Sessions>(), command)
+                .unwrap();
+        });
+        guest_world.run_system_once(session::receive).unwrap();
+        guest_world
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(16));
+        guest_world.run_system_once(prediction::predict).unwrap();
+        let predicted = guest_world
+            .get::<Transform>(local_guest)
+            .unwrap()
+            .translation;
+        assert!(
+            predicted.z < guest_before.z,
+            "input moves immediately without another snapshot"
+        );
+        assert!(predicted.y > guest_before.y, "jump also starts locally");
+        assert_eq!(
+            guest_world.resource::<crate::player::Player>().pos,
+            predicted
+        );
         assert_eq!(
             guest_world
                 .query_filtered::<Entity, With<hero::Hero>>()
@@ -1790,7 +1968,7 @@ mod tests {
             .stats(world.resource::<Run>().expedition_map, false)
             .0
             * config.factor(world.resource::<Run>().elapsed)
-            * 2.5;
+            * config.party_health(2);
         assert_eq!(
             world.get::<game::enemies::Enemy>(enemy).unwrap().max_hp,
             expected
@@ -1830,7 +2008,7 @@ mod tests {
             offer_id: 0,
         };
         assert_eq!(encode_phase(Phase::Playing, &companion), 2);
-        assert_eq!(encode_phase(Phase::Paused, &companion), 4);
+        assert_eq!(encode_phase(Phase::Paused, &companion), 2);
         assert_eq!(encode_phase(Phase::GameOver, &companion), 6);
     }
     #[test]
@@ -2088,6 +2266,7 @@ mod tests {
             casts: default(),
             gos: default(),
             swings: default(),
+            numbers: default(),
             loot: default(),
             guest: Some(Guest {
                 socket,
