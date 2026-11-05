@@ -1097,6 +1097,10 @@ pub(crate) const MAX_ABILITY_LEVEL: u8 = 8;
 pub(crate) const MAX_ABILITIES: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
+#[allow(
+    dead_code,
+    reason = "Character stat vocabulary also supports optional passive definitions"
+)]
 pub(crate) enum Stat {
     Might,
     MaxHp,

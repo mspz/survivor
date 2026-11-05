@@ -414,12 +414,17 @@ pub(super) fn place_camera(
 /// Damage the hero takes from one blow, after immunity, armour and the shield; returns what got
 /// through.
 pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
+    hurt_hero_tagged(run, raw, super::spell_engine::Tags::PHYSICAL)
+}
+
+/// Both hits and periodic ticks retain their damage school's tags.
+pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engine::Tags) -> f32 {
     if run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
     let shield = if run.shield_t > 0.0 { run.shield } else { 0.0 };
     let raw = raw
-        * (1.0 - run.damage_reduction())
+        * (1.0 - run.damage_reduction_tagged(tags))
         * if super::talent_runtime::active(run, super::talent_design::Mechanic::FeralGuard) {
             0.85
         } else {
@@ -427,7 +432,9 @@ pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
         };
     let (dmg, absorbed) = super::spell_engine::mitigate(raw, 0.0, shield, false);
     run.shield -= absorbed;
-    if shield>0.0&&run.shield<=0.0{super::items::legendary::effects::shield_expired(run,0.0,true);}
+    if shield > 0.0 && run.shield <= 0.0 {
+        super::items::legendary::effects::shield_expired(run, 0.0, true);
+    }
     if shield > 0.0
         && run.shield <= 0.0
         && super::talent_runtime::active(run, super::talent_design::Mechanic::Shieldburst)
@@ -445,16 +452,25 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
         && roll < (run.equipment.block + super::talent_runtime::block_chance(run)).clamp(0.0, 0.75)
     {
         run.talent_runtime.blocked = true;
-        super::items::legendary::effects::blocked(run,raw);
+        super::items::legendary::effects::blocked(run, raw);
         super::items::legendary::events::blocked(run);
         if super::talent_runtime::active(run, super::talent_design::Mechanic::Block) {
-            if super::items::legendary::milestones::sources(run,super::talent_design::Mechanic::Block).contains(&2) {
+            if super::items::legendary::milestones::sources(
+                run,
+                super::talent_design::Mechanic::Block,
+            )
+            .contains(&2)
+            {
                 let max = run.stats().max_hp;
                 let amount =
                     super::procs::resolve(run, "proc_holy_heal", max * 0.03, 0.0, 0.0, 0.0, 1).dmg;
                 run.heal(amount);
             }
-            let warrior_block = super::items::legendary::milestones::sources(run,super::talent_design::Mechanic::Block).contains(&1);
+            let warrior_block = super::items::legendary::milestones::sources(
+                run,
+                super::talent_design::Mechanic::Block,
+            )
+            .contains(&1);
             for ability in &mut run.abilities {
                 if ability.def.key == "thunder_clap" && warrior_block {
                     ability.cd = (ability.cd - 1.0).max(0.0);

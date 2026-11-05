@@ -139,6 +139,57 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    fn healer_blessings_cast_at_full_health_buff_allies_and_expire_without_recasting() {
+        use super::super::{
+            healer_buffs,
+            multiplayer::{Companion, Companions, RemoteOwner},
+            talent_runtime,
+        };
+        let (mut world, _) = legendary_world("flash_heal", 286, &[]);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.class = &data::CLASSES[4];
+            run.hp = run.stats().max_hp;
+            run.legendary.equipped.clear();
+        }
+        let entity = world
+            .spawn((RemoteOwner(42), Transform::from_xyz(5.0, 0.0, 0.0)))
+            .id();
+        let mut players = Companions::default();
+        players.0.insert(
+            42,
+            Companion {
+                entity,
+                run: Run {
+                    owner: Some(42),
+                    ..default()
+                },
+                physics: Hero { vy: 0.0, air: 0.0 },
+                offer: default(),
+                offer_id: 0,
+            },
+        );
+        world.insert_resource(players);
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world.resource::<Run>().abilities[0].cd > 0.0);
+        world.run_system_once(talent_runtime::support).unwrap();
+        assert!((healer_buffs::snapshot(world.resource::<Run>())[0] - 0.2).abs() < 0.0001);
+        assert!(
+            (healer_buffs::snapshot(&world.resource::<Companions>().0[&42].run)[0] - 0.2).abs()
+                < 0.0001
+        );
+        world.resource_mut::<Run>().abilities[0].cd = 100.0;
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(9));
+        world.run_system_once(talent_runtime::support).unwrap();
+        assert_eq!(healer_buffs::snapshot(world.resource::<Run>())[0], 0.0);
+        assert_eq!(
+            healer_buffs::snapshot(&world.resource::<Companions>().0[&42].run)[0],
+            0.0
+        );
+    }
+    #[test]
     fn legendary_nova_selects_targets_around_a_distant_enemy() {
         let (mut world, _) = legendary_world("arcane_explosion", 6, &[15.0, 17.0, 30.0]);
         world.run_system_once(cast_abilities).unwrap();
@@ -248,6 +299,142 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn arcane_talents_repeat_real_casts_once_without_resetting_cooldown() {
+        use super::super::talents;
+        let (mut world, _) = legendary_world("arcane_missiles", 6, &[3.0]);
+        let mut build = [[0; talents::NODES]; 3];
+        build[0][8] = 1;
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.class = &data::CLASSES[6];
+            run.legendary.equipped.clear();
+            talents::Account::from_shared(6, 0, build).apply(6, &mut run);
+            run.replace_spell_modifiers(
+                900,
+                [engine::Modifier {
+                    source: 900,
+                    filter: engine::Filter::requiring(engine::Tags::SPELL),
+                    change: engine::Change::RecastChance(0.5),
+                }],
+            );
+        }
+        world.run_system_once(cast_abilities).unwrap();
+        let count =
+            world.resource::<PendingHits>().0.len() + world.resource::<Messages<Hit>>().len();
+        assert!(count > 0);
+        assert_eq!(world.resource::<Run>().recasts.len(), 1);
+        let cooldown = world.resource::<Run>().abilities[0].cd;
+        world.resource_mut::<Run>().elapsed = 0.2;
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(200));
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(
+            world.resource::<PendingHits>().0.len() + world.resource::<Messages<Hit>>().len(),
+            count * 2
+        );
+        assert!(world.resource::<Run>().recasts.is_empty());
+        assert!((world.resource::<Run>().abilities[0].cd - (cooldown - 0.2)).abs() < 0.001);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn arcane_talents_four_planned_repeats_escalate_and_trigger_nonrecursive_learned_spells() {
+        use super::super::talents;
+        let (mut world, _) = legendary_world("arcane_missiles", 6, &[3.0]);
+        let mut build = [[0; talents::NODES]; 3];
+        for node in [8, 12, 18] {
+            build[0][node] = 1;
+        }
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.class = &data::CLASSES[6];
+            run.legendary.equipped.clear();
+            talents::Account::from_shared(6, 0, build).apply(6, &mut run);
+            run.abilities.retain(|o| o.def.key == "arcane_missiles");
+            run.abilities.push(Owned {
+                def: data::ability("fireball"),
+                level: 1,
+                cd: 999.0,
+            });
+            run.replace_spell_modifiers(
+                900,
+                [engine::Modifier {
+                    source: 900,
+                    filter: engine::Filter::requiring(engine::Tags::SPELL),
+                    change: engine::Change::RecastChance(3.5),
+                }],
+            );
+        }
+        fn drain(world: &mut World) -> Vec<Hit> {
+            let mut result: Vec<_> = std::mem::take(&mut world.resource_mut::<PendingHits>().0)
+                .into_iter()
+                .map(|(_, h)| h)
+                .collect();
+            result.extend(world.resource_mut::<Messages<Hit>>().drain());
+            result
+        }
+        world.run_system_once(cast_abilities).unwrap();
+        let original = drain(&mut world);
+        let base = original
+            .iter()
+            .find(|h| h.skill == "arcane_missiles")
+            .unwrap()
+            .damage;
+        let extra_base = world
+            .resource::<Run>()
+            .resolve_spell(data::ability("fireball"), 1)
+            .dmg;
+        let cooldown = world.resource::<Run>().abilities[0].cd;
+        let extra_cd = world.resource::<Run>().abilities[1].cd;
+        for ordinal in 1..=4 {
+            world.resource_mut::<Run>().elapsed = ordinal as f32 * 0.2;
+            world
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_millis(200));
+            world.run_system_once(cast_abilities).unwrap();
+            let wave = drain(&mut world);
+            let copies: Vec<_> = wave
+                .iter()
+                .filter(|h| h.skill == "arcane_missiles")
+                .collect();
+            let extras: Vec<_> = wave.iter().filter(|h| h.skill == "fireball").collect();
+            assert!(!copies.is_empty());
+            assert!(
+                !extras.is_empty(),
+                "repeat {ordinal} did not trigger its learned spell"
+            );
+            for hit in copies {
+                assert!((hit.damage - base * 1.2_f32.powi(ordinal)).abs() < 0.001);
+            }
+            for hit in extras {
+                assert!((hit.damage - extra_base).abs() < 0.001);
+            }
+            assert_eq!(
+                world.resource::<Run>().recasts.len(),
+                usize::from(ordinal < 4)
+            );
+        }
+        assert!((world.resource::<Run>().abilities[0].cd - (cooldown - 0.8)).abs() < 0.001);
+        assert!((world.resource::<Run>().abilities[1].cd - (extra_cd - 0.8)).abs() < 0.001);
+        world.resource_mut::<Run>().elapsed = 2.0;
+        world.resource_mut::<Run>().abilities[0].cd = 0.0;
+        world.run_system_once(cast_abilities).unwrap();
+        drain(&mut world);
+        world.resource_mut::<Run>().elapsed = 2.2;
+        world.run_system_once(cast_abilities).unwrap();
+        let next_wave = drain(&mut world);
+        assert!(next_wave.iter().any(|h| h.skill == "arcane_missiles"));
+        for hit in next_wave.iter().filter(|h| h.skill == "arcane_missiles") {
+            assert!(
+                (hit.damage - base * 1.2).abs() < 0.001,
+                "New original cast did not reset the escalation"
+            );
+        }
+    }
+
+    #[test]
     fn legendary_chain_reselects_living_targets_without_resetting_cooldown() {
         let (mut world, targets) = legendary_world("chain_lightning", 11, &[3.0, 5.0, 8.0]);
         world.run_system_once(cast_abilities).unwrap();
@@ -299,14 +486,63 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    fn elemental_hits_and_dots_use_resistance_and_keep_final_expedition_reduction() {
+        let (mut world, targets) = legendary_world("fireball", 6, &[3.0]);
+        let config = include_str!("../../../../config/survivors-expeditions.toml");
+        let mut config: toml::Value = toml::from_str(config).unwrap();
+        for key in ["monster_resistance_per_level", "boss_resistance_per_level"] {
+            config[key]["fire"] = toml::Value::Float(10.0);
+        }
+        config["zones"].as_array_mut().unwrap()[5]["damage_reduction"] = toml::Value::Float(0.5);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.equipped.clear();
+            run.expeditions =
+                super::super::expedition_config::Config::parse(&toml::to_string(&config).unwrap())
+                    .unwrap();
+            run.expedition_map = data::CAMPAIGN[5];
+        }
+        let level = world.get::<Enemy>(targets[0]).unwrap().def.level;
+        let mut hit = Hit::direct("fireball", targets[0], 100.0, false);
+        hit.tags = Some(engine::Tags::FIRE | engine::Tags::DAMAGE);
+        world.write_message(hit);
+        world
+            .get_mut::<Enemy>(targets[0])
+            .unwrap()
+            .dots
+            .push(enemies::Dot {
+                item_source: None,
+                meta: Default::default(),
+                origin: Origin::Skill,
+                owner: None,
+                skill: "fireball",
+                meter_source: None,
+                tags: Some(engine::Tags::FIRE | engine::Tags::DOT | engine::Tags::DAMAGE),
+                dps: 100.0,
+                left: 5.0,
+                tick: 0.0,
+            });
+        world.run_system_once(apply_hits).unwrap();
+        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5;
+        let actual = 1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp;
+        assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+    }
+
+    #[test]
     fn legendary_projectile_keeps_its_physical_school_after_unequipping_conversion() {
         let (mut world, targets) = legendary_world("fireball", 96, &[3.0]);
         world.run_system_once(cast_abilities).unwrap();
         world.resource_mut::<Run>().legendary.equipped.clear();
         world.run_system_once(apply_hits).unwrap();
         let enemy = world.get::<Enemy>(targets[0]).unwrap();
-        let expected =
-            1000.0 - data::ability("fireball").damage / (1.0 + enemy.def.level as f32 * 0.005);
+        let run = world.resource::<Run>();
+        let (armour, reduction) =
+            run.expeditions
+                .defenses(run.expedition_map, enemy.def.level, enemy.boss, false);
+        let expected = 1000.0
+            - data::ability("fireball").damage
+                * (1.0 - super::super::items::armour::reduction(armour))
+                * (1.0 - reduction);
         assert!((enemy.hp - expected).abs() < 0.001);
     }
     #[test]
@@ -532,8 +768,15 @@ mod spell_engine_integration_tests {
             .unwrap();
         world.run_system_once(apply_hits).unwrap();
         let dealt = inside - world.get::<Enemy>(targets[1]).unwrap().hp;
+        let enemy = world.get::<Enemy>(targets[1]).unwrap();
+        let run = world.resource::<Run>();
+        let (armour, reduction) =
+            run.expeditions
+                .defenses(run.expedition_map, enemy.def.level, enemy.boss, false);
+        let expected =
+            600.0 * (1.0 - super::super::items::armour::reduction(armour)) * (1.0 - reduction);
         assert!(
-            dealt > 500.0 && dealt < 600.0,
+            (dealt - expected).abs() < 0.001,
             "Physical explosion damage was {dealt}"
         );
         assert_eq!(world.get::<Enemy>(targets[2]).unwrap().hp, outside);
@@ -1270,12 +1513,16 @@ pub(super) fn cast_abilities(
             .map_or(0.0, |d| d.speed)
     };
 
+    let mut casts = std::collections::VecDeque::new();
     for i in 0..run.abilities.len() {
         run.abilities[i].cd -= dt;
-        let repeated = run.recasts.take_due(i, now);
-        if run.abilities[i].cd > 0.0 && !repeated {
-            continue;
+        let ordinal = run.recasts.take_due_ordinal(i, now);
+        if run.abilities[i].cd <= 0.0 || ordinal.is_some() {
+            casts.push_back((i, ordinal, false));
         }
+    }
+    while let Some((i, ordinal, extra)) = casts.pop_front() {
+        let repeated = ordinal.is_some() || extra;
         let o = &run.abilities[i];
         let original_def = o.def;
         let profile = super::items::legendary::profile(&run, original_def);
@@ -1316,6 +1563,9 @@ pub(super) fn cast_abilities(
         }
         let stats = run.stats();
         let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
+        if let Some(ordinal) = ordinal {
+            super::arcane_repeats::empower(&run, &mut p, ordinal);
+        }
         p.cast_id = if repeated {
             0
         } else {
@@ -1668,7 +1918,11 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Heal => {
-                    if run.hp < stats.max_hp * 0.85 {
+                    if run.hp < stats.max_hp * 0.85
+                        || super::healer_buffs::can_buff(&run, original_def)
+                    {
+                        let level = run.abilities[i].level;
+                        super::healer_buffs::on_heal_cast(&mut run, original_def, level);
                         if run.legendary.has(305) && def.key == "regrowth" {
                             super::items::legendary::effects::seed(&mut run, p.dmg, p.duration);
                         } else if run.legendary.has(152) || run.legendary.has(237) {
@@ -1745,6 +1999,11 @@ pub(super) fn cast_abilities(
             }
             legendary_events::cast(&mut run, def, &p, primary, repeated);
             super::items::legendary::casting::after_cast(&mut run, def, &p, primary, repeated);
+            if ordinal.is_some() {
+                if let Some(other) = super::arcane_repeats::extra_spell(&run, i, p.tags, &mut rng) {
+                    casts.push_back((other, None, true));
+                }
+            }
         }
         if !repeated {
             run.abilities[i].cd = if fired { p.cooldown } else { 0.2 };
@@ -2274,6 +2533,8 @@ pub(super) fn apply_hits(
         }
     };
 
+    let expedition_defenses = run.expeditions.clone();
+    let expedition_map = run.expedition_map;
     for mut h in all {
         let Some(run) = super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
         else {
@@ -2299,7 +2560,12 @@ pub(super) fn apply_hits(
             .or_insert_with(|| {
                 engine::on_hit::modifiers_tagged(h.skill, tags, run.spell_modifiers.entries())
             });
-        let armour = en.def.level as f32 * if en.boss { 1.0 } else { 0.5 };
+        let (armour, final_reduction) = expedition_defenses.defenses(
+            expedition_map,
+            en.def.level,
+            en.boss,
+            super::training::actor(en.def),
+        );
         if h.origin == Origin::Legendary {
             mods.leech = 0.0;
             mods.bleed = 0.0;
@@ -2320,7 +2586,11 @@ pub(super) fn apply_hits(
             armour,
             mods,
         );
-        let dmg = engine::damage_on_target(raw, en.hp, en.max_hp, en.boss, h.effect);
+        let resistance =
+            expedition_defenses.resistances(en.def.level, en.boss, super::training::actor(en.def));
+        let raw = raw * (1.0 - resistance.reduction(tags));
+        let dmg = engine::damage_on_target(raw, en.hp, en.max_hp, en.boss, h.effect)
+            * (1.0 - final_reduction);
         if dmg > 0.0 {
             let immortal = super::training::dummy(&en);
             let effective = if immortal {
@@ -2564,6 +2834,14 @@ pub(super) fn apply_hits(
         let mut last_origin = Origin::Skill;
         let (max_hp, boss) = (en.max_hp, en.boss);
         let rooted = en.root_t > 0.0;
+        let resistance =
+            expedition_defenses.resistances(en.def.level, boss, super::training::actor(en.def));
+        let (armour, final_reduction) = expedition_defenses.defenses(
+            expedition_map,
+            en.def.level,
+            boss,
+            super::training::actor(en.def),
+        );
         for d in &mut en.dots {
             d.left -= dt;
             d.tick -= dt;
@@ -2596,7 +2874,9 @@ pub(super) fn apply_hits(
                         )
                     });
                 let amount =
-                    engine::on_hit::damage(tick_damage, remaining_hp, max_hp, boss, 0.0, mods);
+                    engine::on_hit::damage(tick_damage, remaining_hp, max_hp, boss, armour, mods)
+                        * (1.0 - resistance.reduction(tags))
+                        * (1.0 - final_reduction);
                 dealt += amount;
                 let effective = if immortal {
                     amount.max(0.0)

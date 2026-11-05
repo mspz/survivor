@@ -3,10 +3,10 @@
 version = 1
 
 [rarities]
-common = 40
-uncommon = 30
-epic = 20
-legendary =10
+common = 50
+uncommon = 40
+epic = 8
+legendary =2
 
 [spells]
 claw = 1

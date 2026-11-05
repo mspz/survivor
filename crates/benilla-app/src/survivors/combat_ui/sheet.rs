@@ -358,6 +358,9 @@ pub(super) fn spell_stats(run: &Run, index: usize) -> String {
     let p = run.resolve_spell(owned.def, owned.level);
     let tags = p.tags;
     let mut increased = run.stats().might - 1.0;
+    if tags.contains(Tags::DAMAGE) {
+        increased += run.stats().level_damage;
+    }
     let (mut more, mut recovery, mut speed, mut flat) = (1.0, 0.0, 0.0, 0.0);
     for modifier in run
         .spell_modifiers
@@ -469,6 +472,9 @@ pub(super) fn spell_stats(run: &Run, index: usize) -> String {
         if value > 0.0 {
             rows.push(format!("{label}: {:.1}%", value * 100.0));
         }
+    }
+    if let Some(buff) = super::super::healer_buffs::tooltip(run, owned.def, owned.level) {
+        rows.push(buff);
     }
     rows.join("\n")
 }

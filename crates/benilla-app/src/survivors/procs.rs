@@ -430,6 +430,8 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 | M::Titans
                 | M::Focus
                 | M::ArcaneFocus
+                | M::ArcaneCompanion
+                | M::ArcaneCascade
                 | M::Shatter
                 | M::SlowCast
                 | M::FeralGuard => continue,
@@ -471,6 +473,8 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 | M::Titans
                 | M::Focus
                 | M::ArcaneFocus
+                | M::ArcaneCompanion
+                | M::ArcaneCascade
                 | M::Shatter
                 | M::SlowCast
                 | M::FeralGuard
@@ -580,7 +584,7 @@ mod tests {
         assert_eq!(bleed.dot, 25.0);
         assert_eq!(bleed.duration, 6.0);
         assert_eq!(bleed.dmg, 0.0);
-        assert_eq!(interval(&run, "proc_taunt", 6.0), 3.0);
+        assert_eq!(interval(&run, "proc_taunt", 6.0), 3.0 * 1.2);
     }
     #[test]
     fn explosions_and_invocations_respect_area_projectile_chain_crit_and_flat_spell_bonuses() {
@@ -619,7 +623,7 @@ mod tests {
         );
         assert_eq!(
             resolve(&run, "proc_totem_bolt", 24.0, 0.0, 0.0, 0.0, 1).cooldown,
-            0.5
+            0.5 * 1.2
         );
     }
     #[test]

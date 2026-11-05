@@ -5,6 +5,7 @@
 //! off ([`crate::run_mode::CaptureMode`]).
 
 mod abilities;
+mod arcane_repeats;
 mod auto;
 mod balance;
 mod cards;
@@ -17,18 +18,24 @@ mod expedition_config;
 mod fill;
 mod forms;
 mod grade;
+mod healer_buffs;
 mod hero;
 mod hub_ground;
 mod hud;
 mod items;
+mod level_stats;
 mod menu;
 mod minimap;
+mod minor_talents;
 mod mobility;
 mod multiplayer;
 mod options;
 mod passives;
 mod procs;
 mod progression;
+mod ranged_enemies;
+mod resistances;
+mod revival;
 mod reward_config;
 mod server;
 mod session;

@@ -1,4 +1,4 @@
-//! Plain starting gear is separate from boss rolls and their mandatory affixes.
+//! Plain starting gear is separate from boss rolls and their rarity-based affix budgets.
 use super::*;
 
 pub(super) fn is_plain(item: &Item) -> bool {
@@ -51,6 +51,7 @@ impl Inventory {
             let id = save.next_id;
             save.next_id = id.checked_add(1).ok_or("Item identity exhausted")?;
             save.items.push(Item {
+                affix_rules: 0,
                 legendary: None,
                 base_damage: weapons::is_weapon(base.equipment_type)
                     .then(|| weapons::base_for(base.equipment_type, base.appearance)),
@@ -75,6 +76,7 @@ impl Inventory {
                 let id = save.next_id;
                 save.next_id = id.checked_add(1).ok_or("Item identity exhausted")?;
                 save.items.push(Item {
+                    affix_rules: 0,
                     legendary: None,
                     base_damage: None,
                     base_armour: Some(0.0),

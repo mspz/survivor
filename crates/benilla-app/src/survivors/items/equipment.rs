@@ -140,6 +140,14 @@ impl Effect {
 }
 
 impl Item {
+    /// Old saved rolls above the base cap remain readable, but cannot grant extra block.
+    pub fn intrinsic_block(&self) -> f32 {
+        if self.equipment_type == EquipmentType::Shield {
+            self.base_block.clamp(0.0, MAX_BASE_BLOCK)
+        } else {
+            0.0
+        }
+    }
     pub fn fits(&self, slot: SlotKind) -> bool {
         if self.equipment_type.one_handed() {
             matches!(slot, SlotKind::MainHand | SlotKind::OffHand)
@@ -358,6 +366,37 @@ mod tests {
         assert_eq!(inv.equipped("Off hand").unwrap().id, 1);
         assert_eq!(inv.equipped("Main hand").unwrap().id, 2);
     }
+    #[test]
+    fn old_shields_with_excessive_base_block_use_the_cap_in_combat_and_tooltips() {
+        use super::super::tests::{affix, item};
+        let mut old = item(
+            SlotKind::OffHand,
+            vec![affix(Effect::BlockChance, 0.05, AffixKind::Suffix, vec![])],
+        );
+        old.equipment_type = EquipmentType::Shield;
+        old.base_block = 1.0;
+        let mut replacement = old.clone();
+        replacement.base_block = 0.25;
+        let mut inv = Inventory::fixture(vec![old, replacement]);
+        inv.save = Inventory::decode(&toml::to_string(&inv.save).unwrap()).unwrap();
+        inv.equip(1, "Off hand").unwrap();
+        let mut run = Run::default();
+        inv.apply(&mut run);
+        assert!((run.equipment.block - 0.35).abs() < 0.0001);
+        assert!(inv
+            .item(1)
+            .unwrap()
+            .tooltip_lines(&inv)
+            .iter()
+            .any(|(line, _)| line == "30.0% Block chance"));
+        assert!(inv
+            .item(2)
+            .unwrap()
+            .comparison_lines(&inv)
+            .iter()
+            .any(|(line, _)| line == "-5.0% Block chance"));
+    }
+
     #[test]
     fn shield_base_and_secondary_block_stack_and_unequipping_removes_them() {
         let affix =

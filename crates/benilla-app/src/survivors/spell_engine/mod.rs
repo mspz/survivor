@@ -10,6 +10,8 @@ pub use tags::{Filter, Tags};
 
 pub const MAX_TARGETS: usize = 64;
 pub const RECAST_DELAY: f32 = 0.18;
+/// Slower player spell pacing, applied after rank, recovery, attack speed and the cooldown floor.
+pub const COOLDOWN_MULTIPLIER: f32 = 1.2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(
@@ -150,7 +152,11 @@ impl Modifiers {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PeriodicSnapshot { pub dps:f32,pub duration:f32,pub tags:Tags }
+pub struct PeriodicSnapshot {
+    pub dps: f32,
+    pub duration: f32,
+    pub tags: Tags,
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Resolved {
     pub direct_dot: Option<PeriodicSnapshot>,
@@ -219,6 +225,9 @@ pub(super) fn resolve_tagged(
     let level = level.max(1);
     let rank = f32::from(level - 1);
     let mut increased = finite(stats.might) - 1.0;
+    if tags.contains(Tags::DAMAGE) {
+        increased += finite(stats.level_damage);
+    }
     let (mut flat, mut more, mut dot_inc, mut dot_more) = (0.0, 1.0, 0.0, 1.0);
     if tags.contains(Tags::ATTACK) && def.damage > 0.0 {
         flat += finite(weapon_damage);
@@ -313,7 +322,8 @@ pub(super) fn resolve_tagged(
             * 0.93f32.powi(i32::from(level) - 1)
             * (1.0 - stats.haste).max(0.35))
             / ((1.0 + recovery).max(0.05) * (1.0 + attack_speed).max(0.05)))
-        .max(0.2),
+        .max(0.2)
+            * COOLDOWN_MULTIPLIER,
         range: def.range,
         crit: crit.clamp(0.0, 1.0),
         crit_multiplier: crit_multiplier.clamp(1.0, 1.0e6),
@@ -361,6 +371,11 @@ struct Repeat {
     ability: usize,
     due: f32,
     remaining: u64,
+    batches: std::collections::VecDeque<RepeatBatch>,
+}
+struct RepeatBatch {
+    remaining: u64,
+    next_ordinal: u64,
 }
 impl Recasts {
     pub fn schedule(&mut self, ability: usize, now: f32, count: u64) {
@@ -368,31 +383,53 @@ impl Recasts {
             return;
         }
         if let Some(job) = self.0.iter_mut().find(|job| job.ability == ability) {
-            job.remaining = job.remaining.saturating_add(count);
+            let accepted = count.min(u64::MAX - job.remaining);
+            if accepted > 0 {
+                job.batches.push_back(RepeatBatch {
+                    remaining: accepted,
+                    next_ordinal: 1,
+                });
+                job.remaining += accepted;
+            }
         } else {
             self.0.push(Repeat {
                 ability,
                 due: now + RECAST_DELAY,
                 remaining: count,
+                batches: std::collections::VecDeque::from([RepeatBatch {
+                    remaining: count,
+                    next_ordinal: 1,
+                }]),
             });
         }
     }
-    pub fn take_due(&mut self, ability: usize, now: f32) -> bool {
+    pub fn take_due_ordinal(&mut self, ability: usize, now: f32) -> Option<u64> {
         let Some(index) = self
             .0
             .iter()
             .position(|job| job.ability == ability && job.due <= now)
         else {
-            return false;
+            return None;
         };
         let job = &mut self.0[index];
+        let batch = job.batches.front_mut().expect("repeat job has a batch");
+        let ordinal = batch.next_ordinal;
+        batch.next_ordinal = batch.next_ordinal.saturating_add(1);
+        batch.remaining -= 1;
+        if batch.remaining == 0 {
+            job.batches.pop_front();
+        }
         job.remaining -= 1;
         if job.remaining == 0 {
             self.0.swap_remove(index);
         } else {
             job.due = now + RECAST_DELAY;
         }
-        true
+        Some(ordinal)
+    }
+    #[cfg(test)]
+    pub fn take_due(&mut self, ability: usize, now: f32) -> bool {
+        self.take_due_ordinal(ability, now).is_some()
     }
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -433,7 +470,7 @@ pub fn resolve_mobility(
     };
     ResolvedMobility {
         tags,
-        cooldown: (def.cooldown / (1.0 + recovery).max(0.05)).max(0.2),
+        cooldown: (def.cooldown / (1.0 + recovery).max(0.05)).max(0.2) * COOLDOWN_MULTIPLIER,
         duration: (def.secs * (1.0 + duration).max(0.0)).min(300.0),
         radius: ((base_radius + radius).max(0.0) * (1.0 + area).max(0.0).sqrt()).min(100.0),
     }

@@ -6,6 +6,9 @@ use benilla_dbc::{FieldType, Schema, SchemaField};
 use crate::dbc::{parse, u32_at};
 use crate::Chain;
 
+#[cfg(not(target_os = "macos"))]
+mod survivors_helm;
+
 const CHAR_HAIR_GEOSETS: &str = "DBFilesClient\\CharHairGeosets.dbc";
 const CHAR_FACIAL_HAIR: &str = "DBFilesClient\\CharacterFacialHairStyles.dbc";
 const HELMET_GEOSET_VIS: &str = "DBFilesClient\\HelmetGeosetVisData.dbc";
@@ -99,6 +102,10 @@ impl CharacterGeosets {
                 }
             }
         }
+        // Fork policy: every modeled helmet hides styled hair, even with an empty DBC mask.
+        #[cfg(not(target_os = "macos"))]
+        survivors_helm::hide_hair(&mut set, equip);
+
         // The equipment branches; `g(slot, sub)` is a non-zero geosetGroup, slots 0 shirt, 1 chest,
         // 2 belt, 3 pants, 4 boots, 5 wrist, 6 gloves, 7 tabard.
         let g = |slot: usize, sub: usize| {
@@ -562,10 +569,13 @@ mod tests {
             helmet_vis: cg.helmet_vis.clone(),
         };
         let set = cg2.visible_geosets(1, 1, 1, 1, &helm);
+        #[cfg(target_os = "macos")]
         assert!(
             set.contains(&5) && set.contains(&702),
             "row 245 hides nothing"
         );
+        #[cfg(not(target_os = "macos"))]
+        assert!(set.contains(&1) && !set.contains(&5) && set.contains(&702));
         // A mask covering only race 2 leaves a race-1 wearer styled.
         let mut helmet_vis = HashMap::new();
         helmet_vis.insert(300, [1u32 << 2; 5]);
@@ -579,7 +589,13 @@ mod tests {
             ..Default::default()
         };
         let set = cg3.visible_geosets(1, 1, 1, 1, &masked);
+        #[cfg(target_os = "macos")]
         assert!(set.contains(&5), "race bit miss → style kept");
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            set.contains(&1) && !set.contains(&5),
+            "helmet hides hair regardless of race mask"
+        );
     }
 
     /// A Human male's naked set, shipped rows: hairStyle 1 → geoset 2, facialHair 1 → 1/2/1.

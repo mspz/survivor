@@ -62,6 +62,9 @@ impl Tag {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Base {
+    /// Level variants share this family's drop weight and affix eligibility.
+    #[serde(default)]
+    pub tiers: Vec<BaseTier>,
     #[serde(default)]
     pub base_damage: Option<weapons::DamageRange>,
     #[serde(default)]
@@ -79,6 +82,54 @@ pub(super) struct Base {
     pub slot: SlotKind,
     pub icon: String,
     pub weight: f64,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BaseTier {
+    pub level: u32,
+    pub name: String,
+    pub icon: String,
+    pub appearance: Option<Appearance>,
+    pub base_damage: Option<weapons::DamageRange>,
+    pub base_armour: Option<f32>,
+}
+impl Base {
+    pub(super) fn tier(&self, level: u32) -> Option<&BaseTier> {
+        self.tiers
+            .iter()
+            .rev()
+            .find(|t| t.level <= level.clamp(1, MAX_ITEM_LEVEL))
+    }
+    fn damage_at(&self, level: u32) -> weapons::DamageRange {
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let tier = self.tier(level);
+        let damage = tier
+            .and_then(|t| t.base_damage)
+            .or(self.base_damage)
+            .unwrap_or_else(|| weapons::base_for(self.equipment_type, self.appearance));
+        let divisor = tier
+            .filter(|t| t.base_damage.is_some())
+            .map_or(1.0, |t| item_level::factor(t.level));
+        let factor = item_level::factor(level) / divisor;
+        weapons::DamageRange {
+            min: (damage.min * factor).round().min(1.0e6),
+            max: (damage.max * factor).round().min(1.0e6),
+        }
+    }
+    fn armour_at(&self, level: u32) -> f32 {
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let tier = self.tier(level);
+        let armour = tier
+            .and_then(|t| t.base_armour)
+            .or(self.base_armour)
+            .unwrap_or_else(|| armour::base_for(self.equipment_type, self.slot));
+        let divisor = tier
+            .filter(|t| t.base_armour.is_some())
+            .map_or(1.0, |t| item_level::factor(t.level));
+        (armour * item_level::factor(level) / divisor)
+            .round()
+            .min(1.0e6)
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -209,6 +260,7 @@ impl Config {
             if a.id.is_empty()
                 || a.name.is_empty()
                 || a.group.is_empty()
+                || a.kind != a.effect.affix_kind()
                 || !ids.insert(&a.id)
                 || a.slots.is_empty()
                 || !valid_weight(a.weight)
@@ -247,6 +299,31 @@ impl Config {
         }
         ids.clear();
         for b in &c.bases {
+            let mut previous = 1;
+            for tier in &b.tiers {
+                if tier.level <= previous
+                    || tier.level > MAX_ITEM_LEVEL
+                    || tier.name.is_empty()
+                    || tier.icon.is_empty()
+                    || tier.appearance.is_some_and(|a| {
+                        !a.valid_for(b.slot)
+                            || b.appearance.is_some_and(|base| {
+                                a.item_class != base.item_class
+                                    || a.subclass != base.subclass
+                                    || a.inventory_type != base.inventory_type
+                            })
+                    })
+                    || tier
+                        .base_damage
+                        .is_some_and(|d| !d.valid() || !weapons::is_weapon(b.equipment_type))
+                    || tier
+                        .base_armour
+                        .is_some_and(|a| !a.is_finite() || !(0.0..=1.0e6).contains(&a))
+                {
+                    return Err(format!("Invalid level tier {} for {}", tier.level, b.id));
+                }
+                previous = tier.level;
+            }
             if b.id.is_empty()
                 || b.name.is_empty()
                 || b.icon.is_empty()
@@ -258,11 +335,11 @@ impl Config {
                 || b.equipment_type == EquipmentType::Legacy
                 || !b.equipment_type.valid_slot(b.slot)
                 || !b.base_block.is_finite()
-                || !(0.0..=1.0).contains(&b.base_block)
+                || !(0.0..=MAX_BASE_BLOCK).contains(&b.base_block)
                 || b.base_block_max.is_some_and(|max| {
                     !max.is_finite()
                         || max < b.base_block
-                        || max > 1.0
+                        || max > MAX_BASE_BLOCK
                         || b.equipment_type != EquipmentType::Shield
                 })
                 || (b.equipment_type != EquipmentType::Shield && b.base_block != 0.0)
@@ -274,78 +351,38 @@ impl Config {
             if b.weight == 0.0 {
                 continue;
             }
-            // All enabled bases must be able to roll every enabled rarity without fallback.
-            let need = if c.rarities.epic > 0.0 || c.rarities.legendary > 0.0 {
-                2
+            // Enabled rarities must have enough distinct groups for both budgets, for every class.
+            let required = if c.rarities.epic > 0.0 || c.rarities.legendary > 0.0 {
+                3
             } else if c.rarities.magic > 0.0 {
-                1
+                2
             } else {
-                0
+                1
             };
-            let pool: Vec<_> = c
-                .affixes
-                .iter()
-                .filter(|a| a.weight > 0.0 && a.compatible_base(b))
-                .collect();
-            for primary in [true, false] {
-                let required = if primary {
-                    if c.rarities.epic > 0.0 || c.rarities.legendary > 0.0 {
-                        2
-                    } else {
-                        1
-                    }
-                } else {
-                    need
-                };
-                let count = pool
-                    .iter()
-                    .filter(|a| a.effect.primary() == primary)
-                    .map(|a| &a.group)
-                    .collect::<BTreeSet<_>>()
-                    .len();
-                if count < required
-                    || (primary
-                        && required == 2
-                        && !pool.iter().any(|a| {
-                            a.effect == Effect::Stamina
-                                && pool.iter().any(|b| {
-                                    b.effect.primary()
-                                        && b.effect != Effect::Stamina
-                                        && b.group != a.group
-                                })
-                        }))
-                {
-                    return Err(format!(
-                        "{} needs {required} compatible {} stat groups (two primary stats require stamina)",
-                        b.id, if primary { "primary" } else { "secondary" }
-                    ));
-                }
-            }
-            if pool.is_empty() {
-                return Err(format!("{} has no available affixes", b.id));
-            }
             for class in super::super::data::CLASSES
                 .iter()
                 .filter(|c| b.equipment_type.can_drop(c.id))
             {
-                if !pool.iter().any(|a| {
-                    a.effect.primary() && b.equipment_type.drop_primary_allowed(class.id, a.effect)
-                }) {
-                    return Err(format!(
-                        "{} has no compatible primary for {}",
-                        b.id, class.name
-                    ));
-                }
-                let offensive = pool.iter().any(|a| {
-                    a.effect.primary()
-                        && a.effect != Effect::Stamina
-                        && b.equipment_type.drop_primary_allowed(class.id, a.effect)
-                });
-                if (c.rarities.epic > 0.0 || c.rarities.legendary > 0.0) && !offensive {
-                    return Err(format!(
-                        "{} has no offensive primary for {}",
-                        b.id, class.name
-                    ));
+                for kind in [AffixKind::Prefix, AffixKind::Suffix] {
+                    let count = c
+                        .affixes
+                        .iter()
+                        .filter(|a| {
+                            a.weight > 0.0
+                                && a.kind == kind
+                                && a.compatible_base(b)
+                                && (!a.effect.primary()
+                                    || b.equipment_type.drop_primary_allowed(class.id, a.effect))
+                        })
+                        .map(|a| &a.group)
+                        .collect::<BTreeSet<_>>()
+                        .len();
+                    if count < required {
+                        return Err(format!(
+                            "{} needs {required} compatible {kind:?} groups for {}",
+                            b.id, class.name
+                        ));
+                    }
                 }
             }
         }
@@ -447,6 +484,7 @@ impl Config {
         magic_find: f32,
         rng: &mut Rng,
     ) -> Result<Item, String> {
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
         let class = super::super::data::CLASSES
             .iter()
             .find(|c| c.id == class_id)
@@ -496,21 +534,57 @@ impl Config {
             .collect();
         let base =
             &self.bases[weighted_index(&weights, rng.f32()).ok_or("No item base available")?];
+        let tier = base.tier(level);
         let mut affixes: Vec<Affix> = Vec::new();
-        for index in 0..rarity.count() {
-            let primary = index < rarity.primary_count();
-            let stamina = matches!(rarity, Rarity::Epic | Rarity::Legendary) && index == 0;
+        let (minimum, cap) = rarity.affix_limits();
+        let available = |kind| {
+            self.affixes
+                .iter()
+                .filter(|a| {
+                    a.weight > 0.0
+                        && a.kind == kind
+                        && a.compatible_base(base)
+                        && (!a.effect.primary()
+                            || base.equipment_type.drop_primary_allowed(class_id, a.effect))
+                })
+                .map(|a| &a.group)
+                .collect::<BTreeSet<_>>()
+                .len()
+                .min(cap)
+        };
+        let prefixes = available(AffixKind::Prefix);
+        let suffixes = available(AffixKind::Suffix);
+        let maximum = (prefixes + suffixes).min(cap * 2);
+        if maximum < minimum {
+            return Err("Not enough compatible prefix/suffix groups".into());
+        }
+        let total = minimum + rng.index(maximum - minimum + 1);
+        let allocations: Vec<_> = (0..=prefixes)
+            .filter(|&p| p <= total && total - p <= suffixes)
+            .collect();
+        if allocations.is_empty() {
+            return Err("Not enough compatible prefix/suffix groups".into());
+        }
+        let prefix_count = allocations[rng.index(allocations.len())];
+        for index in 0..total {
+            let kind = if index < prefix_count {
+                AffixKind::Prefix
+            } else {
+                AffixKind::Suffix
+            };
             let pool: Vec<_> = self
                 .affixes
                 .iter()
                 .filter(|a| {
-                    a.compatible_base(base)
-                        && a.effect.primary() == primary
-                        && (!primary
+                    a.weight > 0.0
+                        && a.kind == kind
+                        && a.compatible_base(base)
+                        && (!a.effect.primary()
                             || base.equipment_type.drop_primary_allowed(class_id, a.effect))
-                        && (!stamina || a.effect == Effect::Stamina)
-                        && (!primary || !affixes.iter().any(|rolled| rolled.effect == a.effect))
-                        && !affixes.iter().any(|rolled| rolled.group == a.group)
+                        && !affixes.iter().any(|rolled| {
+                            rolled.group == a.group
+                                || a.effect.primary() && rolled.effect == a.effect
+                        })
                 })
                 .collect();
             let weights: Vec<_> = pool.iter().map(|a| a.weight).collect();
@@ -560,42 +634,37 @@ impl Config {
             .iter()
             .find(|a| a.kind == AffixKind::Suffix)
             .map(|a| a.name.as_str());
-        let name = [prefix, Some(base.name.as_str()), suffix]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let name = [
+            prefix,
+            Some(tier.map_or(base.name.as_str(), |t| t.name.as_str())),
+            suffix,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
         Ok(Item {
+            affix_rules: 1,
             legendary: unique.map(|d| legendary::Roll {
                 unique: d.id,
                 milestone: (d.id == 301).then(|| rng.index(81) as u8),
             }),
-            base_damage: weapons::is_weapon(base.equipment_type).then(|| {
-                base.base_damage
-                    .unwrap_or_else(|| weapons::base_for(base.equipment_type, base.appearance))
-                    .scaled(level)
-            }),
-            base_armour: Some(armour::scaled_base(
-                base.base_armour
-                    .unwrap_or_else(|| armour::base_for(base.equipment_type, base.slot)),
-                level,
-            )),
-            appearance: base.appearance,
+            base_damage: weapons::is_weapon(base.equipment_type).then(|| base.damage_at(level)),
+            base_armour: Some(base.armour_at(level)),
+            appearance: tier.and_then(|t| t.appearance).or(base.appearance),
             equipment_type: base.equipment_type,
-            base_block: item_level::scale(
-                Effect::BlockChance,
-                base.base_block_max.map_or(base.base_block, |max| {
-                    let max = item_level::roll_max(Effect::BlockChance, max, rarity);
+            base_block: base
+                .base_block_max
+                .map_or(base.base_block, |max| {
                     (rng.range(base.base_block, max) * 1000.0).round() / 1000.0
-                }),
-                level,
-            ),
+                })
+                .min(MAX_BASE_BLOCK),
             loot_class: Some(class_id),
             id: 0,
             base: base.id.clone(),
             name: unique.map_or(name, |d| d.name.to_owned()),
             slot: base.slot,
-            icon: base.icon.clone(),
+            icon: tier.map_or(&base.icon, |t| &t.icon).clone(),
             rarity,
             level: level.max(1),
             affixes,
@@ -621,6 +690,7 @@ impl Config {
                     .iter()
                     .find(|b| b.slot == item.slot && b.equipment_type.can_drop(class))
             })?;
+        // Missing saved metadata predates variants; keep those items' original family look.
         Some((base.appearance?, base.icon.as_str()))
     }
     fn split_legacy(text: &str) -> Result<(String, String), String> {
@@ -702,6 +772,391 @@ impl Config {
 mod tests {
     use super::*;
     #[test]
+    fn level_bases_keep_all_twenty_one_variants_between_one_and_sixty_without_double_scaling() {
+        let config = Config::builtin();
+        for base in &config.bases {
+            if matches!(base.slot, SlotKind::Shirt | SlotKind::Tabard) {
+                continue;
+            }
+            assert_eq!(
+                base.tiers.iter().map(|t| t.level).collect::<Vec<_>>(),
+                (3..=60).step_by(3).collect::<Vec<_>>(),
+                "{}",
+                base.id
+            );
+            let mut last_armour = base.armour_at(1);
+            let mut last_damage = base.damage_at(1);
+            for level in 1..=105 {
+                let tier = base.tier(level);
+                let expected_level = (level.min(60) / 3) * 3;
+                assert_eq!(tier.map_or(0, |t| t.level), expected_level);
+                let armour = base.armour_at(level);
+                let damage = base.damage_at(level);
+                assert!(
+                    armour >= last_armour
+                        && damage.min >= last_damage.min
+                        && damage.max >= last_damage.max,
+                    "{} level {level}",
+                    base.id
+                );
+                if let Some(tier) = tier.filter(|t| t.level == level) {
+                    if let Some(value) = tier.base_armour {
+                        assert_eq!(
+                            armour,
+                            value.round(),
+                            "{} tier armour must not scale twice",
+                            base.id
+                        );
+                    }
+                    if let Some(value) = tier.base_damage {
+                        assert_eq!(damage.min, value.min.round());
+                        assert_eq!(damage.max, value.max.round());
+                    }
+                }
+                if level > 60 {
+                    assert_eq!(armour, base.armour_at(60));
+                    assert_eq!(damage, base.damage_at(60));
+                }
+                last_armour = armour;
+                last_damage = damage;
+            }
+            if matches!(
+                base.slot,
+                SlotKind::Ring | SlotKind::Neck | SlotKind::Trinket
+            ) {
+                let icons: BTreeSet<_> = std::iter::once(&base.icon)
+                    .chain(base.tiers.iter().map(|t| &t.icon))
+                    .collect();
+                assert_eq!(icons.len(), 21, "{} needs distinct tier icons", base.id);
+            }
+        }
+    }
+    #[test]
+    fn generated_level_variants_keep_their_saved_stats_and_appearance() {
+        let config = Config::builtin();
+        let mut rng = Rng(741);
+        for level in [0, 1, 2, 3, 5, 6, 9, 10, 57, 59, 60, 61, 95, 100, 105] {
+            for _ in 0..80 {
+                let item = config.generate_for_target(level, 1, &mut rng).unwrap();
+                assert_eq!(item.level, level.clamp(1, 60));
+                let base = config.bases.iter().find(|b| b.id == item.base).unwrap();
+                let tier = base.tier(level);
+                assert_eq!(item.icon, tier.map_or(&base.icon, |t| &t.icon).as_str());
+                assert_eq!(
+                    item.appearance,
+                    tier.and_then(|t| t.appearance).or(base.appearance)
+                );
+                assert_eq!(item.base_armour, Some(base.armour_at(level)));
+                let encoded = toml::to_string(&item).unwrap();
+                let saved: Item = toml::from_str(&encoded).unwrap();
+                assert_eq!(saved.appearance, item.appearance);
+                assert_eq!(saved.base_armour, item.base_armour);
+                assert_eq!(saved.base_damage, item.base_damage);
+                assert_eq!(saved.icon, item.icon);
+            }
+        }
+    }
+    #[test]
+    fn malformed_level_variants_are_rejected() {
+        for invalid in [0, 1, 61, 101] {
+            let mut config = Config::builtin();
+            config.bases[0].tiers[0].level = invalid;
+            assert!(config.validate().is_err());
+        }
+        let mut config = Config::builtin();
+        config.bases[0].tiers[1].level = 3;
+        assert!(config.validate().is_err());
+        let mut config = Config::builtin();
+        config.bases[0].tiers[0].base_armour = Some(f32::NAN);
+        assert!(config.validate().is_err());
+    }
+    #[test]
+    fn shield_base_block_stays_below_thirty_percent_and_block_affixes_can_roll() {
+        let mut c = Config::builtin();
+        let block = c
+            .affixes
+            .iter()
+            .find(|a| a.effect == Effect::BlockChance)
+            .unwrap();
+        assert_eq!(block.kind, AffixKind::Suffix);
+        assert!(block.weight > 0.0);
+        for base in &c.bases {
+            if base.equipment_type != EquipmentType::Shield {
+                assert!(!block.compatible_base(base));
+            }
+        }
+        for base in &mut c.bases {
+            base.weight = if base.equipment_type == EquipmentType::Shield {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let mut rng = Rng(310);
+        let mut rolled_block_affix = false;
+        for rarity in [
+            Rarity::Normal,
+            Rarity::Magic,
+            Rarity::Epic,
+            Rarity::Legendary,
+        ] {
+            c.rarities = RarityWeights {
+                normal: if rarity == Rarity::Normal { 1.0 } else { 0.0 },
+                magic: if rarity == Rarity::Magic { 1.0 } else { 0.0 },
+                epic: if rarity == Rarity::Epic { 1.0 } else { 0.0 },
+                legendary: if rarity == Rarity::Legendary {
+                    1.0
+                } else {
+                    0.0
+                },
+            };
+            for level in [1, 60, 100] {
+                for _ in 0..50 {
+                    let item = c.generate_for_target(level, 1, &mut rng).unwrap();
+                    assert_eq!(item.rarity, rarity);
+                    assert!((0.25..=MAX_BASE_BLOCK).contains(&item.base_block));
+                    rolled_block_affix |=
+                        item.affixes.iter().any(|a| a.effect == Effect::BlockChance);
+                    let inventory = Inventory::fixture(vec![item]);
+                    Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+                }
+            }
+        }
+        assert!(rolled_block_affix);
+        assert!(Config::parse(
+            &DEFAULT_FILE.replace("base_block_max = 0.30", "base_block_max = 0.31")
+        )
+        .is_err());
+    }
+    #[test]
+    fn common_stats_and_resistances_are_frequent_without_dominating_suffix_rolls() {
+        let mut c = Config::builtin();
+        let all = c
+            .affixes
+            .iter()
+            .find(|a| a.effect == Effect::AllResistance)
+            .unwrap();
+        assert_eq!(all.kind, AffixKind::Suffix);
+        for a in c
+            .affixes
+            .iter()
+            .filter(|a| a.effect.resistance() && a.effect != Effect::AllResistance)
+        {
+            assert_eq!(all.min * 2.0, a.min);
+            assert_eq!(all.max * 2.0, a.max);
+            assert!(all.weight < a.weight);
+        }
+        for kind in [AffixKind::Prefix, AffixKind::Suffix] {
+            let weights: Vec<_> = c
+                .affixes
+                .iter()
+                .filter(|a| a.kind == kind && a.weight > 0.0)
+                .map(|a| a.weight)
+                .collect();
+            let min = weights.iter().copied().fold(f64::INFINITY, f64::min);
+            let max = weights.iter().copied().fold(0.0, f64::max);
+            assert!(
+                max <= min * 3.0,
+                "{kind:?}: weights {min}..{max} exceed 3:1"
+            );
+        }
+        let single_weight = c
+            .affixes
+            .iter()
+            .find(|a| a.effect == Effect::FireResistance)
+            .unwrap()
+            .weight;
+        for a in c.affixes.iter().filter(|a| a.effect.primary()) {
+            assert!(a.weight >= single_weight);
+        }
+        for base in &mut c.bases {
+            base.weight = if base.id == "ring" { 1.0 } else { 0.0 };
+        }
+        c.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 1.0,
+            epic: 0.0,
+            legendary: 0.0,
+        };
+        let mut rng = Rng(7711);
+        let (mut common, mut total, mut all_count) = (0, 0, 0);
+        let mut counts = BTreeMap::<String, usize>::new();
+        for _ in 0..5000 {
+            let item = c.generate_for_target(20, 1, &mut rng).unwrap();
+            for a in item.affixes.iter().filter(|a| a.kind == AffixKind::Suffix) {
+                total += 1;
+                *counts.entry(a.id.clone()).or_default() += 1;
+                if a.effect == Effect::AllResistance {
+                    all_count += 1;
+                } else if a.effect.primary() || a.effect.resistance() {
+                    common += 1;
+                }
+            }
+        }
+        assert!(
+            common * 100 > total * 40 && common * 100 < total * 70,
+            "{common}/{total} suffixes were common"
+        );
+        let largest = counts.values().copied().max().unwrap();
+        assert!(
+            largest * 100 < total * 10,
+            "A single suffix occupied {largest}/{total} rolls"
+        );
+        assert!(all_count > 0);
+        for id in [
+            "stamina",
+            "strength",
+            "fire_resistance",
+            "cold_resistance",
+            "lightning_resistance",
+            "nature_resistance",
+            "arcane_resistance",
+            "holy_resistance",
+            "shadow_resistance",
+        ] {
+            assert!(
+                counts[id] * 2 > all_count * 3,
+                "{id}: {} vs all: {all_count}",
+                counts[id]
+            );
+        }
+    }
+
+    #[test]
+    fn all_resistance_rolls_save_stack_and_protect_every_element_but_not_physical() {
+        use super::super::super::{hero, Run};
+        use super::super::tests::{affix, item};
+        let mut c = Config::builtin();
+        for base in &mut c.bases {
+            base.weight = if base.id == "ring" { 1.0 } else { 0.0 };
+        }
+        for a in &mut c.affixes {
+            if a.kind == AffixKind::Suffix && a.effect != Effect::AllResistance {
+                a.weight = 0.0;
+            }
+        }
+        c.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 1.0,
+            epic: 0.0,
+            legendary: 0.0,
+        };
+        let mut rng = Rng(572);
+        let rolled = (0..100)
+            .map(|_| c.generate_for_target(60, 1, &mut rng).unwrap())
+            .find(|item| {
+                item.affixes
+                    .iter()
+                    .any(|a| a.effect == Effect::AllResistance)
+            })
+            .unwrap();
+        let value = rolled
+            .affixes
+            .iter()
+            .find(|a| a.effect == Effect::AllResistance)
+            .unwrap()
+            .value;
+        let fire = item(
+            SlotKind::Ring,
+            vec![affix(
+                Effect::FireResistance,
+                80.0,
+                AffixKind::Suffix,
+                vec![],
+            )],
+        );
+        let mut inv = Inventory::fixture(vec![rolled, fire]);
+        inv.equip(1, "Ring 1").unwrap();
+        inv.equip(2, "Ring 2").unwrap();
+        inv.save = Inventory::decode(&toml::to_string(&inv.save).unwrap()).unwrap();
+        let mut run = Run::default();
+        inv.apply(&mut run);
+        for (tag, _, percent) in run.stats().resistances.entries() {
+            let expected = if tag == Tags::FIRE {
+                value + 80.0
+            } else {
+                value
+            };
+            assert_eq!(percent, expected);
+            let damage = hero::hurt_hero_tagged(&mut run, 100.0, tag | Tags::DOT);
+            assert!((damage - 100.0 * (1.0 - expected.min(75.0) / 100.0)).abs() < 0.001);
+        }
+        assert_eq!(
+            hero::hurt_hero_tagged(&mut run, 100.0, Tags::PHYSICAL),
+            100.0
+        );
+        inv.unequip("Ring 1").unwrap();
+        inv.apply(&mut run);
+        assert_eq!(run.stats().resistances.fire, 80.0);
+        assert_eq!(run.stats().resistances.shadow, 0.0);
+    }
+    #[test]
+    fn prefix_suffix_counts_cover_every_rarity_range_and_survive_saving() {
+        let mut c = Config::builtin();
+        let mut rng = Rng(922);
+        for rarity in [
+            Rarity::Normal,
+            Rarity::Magic,
+            Rarity::Epic,
+            Rarity::Legendary,
+        ] {
+            c.rarities = RarityWeights {
+                normal: if rarity == Rarity::Normal { 1.0 } else { 0.0 },
+                magic: if rarity == Rarity::Magic { 1.0 } else { 0.0 },
+                epic: if rarity == Rarity::Epic { 1.0 } else { 0.0 },
+                legendary: if rarity == Rarity::Legendary {
+                    1.0
+                } else {
+                    0.0
+                },
+            };
+            let (minimum, cap) = rarity.affix_limits();
+            let mut totals = BTreeSet::new();
+            for _ in 0..200 {
+                let item = c.generate_for_target(60, 1, &mut rng).unwrap();
+                totals.insert(item.affixes.len());
+                assert_eq!(item.affix_rules, 1);
+                for kind in [AffixKind::Prefix, AffixKind::Suffix] {
+                    assert!(item.affixes.iter().filter(|a| a.kind == kind).count() <= cap);
+                }
+                let inventory = Inventory::fixture(vec![item]);
+                let text = toml::to_string(&inventory.save).unwrap();
+                Inventory::decode(&text).unwrap();
+            }
+            assert_eq!(totals, (minimum..=cap * 2).collect());
+        }
+    }
+
+    #[test]
+    fn new_allocations_reject_overflow_and_legacy_items_keep_their_rolls() {
+        use super::super::tests::{affix, item};
+        let mut rolled = item(
+            SlotKind::Chest,
+            vec![
+                affix(Effect::Damage, 0.1, AffixKind::Prefix, vec![]),
+                affix(Effect::CritChance, 0.1, AffixKind::Prefix, vec![]),
+            ],
+        );
+        rolled.affix_rules = 1;
+        rolled.rarity = Rarity::Normal;
+        let inventory = Inventory::fixture(vec![rolled.clone()]);
+        assert!(Inventory::decode(&toml::to_string(&inventory.save).unwrap()).is_err());
+        rolled.rarity = Rarity::Magic;
+        let inventory = Inventory::fixture(vec![rolled]);
+        assert!(Inventory::decode(&toml::to_string(&inventory.save).unwrap()).is_ok());
+        let old = item(
+            SlotKind::Chest,
+            vec![affix(Effect::Stamina, 12.0, AffixKind::Prefix, vec![])],
+        );
+        let inventory = Inventory::fixture(vec![old]);
+        let text = toml::to_string(&inventory.save)
+            .unwrap()
+            .replace("affix_rules = 0\n", "");
+        let saved = Inventory::decode(&text).unwrap();
+        assert_eq!(saved.items[0].affixes[0].value, 12.0);
+        assert_eq!(saved.items[0].affixes[0].kind, AffixKind::Prefix);
+    }
+    #[test]
     fn saved_uniques_load_the_current_english_name_without_changing_their_roll() {
         let mut config = Config::builtin();
         config.rarities = RarityWeights {
@@ -748,11 +1203,8 @@ mod tests {
             for _ in 0..50 {
                 let item = config.roll_for_target(60, class.id, 0.0, &mut rng).unwrap();
                 assert_eq!(item.rarity, Rarity::Legendary);
-                assert_eq!(item.affixes.len(), 4);
-                assert_eq!(
-                    item.affixes.iter().filter(|a| a.effect.primary()).count(),
-                    2
-                );
+                assert!((4..=6).contains(&item.affixes.len()));
+                assert!(item.affixes.iter().filter(|a| a.effect.primary()).count() <= 3);
                 let roll = item.legendary.as_ref().unwrap().clone();
                 assert!(legendary::eligible(roll.unique, class.id));
                 seen.insert(roll.unique);
@@ -761,7 +1213,7 @@ mod tests {
                 let decoded = Inventory::decode(&text).unwrap();
                 assert_eq!(decoded.items[0].legendary.as_ref(), Some(&roll));
                 assert_eq!(decoded.items[0].level, 60);
-                assert_eq!(decoded.items[0].affixes.len(), 4);
+                assert!((4..=6).contains(&decoded.items[0].affixes.len()));
             }
         }
         assert!(seen.len() > 80);
@@ -917,13 +1369,8 @@ mod tests {
                         _ => {}
                     }
                 }
-                if item.rarity == Rarity::Epic {
-                    assert!(item.affixes.iter().any(|a| a.effect == Effect::Stamina));
-                }
                 if item.equipment_type == EquipmentType::Shield {
-                    let scale = item_level::factor(item.level);
-                    let max = item_level::roll_max(Effect::BlockChance, 0.40, item.rarity);
-                    assert!((0.25 * scale..=(max * scale).min(1.0)).contains(&item.base_block));
+                    assert!((0.25..=MAX_BASE_BLOCK).contains(&item.base_block));
                 }
                 assert!(item.valid_equipment());
             }
@@ -982,15 +1429,18 @@ mod tests {
                 for _ in 0..100 {
                     let item = config.generate_for_target(20, class, &mut rng).unwrap();
                     assert_eq!(item.base, id);
-                    assert_eq!(item.affixes[0].effect, Effect::Stamina);
-                    match item.affixes[1].effect {
-                        Effect::Intelligence => {
-                            assert!([2, 7].contains(&class));
-                            intelligence += 1;
-                        }
-                        effect => {
-                            assert_eq!(effect, attack);
-                            attacks += 1;
+                    for affix in item.affixes.iter().filter(|a| a.effect.primary()) {
+                        assert_eq!(affix.kind, AffixKind::Suffix);
+                        match affix.effect {
+                            Effect::Stamina => {}
+                            Effect::Intelligence => {
+                                assert!([2, 7].contains(&class));
+                                intelligence += 1;
+                            }
+                            effect => {
+                                assert_eq!(effect, attack);
+                                attacks += 1;
+                            }
                         }
                     }
                     assert!(item.valid_equipment());
@@ -1047,6 +1497,93 @@ mod tests {
         }
     }
     #[test]
+    fn elemental_resistances_stack_from_equipment_and_cap_after_summing() {
+        use super::super::super::{hero, Run};
+        use super::super::tests::{affix, item};
+        let resistance = |value| {
+            item(
+                SlotKind::Ring,
+                vec![affix(
+                    Effect::FireResistance,
+                    value,
+                    AffixKind::Prefix,
+                    vec![],
+                )],
+            )
+        };
+        let mut inventory = Inventory::fixture(vec![resistance(20.0), resistance(70.0)]);
+        inventory.equip(1, "Ring 1").unwrap();
+        inventory.equip(2, "Ring 2").unwrap();
+        let saved = toml::to_string(&inventory.save).unwrap();
+        inventory.save = Inventory::decode(&saved).unwrap();
+        let mut run = Run::default();
+        inventory.apply(&mut run);
+        assert_eq!(run.stats().resistances.fire, 90.0);
+        assert_eq!(
+            hero::hurt_hero_tagged(&mut run, 100.0, Tags::FIRE | Tags::DOT),
+            25.0
+        );
+        inventory.unequip("Ring 2").unwrap();
+        inventory.apply(&mut run);
+        assert_eq!(run.stats().resistances.fire, 20.0);
+        assert_eq!(hero::hurt_hero_tagged(&mut run, 100.0, Tags::FIRE), 80.0);
+    }
+
+    #[test]
+    fn elemental_resistances_roll_equip_roundtrip_and_unequip() {
+        use super::super::super::Run;
+        for effect in [
+            Effect::FireResistance,
+            Effect::ColdResistance,
+            Effect::LightningResistance,
+            Effect::NatureResistance,
+            Effect::ArcaneResistance,
+            Effect::HolyResistance,
+            Effect::ShadowResistance,
+        ] {
+            let mut c = Config::builtin();
+            for base in &mut c.bases {
+                base.weight = if base.id == "ring" { 1.0 } else { 0.0 };
+            }
+            for a in &mut c.affixes {
+                a.weight = if a.effect == Effect::Stamina || a.effect == effect {
+                    1.0
+                } else {
+                    0.0
+                };
+            }
+            c.rarities = RarityWeights {
+                normal: 0.0,
+                magic: 1.0,
+                epic: 0.0,
+                legendary: 0.0,
+            };
+            let item = c.generate(60, &mut Rng(123)).unwrap();
+            let a = item.affixes.iter().find(|a| a.effect == effect).unwrap();
+            let value = a.value;
+            assert!(value > 0.0 && value.fract() == 0.0);
+            assert!(a.description().contains("resistance"));
+            assert!(a.description().contains('%'));
+            let mut inventory = Inventory::fixture(vec![item]);
+            inventory.equip(1, "Ring 1").unwrap();
+            let saved = toml::to_string(&inventory.save).unwrap();
+            inventory.save = Inventory::decode(&saved).unwrap();
+            let mut run = Run::default();
+            inventory.apply(&mut run);
+            let entries = run.stats().resistances.entries();
+            assert_eq!(entries.iter().map(|(_, _, v)| v).sum::<f32>(), value);
+            inventory.unequip("Ring 1").unwrap();
+            inventory.apply(&mut run);
+            assert!(run
+                .stats()
+                .resistances
+                .entries()
+                .iter()
+                .all(|(_, _, v)| *v == 0.0));
+        }
+    }
+
+    #[test]
     fn new_effects_have_configured_pools_and_jewellery_proc_restrictions_are_enforced() {
         let c = Config::builtin();
         for id in [
@@ -1086,7 +1623,7 @@ mod tests {
         assert!(Config::parse(&DEFAULT_FILE.replace("duration = 5", "duration = 0")).is_err());
     }
     #[test]
-    fn rolls_obey_primary_secondary_counts_ranges_and_item_restrictions() {
+    fn rolls_obey_prefix_suffix_budgets_ranges_and_item_restrictions() {
         let mut config = Config::builtin();
         config.rarities.legendary = 0.0;
         let mut rng = Rng(42);
@@ -1099,10 +1636,12 @@ mod tests {
                 Rarity::Epic => 2,
                 Rarity::Legendary => panic!("legendary is disabled"),
             }] += 1;
-            assert_eq!(item.affixes.len(), item.rarity.count());
-            if item.rarity == Rarity::Normal {
-                assert!(item.affixes[0].effect.primary());
+            let (minimum, cap) = item.rarity.affix_limits();
+            assert!((minimum..=cap * 2).contains(&item.affixes.len()));
+            for kind in [AffixKind::Prefix, AffixKind::Suffix] {
+                assert!(item.affixes.iter().filter(|a| a.kind == kind).count() <= cap);
             }
+            assert!(item.affixes.iter().all(|a| a.kind == a.effect.affix_kind()));
             assert!(item
                 .affixes
                 .iter()
@@ -1124,19 +1663,6 @@ mod tests {
                 if matches!(a.effect, Effect::AttackSpeed | Effect::FlatDamage) {
                     assert!(item.slot.weapon())
                 }
-            }
-            if item.rarity == Rarity::Magic {
-                assert_eq!(
-                    item.affixes.iter().filter(|a| a.effect.primary()).count(),
-                    1
-                );
-            }
-            if item.rarity == Rarity::Epic {
-                assert_eq!(
-                    item.affixes.iter().filter(|a| a.effect.primary()).count(),
-                    2
-                );
-                assert!(item.affixes.iter().any(|a| a.effect == Effect::Stamina));
             }
             if counts.iter().sum::<u32>() <= 50 {
                 let inventory = Inventory::fixture(vec![item]);
@@ -1167,10 +1693,9 @@ mod tests {
             &DEFAULT_FILE.replace("effect = \"stamina\"", "effect = \"flat_damage\"")
         )
         .is_err());
-        assert!(Config::parse(
-            &DEFAULT_FILE.replace("effect = \"stamina\"", "effect = \"strength\"")
-        )
-        .is_err());
+        assert!(
+            Config::parse(&DEFAULT_FILE.replace("kind = \"suffix\"", "kind = \"prefix\"")).is_err()
+        );
         assert!(Config::parse(&DEFAULT_FILE.replace("max = 40", "max = -1")).is_err());
     }
     #[test]

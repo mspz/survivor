@@ -39,19 +39,20 @@ pub(super) struct Enemy {
 
 #[derive(Component)]
 pub(super) struct ExpeditionScaling {
-    health: f32,
     damage: f32,
 }
 
-pub(super) fn scale_enemies(run: Res<Run>, mut enemies: Query<(&mut Enemy, &ExpeditionScaling)>) {
+pub(super) fn scale_enemies(
+    mut run: ResMut<Run>,
+    players: Option<Res<super::multiplayer::Companions>>,
+    mut enemies: Query<(&mut Enemy, &ExpeditionScaling)>,
+) {
+    run.expedition_players = players.as_ref().map_or(1, |p| p.0.len().saturating_add(1));
     let factor = run.expeditions.factor(run.elapsed);
     for (mut enemy, base) in &mut enemies {
         if enemy.dead {
             continue;
         }
-        let max_hp = base.health * factor;
-        enemy.hp *= max_hp / enemy.max_hp;
-        enemy.max_hp = max_hp;
         enemy.damage = base.damage * factor;
     }
 }
@@ -162,7 +163,12 @@ pub(super) fn spawn_enemy(
         pos,
         yaw_toward(hero - pos),
     );
-    let hp = base_health * scale;
+    let party = if training {
+        1.0
+    } else {
+        run.expeditions.party_health(run.expedition_players)
+    };
+    let hp = base_health * scale * party;
     commands.entity(e).insert((
         Enemy {
             def,
@@ -188,7 +194,6 @@ pub(super) fn spawn_enemy(
     ));
     if !training {
         commands.entity(e).insert(ExpeditionScaling {
-            health: base_health,
             damage: base_damage,
         });
     }
@@ -232,6 +237,7 @@ pub(super) fn spawn_enemies(
         h.translation
     };
     let elapsed = run.elapsed;
+    run.expedition_players = players.as_ref().map_or(1, |p| p.0.len().saturating_add(1));
     run.expedition_map = selection.map;
     let zone = run.expeditions.zone(selection.map);
     let roster = data::roster(selection.map);
@@ -272,7 +278,7 @@ pub(super) fn spawn_enemies(
                 hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 26.0,
                 hpos.y,
             );
-            spawn_enemy(&mut commands, &mut run, def, pos, hpos, false);
+            super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, pos, hpos);
         }
         run.banner = Some(("They're surrounding you!".into(), 3.0));
     }
@@ -293,7 +299,7 @@ pub(super) fn spawn_enemies(
         let a = rng.range(0.0, std::f32::consts::TAU);
         let r = rng.range(34.0, 42.0);
         let pos = ground(&world, hpos + Vec3::new(a.cos(), 0.0, a.sin()) * r, hpos.y);
-        spawn_enemy(&mut commands, &mut run, def, pos, hpos, false);
+        super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, pos, hpos);
     }
 }
 
@@ -314,6 +320,7 @@ pub(super) fn move_enemies(
             &mut Enemy,
             &mut MovementState,
             Option<&super::talent_runtime::Taunted>,
+            Option<&super::ranged_enemies::Caster>,
         ),
         Without<Hero>,
     >,
@@ -322,6 +329,8 @@ pub(super) fn move_enemies(
     mut companions: Option<ResMut<super::multiplayer::Companions>>,
     remotes: Query<(Entity, &Transform, &super::multiplayer::RemoteOwner), Without<Enemy>>,
     practice: Query<&super::training::Target>,
+    mut missiles: Local<super::ranged_enemies::Pending>,
+    spells: Option<Res<crate::ui_action::Spells>>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -331,13 +340,27 @@ pub(super) fn move_enemies(
         return;
     };
     let hpos = htf.translation;
+    for missile in missiles.advance(run.elapsed, dt) {
+        if let Some(owner) = missile.owner {
+            if remotes
+                .get(missile.target)
+                .is_ok_and(|(_, _, id)| id.0 == owner)
+            {
+                if let Some(player) = companions.as_deref_mut().and_then(|p| p.0.get_mut(&owner)) {
+                    super::ranged_enemies::impact(missile, &mut player.run, &mut fx);
+                }
+            }
+        } else if missile.target == hero_e {
+            super::ranged_enemies::impact(missile, &mut run, &mut fx);
+        }
+    }
 
     // Separation over a coarse grid: only neighbours in the same or adjacent cells push.
     const CELL: f32 = 3.0;
     let bodies: Vec<(Entity, Vec3, f32)> = enemies
         .iter()
-        .filter(|(_, _, e, _, _)| !e.dead)
-        .map(|(ent, tf, e, _, _)| (ent, tf.translation, e.radius))
+        .filter(|(_, _, e, _, _, _)| !e.dead)
+        .map(|(ent, tf, e, _, _, _)| (ent, tf.translation, e.radius))
         .collect();
     let key = |p: Vec3| ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
     let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
@@ -372,7 +395,7 @@ pub(super) fn move_enemies(
         push.insert(ent, acc);
     }
 
-    for (ent, mut tf, mut e, mut mv, taunt) in &mut enemies {
+    for (ent, mut tf, mut e, mut mv, taunt, caster) in &mut enemies {
         let e = &mut *e;
         if e.dead {
             if mv.speed != 0.0 || mv.flags != 0 {
@@ -476,7 +499,7 @@ pub(super) fn move_enemies(
             } else {
                 to_hero.normalize_or_zero()
             };
-            if !contact || e.fear_t > 0.0 {
+            if caster.map_or(!contact, |c| dist > c.stand_off) || e.fear_t > 0.0 {
                 speed = e.speed * e.slow;
                 step = dir * speed;
             }
@@ -497,7 +520,27 @@ pub(super) fn move_enemies(
             mv.flags = 0;
         }
 
-        if contact
+        if let Some(caster) = caster.filter(|caster| dist <= caster.range) {
+            if !lost && e.stun_t <= 0.0 && e.fear_t <= 0.0 && e.attack_cd <= 0.0 && !hero_down {
+                e.attack_cd = caster.interval;
+                let speed = spells
+                    .as_deref()
+                    .and_then(|s| s.catalog.get(caster.spell))
+                    .map_or(24.0, |s| if s.speed > 0.0 { s.speed } else { 24.0 });
+                missiles.launch(
+                    ent,
+                    hero_e,
+                    owner,
+                    *caster,
+                    e.damage * e.weaken,
+                    dist,
+                    speed,
+                );
+                fx.cast(ent, caster.spell, &[hero_e], None);
+            }
+        }
+        if caster.is_none()
+            && contact
             && !lost
             && e.stun_t <= 0.0
             && e.fear_t <= 0.0
@@ -649,7 +692,7 @@ pub(super) fn collect_gems(
     mut gems: Query<(Entity, &mut Transform, &mut Gem)>,
 ) {
     let Ok(h) = hero.single() else { return };
-    if run.dead_t.is_some() {
+    if run.dead_t.is_some() || run.hp <= 0.0 {
         return;
     }
     let dt = time.delta_secs();
@@ -709,7 +752,7 @@ pub(super) fn collect_gems(
     }
     while run.xp >= data::xp_to_next(run.level) {
         run.xp -= data::xp_to_next(run.level);
-        run.level += 1;
+        run.gain_expedition_level();
         run.pending_levels += 1;
         if run.level == super::mobility::LEARN_LEVEL {
             if let Some(m) = super::mobility::for_class(run.class.id) {

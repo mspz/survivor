@@ -1837,7 +1837,9 @@ pub(super) fn refresh_hud(
         run.banner = None;
     }
     // The picker owns the screen: an announcement waits until it closes.
-    let banner = if *phase.get() == Phase::LevelUp {
+    let banner = if let Some(revival) = super::revival::hint(&run) {
+        revival
+    } else if *phase.get() == Phase::LevelUp {
         String::new()
     } else {
         banner
@@ -2405,6 +2407,9 @@ fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) 
             .right(format!("{} sec cooldown", num(now.cooldown)), Color::WHITE),
     );
     lines.push(TipLine::new(ability_body(def, &now), GOLD));
+    if let Some(buff) = super::healer_buffs::tooltip(run, def, o.level) {
+        lines.push(TipLine::new(buff, GOLD));
+    }
     if now.chains > 0 {
         lines.push(TipLine::new(
             format!("{} additional jumps", now.chains),

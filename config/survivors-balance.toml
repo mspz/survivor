@@ -75,7 +75,7 @@ concussive_shot = 1.0
 aimed_shot = 1.0
 
 [classes.rogue]
-multiplier = 1.0
+multiplier = 1.2
 
 [classes.rogue.spells]
 backstab = 1.0

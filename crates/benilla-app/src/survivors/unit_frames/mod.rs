@@ -195,7 +195,14 @@ mod tests {
         world.run_system_once(sync_status).unwrap();
         let status = world.get::<Status>(entity).unwrap();
         assert_eq!(status.health, 17.0);
-        assert_eq!(status.maximum, 48.0);
+        assert_eq!(
+            status.maximum,
+            world
+                .resource::<Run>()
+                .expeditions
+                .stats(data::CAMPAIGN[0], false)
+                .0
+        );
         assert!(!status.friendly);
         assert_eq!(status.debuffs, vec![(589, 4.0), (116, 2.0)]);
         world.get_mut::<Enemy>(entity).unwrap().slow_t = 0.0;

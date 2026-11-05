@@ -6,7 +6,7 @@ use super::{
     enemies::{Dot, Enemy},
     hero::Hero,
     multiplayer::{Companions, RemoteOwner},
-    spell_engine::{tags, Change, Filter, Modifier, Tags},
+    spell_engine::{tags, Tags},
     talent_design::{self, Mechanic as M},
     units::{self, Fx, UnitSpec},
     Owned, Rng, Run,
@@ -27,7 +27,6 @@ pub(super) struct Runtime {
     summon: f32,
     healing: f32,
     party_pulse: bool,
-    party_buff: f32,
     bursts: Vec<Burst>,
 }
 struct Burst {
@@ -1173,7 +1172,7 @@ pub(super) fn support(
         rate: (f32, f32),
         pulse: (f32, f32),
         flat: (f32, f32),
-        buff: (f32, f32),
+        buff: super::healer_buffs::Source,
     }
     fn source(run: &mut Run, pos: Vec3) -> Source {
         let rate = if active(run, M::SpiritTotem) && !run.legendary.has(194) {
@@ -1213,21 +1212,13 @@ pub(super) fn support(
             12.0,
             1,
         );
-        let buff = procs::resolve(
-            run,
-            "proc_ally_buff",
-            if active(run, M::AllyBuff) { 0.15 } else { 0.0 },
-            0.0,
-            0.0,
-            12.0,
-            1,
-        );
+        let buff = super::healer_buffs::source(run);
         Source {
             pos,
             rate: (rate.dmg, rate.radius),
             pulse: (pulse.dmg, pulse.radius),
             flat: (healing, procs::radius(run, "proc_holy_heal", 12.0)),
-            buff: (buff.dmg, buff.radius),
+            buff,
         }
     }
     if run.dead_t.is_none() {
@@ -1243,37 +1234,14 @@ pub(super) fn support(
         }
     }
     fn receive(run: &mut Run, pos: Vec3, dt: f32, sources: &[Source]) {
-        let mut buff = 0.0_f32;
         for source in sources {
             let distance = units::flat(source.pos - pos).length();
             let in_range = |(amount, radius)| if distance <= radius { amount } else { 0.0 };
             let amount = run.stats().max_hp * (in_range(source.rate) * dt + in_range(source.pulse))
                 + in_range(source.flat);
             run.heal(amount);
-            buff = buff.max(in_range(source.buff));
         }
-        if run.talent_runtime.party_buff == buff {
-            return;
-        }
-        run.talent_runtime.party_buff = buff;
-        run.replace_spell_modifiers(
-            0x7000_0000,
-            if buff > 0.0 {
-                vec![
-                    Change::IncreasedDamage(buff),
-                    Change::IncreasedAttackSpeed(buff),
-                ]
-                .into_iter()
-                .map(|change| Modifier {
-                    source: 0,
-                    filter: Filter::default(),
-                    change,
-                })
-                .collect::<Vec<_>>()
-            } else {
-                vec![]
-            },
-        );
+        super::healer_buffs::receive(run, pos, dt, sources.iter().map(|s| (s.pos, &s.buff)));
     }
     receive(&mut run, tf.translation, dt, &sources);
     if let Some(players) = players.as_deref_mut() {
@@ -1631,10 +1599,7 @@ mod tests {
     }
     #[test]
     fn milestone_hit_counters_ignore_incompatible_schools() {
-        for (class, tree, compatible, other, count) in [
-            (6, 0, "arcane_missiles", "fireball", 5),
-            (8, 0, "starfire", "fireball", 5),
-        ] {
+        for (class, tree, compatible, other, count) in [(8, 0, "starfire", "fireball", 5)] {
             let mut run = run(class, tree, &[18]);
             run.elapsed = 2.0;
             let mut enemy = enemy();

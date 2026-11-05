@@ -853,9 +853,12 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         max_hp: run.stats().max_hp,
         elapsed: run.elapsed,
         level: run.level,
+        character_level: run.meta_level,
         xp: run.xp,
         kills: run.kills,
         dead: run.dead_t.is_some(),
+        revival: [run.revival.seconds, run.revival.assisting],
+        coop_revive: run.revival.enabled,
         won: run.won,
         abilities: run
             .abilities
@@ -877,6 +880,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         ],
         shield: [run.shield, run.shield_t],
         immune: run.immune_t,
+        support_bonuses: game::healer_buffs::snapshot(run),
         damage_done: run.damage_done,
     }
 }
@@ -908,11 +912,10 @@ fn publish(world: &mut World) {
         return;
     }
     let mut network = world.remove_resource::<Network>().unwrap();
-    let boss_kills = network
+    let kills = network
         .loot
         .read(world.resource::<Messages<game::enemies::Loot>>())
-        .filter(|loot| loot.boss)
-        .map(|loot| loot.item_level)
+        .map(|loot| (loot.item_level, loot.boss))
         .collect::<Vec<_>>();
     for peer in network.peers.values_mut() {
         let Some(connection) = &peer.session else {
@@ -922,15 +925,20 @@ fn publish(world: &mut World) {
             continue;
         };
         let (class, magic_find) = (player.run.class.id, player.run.equipment.magic_find);
-        for &level in &boss_kills {
+        for &(level, boss) in &kills {
             let item = world.resource_scope(|world, mut rng: Mut<Rng>| {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
-                if rng.f32() >= inventory.config.boss_drop_chance {
+                if !game::items::drops_chest(boss, inventory.config.boss_drop_chance, rng.f32()) {
                     return None;
                 }
                 inventory
                     .config
-                    .generate_loot(level, class, magic_find, &mut rng)
+                    .generate_loot(
+                        game::items::chest_item_level(level, boss),
+                        class,
+                        magic_find,
+                        &mut rng,
+                    )
                     .ok()
             });
             if let Some(item) = item {
@@ -1100,10 +1108,7 @@ fn encode_phase(phase: Phase, companion: &Companion) -> u8 {
     if matches!(phase, Phase::Menu | Phase::Hub) {
         return 1;
     }
-    if companion.run.dead_t.is_some_and(|t| t > 3.0) {
-        return 6;
-    }
-    if companion.run.pending_levels > 0 {
+    if companion.run.dead_t.is_none() && companion.run.pending_levels > 0 {
         return 3;
     }
     match phase {
@@ -1291,6 +1296,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.hp = stats.hp;
         run.elapsed = stats.elapsed;
         run.level = stats.level;
+        run.meta_level = stats.character_level.max(1);
         run.xp = stats.xp;
         run.kills = stats.kills;
         run.won = stats.won;
@@ -1303,9 +1309,13 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.shield = stats.shield[0];
         run.shield_t = stats.shield[1];
         run.immune_t = stats.immune;
+        game::healer_buffs::restore(&mut run, stats.support_bonuses);
         run.damage_done = stats.damage_done;
         run.meter = stats.meter.clone();
         run.dead_t = stats.dead.then_some(0.0);
+        run.revival.enabled = stats.coop_revive;
+        run.revival.seconds = stats.revival[0];
+        run.revival.assisting = stats.revival[1];
         run.abilities = stats
             .abilities
             .iter()
@@ -1774,6 +1784,17 @@ mod tests {
             .next()
             .unwrap();
         world.get_mut::<Transform>(enemy).unwrap().translation = position + Vec3::X * 0.1;
+        assert_eq!(world.resource::<Run>().expedition_players, 2);
+        let config = &world.resource::<Run>().expeditions;
+        let expected = config
+            .stats(world.resource::<Run>().expedition_map, false)
+            .0
+            * config.factor(world.resource::<Run>().elapsed)
+            * 2.5;
+        assert_eq!(
+            world.get::<game::enemies::Enemy>(enemy).unwrap().max_hp,
+            expected
+        );
         world
             .get_mut::<game::enemies::Enemy>(enemy)
             .unwrap()
@@ -1794,6 +1815,24 @@ mod tests {
         assert_eq!(world.resource::<Run>().damage_done, 0.0);
     }
 
+    #[test]
+    fn fallen_guests_wait_for_revival_instead_of_entering_personal_game_over() {
+        let companion = Companion {
+            entity: Entity::from_raw_u32(42).unwrap(),
+            run: Run {
+                hp: 0.0,
+                dead_t: Some(10.0),
+                pending_levels: 1,
+                ..default()
+            },
+            physics: hero::Hero { vy: 0.0, air: 0.0 },
+            offer: default(),
+            offer_id: 0,
+        };
+        assert_eq!(encode_phase(Phase::Playing, &companion), 2);
+        assert_eq!(encode_phase(Phase::Paused, &companion), 4);
+        assert_eq!(encode_phase(Phase::GameOver, &companion), 6);
+    }
     #[test]
     fn a_living_guest_keeps_the_run_alive_after_the_host_falls() {
         let mut world = world();
@@ -1929,6 +1968,7 @@ mod tests {
     ) -> game::items::Item {
         use game::items::{Affix, AffixKind, Effect, EquipmentType, Item, Rarity, SlotKind};
         Item {
+            affix_rules: 0,
             id: 0,
             base: "live-gear-test".into(),
             name: name.into(),

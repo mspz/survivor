@@ -200,6 +200,7 @@ mod tests {
     use super::*;
     fn app() -> (App, Entity, Entity, Entity) {
         let item = Item {
+            affix_rules: 0,
             legendary: None,
             base_damage: None,
             base_armour: None,

@@ -66,8 +66,9 @@ fn unmodified_values_preserve_existing_rank_scaling_for_every_spell() {
                     - (def.cooldown
                         * 0.93f32.powi(i32::from(level) - 1)
                         * (1.0 - stats.haste).max(0.35))
-                    .max(0.2))
-                .abs()
+                    .max(0.2)
+                        * 1.2)
+                    .abs()
                     < 0.001
             );
             assert_eq!(
@@ -248,6 +249,25 @@ fn repeat_hundreds_are_guaranteed_and_only_the_fraction_is_random() {
     assert_eq!(recast_count(-1.0, 0.0, false), 0);
 }
 #[test]
+fn repeat_ordinals_reset_for_each_original_cast_even_with_overlapping_batches() {
+    let mut queue = Recasts::default();
+    queue.schedule(0, 0.0, 2);
+    queue.schedule(0, 0.1, 3);
+    for (time, expected) in [1, 2, 1, 2, 3].into_iter().enumerate() {
+        assert_eq!(queue.take_due_ordinal(0, time as f32 + 1.0), Some(expected));
+    }
+    assert!(queue.is_empty());
+    queue.schedule(0, 10.0, recast_count(4.0, 0.99, false));
+    for ordinal in 1..=4 {
+        assert_eq!(
+            queue.take_due_ordinal(0, 10.0 + ordinal as f32),
+            Some(ordinal)
+        );
+    }
+    assert!(queue.is_empty());
+}
+
+#[test]
 fn large_repeat_bursts_use_one_job_and_are_spaced_without_dropping_new_casts() {
     let mut queue = Recasts::default();
     queue.schedule(0, 0.0, 1000);
@@ -294,7 +314,7 @@ fn all_nine_mobility_skills_are_classified_and_ignore_projectile_damage_modifier
         assert!(!tags.contains(Tags::PROJECTILE));
         assert!(tags::school(key).is_some());
         let p = resolve_mobility(def, &mods);
-        assert_eq!(p.cooldown, def.cooldown / 2.0);
+        assert_eq!(p.cooldown, def.cooldown / 2.0 * 1.2);
         assert_eq!(p.duration, def.secs * 2.0);
     }
     let howl = super::super::mobility::for_class(9).unwrap();

@@ -24,6 +24,8 @@ pub(super) use config::Config;
 pub(super) use equipment::EquipmentType;
 pub(super) use visuals::Appearance;
 const SOURCE: u64 = 0x3000_0000;
+pub(super) const MAX_BASE_BLOCK: f32 = 0.30;
+pub(in crate::survivors) const MAX_ITEM_LEVEL: u32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,12 +91,19 @@ impl Rarity {
             Self::Legendary => Color::srgb(1.0, 0.5, 0.0),
         }
     }
-    fn count(self) -> usize {
+    fn legacy_count(self) -> usize {
         match self {
             Self::Normal => 1,
             Self::Magic => 2,
             Self::Epic => 4,
             Self::Legendary => 4,
+        }
+    }
+    fn affix_limits(self) -> (usize, usize) {
+        match self {
+            Self::Normal => (0, 1),
+            Self::Magic => (2, 2),
+            Self::Epic | Self::Legendary => (4, 3),
         }
     }
     fn primary_count(self) -> usize {
@@ -136,6 +145,14 @@ pub(super) enum Effect {
     AttackSpeed,
     Life,
     Armour,
+    FireResistance,
+    ColdResistance,
+    LightningResistance,
+    NatureResistance,
+    ArcaneResistance,
+    HolyResistance,
+    ShadowResistance,
+    AllResistance,
     LifeLeech,
     LifeOnKill,
     Regeneration,
@@ -157,6 +174,39 @@ pub(super) enum Effect {
     Proc,
 }
 impl Effect {
+    fn affix_kind(self) -> AffixKind {
+        if matches!(
+            self,
+            Self::Damage
+                | Self::DotDamage
+                | Self::CritChance
+                | Self::CritMultiplier
+                | Self::CooldownRecovery
+                | Self::Area
+                | Self::Duration
+                | Self::Repeat
+                | Self::Projectiles
+                | Self::Chain
+                | Self::Fork
+                | Self::MeleeTargets
+                | Self::FlatDamage
+                | Self::SpellDamage
+                | Self::AttackSpeed
+                | Self::BossDamage
+                | Self::FullLifeDamage
+                | Self::LowLifeDamage
+                | Self::BleedChance
+                | Self::IgniteChance
+                | Self::ChillChance
+                | Self::KnockbackChance
+                | Self::ArmourPenetration
+                | Self::Proc
+        ) {
+            AffixKind::Prefix
+        } else {
+            AffixKind::Suffix
+        }
+    }
     fn primary(self) -> bool {
         matches!(
             self,
@@ -200,6 +250,9 @@ impl Effect {
         })
     }
     fn discrete(self) -> bool {
+        if self.resistance() {
+            return true;
+        }
         matches!(
             self,
             Self::Stamina
@@ -218,6 +271,9 @@ impl Effect {
         )
     }
     fn global(self) -> bool {
+        if self.resistance() {
+            return true;
+        }
         if self == Self::BlockChance {
             return true;
         }
@@ -248,6 +304,19 @@ impl Effect {
             Self::Proc => slot == SlotKind::Trinket,
             _ => true,
         }
+    }
+    fn resistance(self) -> bool {
+        matches!(
+            self,
+            Self::FireResistance
+                | Self::ColdResistance
+                | Self::LightningResistance
+                | Self::NatureResistance
+                | Self::ArcaneResistance
+                | Self::HolyResistance
+                | Self::ShadowResistance
+                | Self::AllResistance
+        )
     }
 }
 
@@ -294,6 +363,7 @@ impl ProcRoll {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Bonuses {
+    pub resistances: super::resistances::Resistances,
     pub block: f32,
     pub life_on_kill: f32,
     pub regeneration: f32,
@@ -308,6 +378,14 @@ pub(super) struct Bonuses {
 impl Bonuses {
     fn add(&mut self, effect: Effect, value: f32) {
         match effect {
+            Effect::FireResistance => self.resistances.fire += value,
+            Effect::ColdResistance => self.resistances.cold += value,
+            Effect::LightningResistance => self.resistances.lightning += value,
+            Effect::NatureResistance => self.resistances.nature += value,
+            Effect::ArcaneResistance => self.resistances.arcane += value,
+            Effect::HolyResistance => self.resistances.holy += value,
+            Effect::ShadowResistance => self.resistances.shadow += value,
+            Effect::AllResistance => self.resistances.add_all(value),
             Effect::BlockChance => self.block += value,
             Effect::LifeOnKill => self.life_on_kill += value,
             Effect::Regeneration => self.regeneration += value,
@@ -338,6 +416,9 @@ pub(super) struct Affix {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Item {
+    /// Zero preserves saved allocations from before prefix/suffix budgets.
+    #[serde(default)]
+    pub affix_rules: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legendary: Option<legendary::Roll>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -581,7 +662,10 @@ impl Inventory {
                     .is_some_and(|id| !super::data::CLASSES.iter().any(|c| c.id == id))
                 || item.level == 0
                 || !legendary::validate_item(item)
-                || (item.affixes.len() != item.rarity.count() && !starter::is_plain(item))
+                || item.affix_rules > 1
+                || (item.affix_rules == 0
+                    && item.affixes.len() != item.rarity.legacy_count()
+                    && !starter::is_plain(item))
             {
                 return Err("invalid item".into());
             }
@@ -605,7 +689,17 @@ impl Inventory {
                 kinds[usize::from(a.kind == AffixKind::Suffix)] += 1;
             }
             let primary = item.affixes.iter().filter(|a| a.effect.primary()).count();
-            if primary > 0
+            if item.affix_rules == 1 {
+                let (minimum, cap) = item.rarity.affix_limits();
+                if !(minimum..=cap * 2).contains(&item.affixes.len())
+                    || kinds.iter().any(|&count| count > cap)
+                    || item.affixes.iter().any(|a| a.kind != a.effect.affix_kind())
+                {
+                    return Err("invalid prefix/suffix allocation".into());
+                }
+            }
+            if item.affix_rules == 0
+                && primary > 0
                 && ((primary != item.rarity.primary_count()
                     // Preserve Uncommon rolls saved before the one-primary allocation.
                     && !(item.rarity == Rarity::Magic && primary == 2))
@@ -616,7 +710,8 @@ impl Inventory {
             {
                 return Err("invalid primary allocation".into());
             }
-            if !item.affixes.iter().any(|a| a.effect.primary())
+            if item.affix_rules == 0
+                && !item.affixes.iter().any(|a| a.effect.primary())
                 && ((item.rarity == Rarity::Magic && kinds != [1, 1])
                     || (item.rarity == Rarity::Epic && kinds != [2, 2]))
             {
@@ -842,7 +937,7 @@ impl Inventory {
             {
                 continue;
             }
-            bonuses.block += item.base_block;
+            bonuses.block += item.intrinsic_block();
             if let Some(roll) = &item.legendary {
                 uniques.entry(roll.unique).or_insert_with(|| roll.clone());
             }
@@ -942,7 +1037,7 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             Update,
-            boss_drops
+            chest_drops
                 .after(super::abilities::apply_hits)
                 .before(super::enemies::drop_loot)
                 .run_if(in_state(Phase::Playing)),
@@ -950,7 +1045,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(
             Update,
             collect_drops
-                .after(boss_drops)
+                .after(chest_drops)
                 .before(super::hero::hero_vitals)
                 .run_if(|phase: Res<State<Phase>>| {
                     matches!(*phase.get(), Phase::Playing | Phase::GameOver)
@@ -1007,7 +1102,18 @@ fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<R
 struct ItemDrop(Item);
 // Elwynn's small wooden treasure chest: GameObjectDisplayInfo -> Chest01.mdx.
 const BOSS_CHEST_DISPLAY: u32 = 10;
-fn boss_drops(
+pub(in crate::survivors) fn drops_chest(boss: bool, boss_chance: f32, roll: f32) -> bool {
+    roll < if boss { boss_chance } else { 1.0 / 2000.0 }
+}
+pub(in crate::survivors) fn chest_item_level(monster_level: u32, boss: bool) -> u32 {
+    // Campaign bosses end at level 59; their chest must unlock the final level-60 bases.
+    if boss && monster_level >= MAX_ITEM_LEVEL - 1 {
+        MAX_ITEM_LEVEL
+    } else {
+        monster_level.clamp(1, MAX_ITEM_LEVEL)
+    }
+}
+fn chest_drops(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
     mut inventory: ResMut<Inventory>,
@@ -1015,15 +1121,14 @@ fn boss_drops(
     mut run: ResMut<Run>,
 ) {
     for drop in drops.read() {
-        if !drop.boss
-            || inventory.character.is_none()
+        if inventory.character.is_none()
             || inventory.blocked
-            || rng.f32() >= inventory.config.boss_drop_chance
+            || !drops_chest(drop.boss, inventory.config.boss_drop_chance, rng.f32())
         {
             continue;
         }
         match inventory.config.generate_loot(
-            drop.item_level,
+            chest_item_level(drop.item_level, drop.boss),
             run.class.id,
             run.equipment.magic_find,
             &mut rng,
@@ -1127,6 +1232,7 @@ mod tests {
     }
     pub(super) fn item(slot: SlotKind, affixes: Vec<Affix>) -> Item {
         Item {
+            affix_rules: 0,
             legendary: None,
             base_damage: None,
             base_armour: None,
@@ -1526,7 +1632,10 @@ mod tests {
         let mut inventory = inventory();
         let mut rng = Rng(123);
         inventory
-            .collect(inventory.config.generate(10, &mut rng).unwrap())
+            .collect(item(
+                SlotKind::Chest,
+                vec![affix(Effect::Stamina, 12.0, AffixKind::Suffix, vec![])],
+            ))
             .unwrap();
         inventory.blocked = true;
         let slot = SLOTS
@@ -1545,7 +1654,7 @@ mod tests {
         assert!(Inventory::decode(&toml::to_string(&save).unwrap()).is_err());
     }
     #[test]
-    fn only_bosses_drop_items_and_pickups_are_saved_once_with_final_loot_recovered() {
+    fn boss_chests_and_pickups_are_saved_once_with_final_loot_recovered() {
         let mut world = World::new();
         world.insert_resource(inventory());
         world.insert_resource(Run::default());
@@ -1563,7 +1672,7 @@ mod tests {
             xp: 1,
             boss: true,
         });
-        world.run_system_once(boss_drops).unwrap();
+        world.run_system_once(chest_drops).unwrap();
         assert_eq!(world.query::<&ItemDrop>().iter(&world).count(), 1);
         let (drop_entity, position, model) = world
             .query_filtered::<(Entity, &Transform, &crate::net::NetEntity), With<ItemDrop>>()
@@ -1596,5 +1705,89 @@ mod tests {
         world.run_system_once(collect_drops).unwrap();
         assert_eq!(world.resource::<Inventory>().all().len(), 2);
         assert_eq!(world.query::<&ItemDrop>().iter(&world).count(), 0);
+    }
+    #[test]
+    fn ordinary_monster_chests_have_one_in_two_thousand_chance_without_changing_boss_chance() {
+        assert!(drops_chest(false, 0.0, 0.0));
+        assert!(drops_chest(false, 0.0, 0.000499));
+        assert!(!drops_chest(false, 1.0, 0.0005));
+        assert!(!drops_chest(false, 1.0, 0.5));
+        assert!(!drops_chest(true, 0.0, 0.0));
+        assert!(drops_chest(true, 1.0, 0.999));
+        let mut rng = Rng(742);
+        let count = (0..100000)
+            .filter(|_| drops_chest(false, 1.0, rng.f32()))
+            .count();
+        assert!((25..=80).contains(&count), "{count}/100000");
+    }
+    #[test]
+    fn final_boss_chests_reach_the_last_base_tier_at_level_sixty() {
+        assert_eq!(chest_item_level(59, false), 59);
+        assert_eq!(chest_item_level(59, true), 60);
+        assert_eq!(chest_item_level(100, true), 60);
+        assert_eq!(chest_item_level(100, false), 60);
+        let mut inventory = inventory();
+        inventory.config.boss_drop_chance = 1.0;
+        for base in &mut inventory.config.bases {
+            base.weight = if base.id == "sword" { 1.0 } else { 0.0 };
+        }
+        let mut world = World::new();
+        world.insert_resource(inventory);
+        world.insert_resource(Run::default());
+        world.insert_resource(Rng(123));
+        world.init_resource::<Messages<Loot>>();
+        world.write_message(Loot {
+            item_level: 59,
+            pos: Vec3::ZERO,
+            xp: 1,
+            boss: true,
+        });
+        world.run_system_once(chest_drops).unwrap();
+        let item = &world.query::<&ItemDrop>().single(&world).unwrap().0;
+        assert_eq!(item.level, 60);
+        assert_eq!(item.base, "sword");
+        let tier = world
+            .resource::<Inventory>()
+            .config
+            .bases
+            .iter()
+            .find(|b| b.id == "sword")
+            .unwrap()
+            .tiers
+            .last()
+            .unwrap();
+        assert_eq!(item.appearance, tier.appearance);
+        assert_eq!(item.icon, tier.icon);
+        assert_eq!(
+            item.weapon_damage().min,
+            tier.base_damage.unwrap().min.round()
+        );
+    }
+    #[test]
+    fn ordinary_monster_chests_use_the_boss_model_and_monster_item_level() {
+        let seed = (1..100000)
+            .find(|seed| drops_chest(false, 0.0, Rng(*seed).f32()))
+            .unwrap();
+        let mut world = World::new();
+        let mut inventory = inventory();
+        inventory.config.boss_drop_chance = 0.0;
+        world.insert_resource(inventory);
+        world.insert_resource(Run::default());
+        world.insert_resource(Rng(seed));
+        world.init_resource::<Messages<Loot>>();
+        world.write_message(Loot {
+            item_level: 35,
+            pos: Vec3::X * 12.0,
+            xp: 1,
+            boss: false,
+        });
+        world.run_system_once(chest_drops).unwrap();
+        let (drop, transform, model) = world
+            .query::<(&ItemDrop, &Transform, &crate::net::NetEntity)>()
+            .single(&world)
+            .unwrap();
+        assert_eq!(drop.0.level, 35);
+        assert_eq!(transform.translation, Vec3::X * 12.0);
+        assert_eq!(model.display_id, Some(BOSS_CHEST_DISPLAY));
     }
 }

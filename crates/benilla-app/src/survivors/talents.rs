@@ -22,20 +22,18 @@ type Build = [[u8; NODES]; 3];
 
 pub(super) struct Spec {
     pub name: &'static str,
-    pub focus: Stat,
     pub spells: &'static [&'static str],
     pub cap: &'static str,
 }
 macro_rules! spec {
-    ($name:literal, $stat:ident, $cap:literal, $($spell:literal),+) => {
-        Spec { name: $name, focus: Stat::$stat, cap: $cap, spells: &[$($spell),+] }
+    ($name:literal, $cap:literal, $($spell:literal),+) => {
+        Spec { name: $name, cap: $cap, spells: &[$($spell),+] }
     };
 }
 pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Arms",
-            Might,
             "mortal_strike",
             "cleave",
             "heroic_strike",
@@ -43,7 +41,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Fury",
-            Haste,
             "whirlwind",
             "whirlwind",
             "execute",
@@ -51,7 +48,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Protection",
-            Armor,
             "retaliation",
             "thunder_clap",
             "retaliation",
@@ -59,41 +55,25 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
     ],
     [
-        spec!(
-            "Holy",
-            Regen,
-            "holy_shock",
-            "holy_shock",
-            "holy_wrath",
-            "exorcism"
-        ),
+        spec!("Holy", "holy_shock", "holy_shock", "holy_wrath", "exorcism"),
         spec!(
             "Protection",
-            Armor,
             "divine_shield",
             "consecration",
             "divine_shield",
             "hammer_of_justice"
         ),
-        spec!(
-            "Retribution",
-            Might,
-            "judgement",
-            "judgement",
-            "hammer_of_wrath"
-        ),
+        spec!("Retribution", "judgement", "judgement", "hammer_of_wrath"),
     ],
     [
         spec!(
             "Beast Mastery",
-            Speed,
             "concussive_shot",
             "arcane_shot",
             "concussive_shot"
         ),
         spec!(
             "Marksmanship",
-            Crit,
             "aimed_shot",
             "aimed_shot",
             "multi_shot",
@@ -101,35 +81,26 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Survival",
-            MaxHp,
             "explosive_trap",
             "serpent_sting",
             "explosive_trap"
         ),
     ],
     [
-        spec!("Assassination", Crit, "eviscerate", "eviscerate", "rupture"),
-        spec!(
-            "Combat",
-            Haste,
-            "blade_flurry",
-            "sinister_strike",
-            "blade_flurry"
-        ),
-        spec!("Subtlety", Speed, "kidney_shot", "gouge", "kidney_shot"),
+        spec!("Assassination", "eviscerate", "eviscerate", "rupture"),
+        spec!("Combat", "blade_flurry", "sinister_strike", "blade_flurry"),
+        spec!("Subtlety", "kidney_shot", "gouge", "kidney_shot"),
     ],
     [
         spec!(
             "Discipline",
-            Armor,
             "power_word_shield",
             "smite",
             "power_word_shield"
         ),
-        spec!("Holy", Regen, "holy_nova", "holy_fire", "holy_nova"),
+        spec!("Holy", "holy_nova", "holy_fire", "holy_nova"),
         spec!(
             "Shadow",
-            Might,
             "mind_blast",
             "shadow_word_pain",
             "mind_blast",
@@ -139,7 +110,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Elemental",
-            Crit,
             "chain_lightning",
             "lightning_bolt",
             "chain_lightning",
@@ -147,31 +117,22 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Enhancement",
-            Haste,
             "lightning_shield",
             "earth_shock",
             "frost_shock",
             "lightning_shield"
         ),
-        spec!(
-            "Restoration",
-            Regen,
-            "magma_totem",
-            "searing_totem",
-            "magma_totem"
-        ),
+        spec!("Restoration", "magma_totem", "searing_totem", "magma_totem"),
     ],
     [
         spec!(
             "Arcane",
-            Haste,
             "arcane_explosion",
             "arcane_missiles",
             "arcane_explosion"
         ),
         spec!(
             "Fire",
-            Crit,
             "pyroblast",
             "fireball",
             "fire_blast",
@@ -181,7 +142,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Frost",
-            Armor,
             "blizzard",
             "frostbolt",
             "frost_nova",
@@ -192,16 +152,14 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Affliction",
-            Regen,
             "death_coil",
             "corruption",
             "curse_of_agony",
             "death_coil"
         ),
-        spec!("Demonology", MaxHp, "hellfire", "shadow_bolt", "hellfire"),
+        spec!("Demonology", "hellfire", "shadow_bolt", "hellfire"),
         spec!(
             "Destruction",
-            Crit,
             "shadowburn",
             "immolate",
             "rain_of_fire",
@@ -212,23 +170,15 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Balance",
-            Might,
             "starfire",
             "wrath",
             "moonfire",
             "starfire",
             "hurricane"
         ),
-        spec!(
-            "Feral Combat",
-            Speed,
-            "thorns",
-            "thorns",
-            "entangling_roots"
-        ),
+        spec!("Feral Combat", "thorns", "thorns", "entangling_roots"),
         spec!(
             "Restoration",
-            Regen,
             "rejuvenation",
             "rejuvenation",
             "insect_swarm"
@@ -415,7 +365,7 @@ impl Account {
         }
     }
     pub fn apply(&self, class: usize, run: &mut Run) {
-        run.meta_level = level(self.xp);
+        run.set_global_level(level(self.xp));
         run.talent_build = self.builds[class];
         super::talent_runtime::configure(run);
         for (tree, spec) in TREES[class].iter().enumerate() {
@@ -428,21 +378,7 @@ impl Account {
                 for change in super::talent_effects::effects(spec, node, rank) {
                     modifiers.push(super::spell_engine::Modifier {
                         source: 0,
-                        filter: super::spell_engine::Filter::requiring(
-                            if matches!(change, super::spell_engine::Change::BleedChance(_)) {
-                                let school = super::spell_engine::Tags::PHYSICAL;
-                                if super::talent_design::design(spec)
-                                    .filter
-                                    .contains(super::spell_engine::Tags::MELEE)
-                                {
-                                    school | super::spell_engine::Tags::MELEE
-                                } else {
-                                    school
-                                }
-                            } else {
-                                super::talent_design::design(spec).filter
-                            },
-                        ),
+                        filter: super::talent_effects::filter(spec, node, change),
                         change,
                     });
                 }
@@ -461,8 +397,8 @@ impl Account {
     }
 }
 
-pub(super) fn stat_effect(spec: &Spec, node: usize) -> (Stat, f32) {
-    super::talent_design::passive(spec, node)
+pub(super) fn stat_effect(spec: &Spec, node: usize) -> Option<(Stat, f32)> {
+    super::minor_talents::minor(spec, node).stat
 }
 pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
     let Some(class) = data::CLASSES.iter().position(|c| c.id == run.class.id) else {
@@ -470,12 +406,14 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
     };
     for (tree, spec) in TREES[class].iter().enumerate() {
         for node in 0..NODES {
-            if !super::talent_effects::character_stat(spec, node) {
+            let rank = run.talent_build[tree][node];
+            if rank == 0 || !super::talent_effects::character_stat(spec, node) {
                 continue;
             }
-            let rank = f32::from(run.talent_build[tree][node]);
-            let (stat, value) = stat_effect(spec, node);
-            let v = value * rank;
+            let Some((stat, value)) = stat_effect(spec, node) else {
+                continue;
+            };
+            let v = value * f32::from(rank);
             match stat {
                 Stat::Might => stats.might += v,
                 Stat::MaxHp => stats.max_hp *= 1.0 + v,
@@ -537,7 +475,7 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
     }
     run.account_credited = total;
     account.xp = account.xp.saturating_add(gained).min(threshold(60));
-    run.meta_level = level(account.xp);
+    run.set_global_level(level(account.xp));
     account.last_reward = total;
     account.save();
 }
@@ -713,10 +651,20 @@ mod tests {
             class: &data::CLASSES[6],
             ..Run::default()
         };
+        run.set_global_level(level(a.xp));
         let baseline = run.stats();
+        let fire_before = run.resolve_spell(data::ability("fireball"), 1);
+        let cold_before = run.resolve_spell(data::ability("frostbolt"), 1);
         a.apply(6, &mut run);
-        assert!((run.stats().might - baseline.might - 0.25).abs() < 0.001);
-        assert!((run.stats().crit - baseline.crit - 0.10).abs() < 0.001);
+        assert_eq!(run.stats().might, baseline.might);
+        assert_eq!(run.stats().crit, baseline.crit);
+        let fire = run.resolve_spell(data::ability("fireball"), 1);
+        let cold = run.resolve_spell(data::ability("frostbolt"), 1);
+        let fire_increase = 0.2 / (1.0 + baseline.level_damage);
+        assert!((fire.dmg - fire_before.dmg * (1.0 + fire_increase)).abs() < 0.001);
+        assert!((fire.crit - fire_before.crit - 0.05).abs() < 0.001);
+        assert_eq!(cold.dmg, cold_before.dmg);
+        assert_eq!(cold.crit, cold_before.crit);
         assert!(a.buy(6, 1, 8));
         a.apply(6, &mut run);
         let entries = run.spell_modifiers.entries();
@@ -730,6 +678,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn applying_persistent_character_levels_grants_stats_once_and_preserves_missing_health() {
+        let mut account = Account::fresh();
+        account.xp = threshold(10);
+        let mut run = Run {
+            hp: 50.0,
+            ..Run::default()
+        };
+        let baseline = run.stats().max_hp;
+        account.apply(0, &mut run);
+        assert_eq!(run.meta_level, 10);
+        assert_eq!(run.stats().max_hp, baseline + 90.0);
+        assert_eq!(run.hp, 140.0);
+        assert!((run.stats().level_damage - 0.45).abs() < 0.0001);
+        account.apply(0, &mut run);
+        assert_eq!(run.hp, 140.0);
+        assert_eq!(run.stats().max_hp, baseline + 90.0);
+    }
     #[test]
     fn health_and_armour_talents_scale_with_equipment_and_reset_without_flat_bonuses() {
         let mut run = Run {

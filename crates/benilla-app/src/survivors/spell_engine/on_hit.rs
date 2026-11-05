@@ -66,7 +66,8 @@ pub fn damage(raw: f32, hp: f32, max_hp: f32, boss: bool, armour: f32, mods: Hit
         };
     let damage = raw.max(0.0) * (1.0 + bonus).max(0.0);
     if mods.tags.contains(Tags::PHYSICAL) {
-        damage / (1.0 + armour.max(0.0) * (1.0 - mods.penetration.clamp(0.0, 1.0)) / 100.0)
+        let effective_armour = armour.max(0.0) * (1.0 - mods.penetration.clamp(0.0, 1.0));
+        damage * (1.0 - super::super::items::armour::reduction(effective_armour))
     } else {
         damage
     }
@@ -129,7 +130,8 @@ mod tests {
         assert_eq!(fire.knockback, 0.5);
         let cold = modifiers("frostbolt", &entries);
         assert_eq!(cold.chill, 0.4);
-        assert!((damage(100.0, 100.0, 100.0, true, 100.0, melee) - 100.0).abs() < 0.001);
+        let expected = 150.0 * (1.0 - super::super::super::items::armour::reduction(50.0));
+        assert!((damage(100.0, 100.0, 100.0, true, 100.0, melee) - expected).abs() < 0.001);
         assert!((damage(100.0, 20.0, 100.0, false, 0.0, melee) - 140.0).abs() < 0.001);
         assert!((damage(100.0, 100.0, 100.0, false, 1000.0, fire) - 130.0).abs() < 0.001);
     }

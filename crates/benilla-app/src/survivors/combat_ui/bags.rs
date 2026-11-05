@@ -255,14 +255,24 @@ fn tooltip(
         },
     );
     let mut lines = item.tooltip_lines(inventory.as_ref().unwrap());
+    let mut comparison_start = None;
     if compare {
-        lines.extend(item.comparison_lines(inventory.as_ref().unwrap()));
+        let comparison = item.comparison_lines(inventory.as_ref().unwrap());
+        if !comparison.is_empty() {
+            comparison_start = Some(lines.len());
+            lines.extend(comparison);
+        }
     }
     let estimated_height = lines
         .iter()
         .map(|(line, _)| (line.chars().count().max(1).div_ceil(34)) as f32 * 17.0)
         .sum::<f32>()
-        + 24.0;
+        + 24.0
+        + if comparison_start.is_some() {
+            11.0
+        } else {
+            0.0
+        };
     let x = if cursor.x > viewport.x * 0.5 {
         cursor.x - 320.0
     } else {
@@ -287,12 +297,25 @@ fn tooltip(
         ))
         .with_children(|ui| {
             ui.spawn(Node {
+                width: Val::Percent(100.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(1.0),
                 ..default()
             })
             .with_children(|body| {
-                for (line, color) in lines {
+                for (index, (line, color)) in lines.into_iter().enumerate() {
+                    if comparison_start == Some(index) {
+                        body.spawn((
+                            BackgroundColor(Color::srgb(0.45, 0.45, 0.45)),
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Px(1.0),
+                                flex_shrink: 0.0,
+                                margin: UiRect::vertical(Val::Px(5.0)),
+                                ..default()
+                            },
+                        ));
+                    }
                     body.spawn(text(&font.0, line, 14.0, color));
                 }
             });

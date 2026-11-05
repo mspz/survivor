@@ -1,6 +1,5 @@
 //! Authored specialization identities. Tooltips and combat consume these same milestones.
 use super::{
-    data::Stat,
     spell_engine::{Change, Tags},
     talents::Spec,
 };
@@ -39,7 +38,15 @@ pub(super) enum Mechanic {
     HealTotem,
     DualTotem,
     SpiritTotem,
+    #[allow(
+        dead_code,
+        reason = "Retained proc-chain identity for legacy Arcane mechanics"
+    )]
     ArcaneFocus,
+    #[allow(
+        dead_code,
+        reason = "Retained proc-chain identity for legacy Arcane mechanics"
+    )]
     ArcaneBlast,
     Ignite,
     IgniteSpread,
@@ -61,6 +68,8 @@ pub(super) enum Mechanic {
     Hot,
     AllyBuff,
     Grove,
+    ArcaneCompanion,
+    ArcaneCascade,
 }
 #[derive(Clone, Copy)]
 pub(super) struct Milestone {
@@ -155,10 +164,10 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Healing Totem","Summon a totem that heals nearby allies for 2% max health per second.",HealTotem),
         m!("Totemic Harmony","Your healing totem also fires a 24-damage bolt every second. +50% totem duration.",DualTotem,C::IncreasedDuration(0.5)),
         m!("Spirit Totem","Your totem heals for 4% max health per second and its bolts hit 3 enemies.",SpiritTotem)]},
-    Design {title:"Arcanes",focus:"Puissance brute et concentration",filter:T::ARCANE,milestones:[
-        m!("Arcane Power","Arcane spells deal 30% more damage.",None,C::MoreDamage(0.3)),
-        m!("Arcane Focus","Repeated hits on one target gain 8% damage per hit, up to 80%. Switching targets resets the bonus.",ArcaneFocus),
-        m!("Arcane Blast","Every fifth Arcane hit explodes for 150% damage within 7 yards.",ArcaneBlast)]},
+    Design {title:"Arcanes",focus:"Répétition des sorts et résonance magique",filter:T::SPELL,milestones:[
+        m!("Arcane Echo","Offensive spells gain 50% repeat chance. Repeated casts cannot repeat again.",None,C::RecastChance(0.50)),
+        m!("Resonant Casting","Each repeated spell also triggers another learned spell, or the source if it is your only spell. This extra cast cannot repeat or trigger another extra cast.",ArcaneCompanion),
+        m!("Greater Spell Echo","Each successive repeat deals 20% more damage than the previous one: 120%, 144%, 172.8%, 207.36%. The counter resets for each original cast. Copies cannot create new repeats.",ArcaneCascade)]},
     Design {title:"Feu",focus:"Enflammer et prolifération",filter:T::FIRE,milestones:[
         m!("Ignite","Fire hits burn enemies for 25% damage per second for 3 sec.",Ignite,C::IgniteChance(1.0)),
         m!("Spreading Flames","Ignite spreads to enemies within 6 yards when its target dies.",IgniteSpread),
@@ -189,7 +198,7 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Savage Carnage","Bleeding enemies explode on death. +25% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.25))]},
     Design {title:"Restauration",focus:"Soins sur la durée et soutien des alliés",filter:T::HEAL,milestones:[
         m!("Bloom","Nearby allies recover 1.5% max health per second.",Hot),
-        m!("Gift of Nature","Nearby allies gain 15% damage and attack speed.",AllyBuff),
+        m!("Gift of Nature","Nearby allies gain 8% damage, 20% movement speed and 5% all elemental resistances. The support aura scales with your Nature spell power.",AllyBuff),
         m!("Living Grove","Bloom heals for 3% max health per second and an extra 12% every 6 sec.",Grove)]},
 ];
 
@@ -240,25 +249,5 @@ pub(super) fn icon(spec: &Spec, node: usize) -> u32 {
         Mechanic::IgniteSpread => 2120,
         Mechanic::Fireburst => 11129,
         _ => super::data::ability(spec.cap).spell,
-    }
-}
-pub(super) fn passive(spec: &Spec, node: usize) -> (Stat, f32) {
-    match node % 6 {
-        0 => (Stat::Might, 0.05),
-        1 => (
-            spec.focus,
-            match spec.focus {
-                Stat::Regen => 0.6,
-                Stat::Armor => 0.10,
-                Stat::Might => 0.05,
-                Stat::MaxHp => 0.04,
-                Stat::Crit => 0.02,
-                _ => 0.03,
-            },
-        ),
-        2 => (Stat::MaxHp, 0.04),
-        3 => (Stat::Haste, 0.03),
-        4 => (Stat::Crit, 0.02),
-        _ => (Stat::Area, 0.05),
     }
 }

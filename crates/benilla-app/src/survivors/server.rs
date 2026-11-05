@@ -55,6 +55,7 @@ pub(super) fn plugin(app: &mut App) {
                 enemies::drop_loot,
                 enemies::collect_gems,
                 hero::hero_vitals,
+                revival::tick,
             )
                 .chain()
                 .after(WorldStage::Input)
@@ -121,6 +122,7 @@ pub(super) struct Owned {
 #[derive(Clone, Copy)]
 pub(super) struct Stats {
     pub might: f32,
+    pub level_damage: f32,
     pub max_hp: f32,
     pub speed: f32,
     pub regen: f32,
@@ -129,6 +131,7 @@ pub(super) struct Stats {
     pub magnet: f32,
     pub growth: f32,
     pub armor: f32,
+    pub resistances: resistances::Resistances,
     pub crit: f32,
 }
 
@@ -143,6 +146,7 @@ pub(super) struct Run {
     pub(super) balance: balance::Config,
     pub(super) expeditions: expedition_config::Config,
     pub(super) expedition_map: usize,
+    pub(super) expedition_players: usize,
     pub meter: combat_ui::Meter,
     pub spell_modifiers: spell_engine::Modifiers,
     pub(super) equipment_version: Option<(Option<u64>, u64)>,
@@ -176,6 +180,7 @@ pub(super) struct Run {
     pub heal_rate: f32,
     pub heal_t: f32,
     pub(super) talent_runtime: talent_runtime::Runtime,
+    pub(super) healer_buffs: healer_buffs::State,
     pub(super) legendary: items::legendary::Runtime,
     /// The class mobility's cooldown and running effect.
     pub(super) mobile: mobility::MobilityState,
@@ -187,6 +192,7 @@ pub(super) struct Run {
     pub won: bool,
     /// Seconds since the hero fell, while the death plays out.
     pub dead_t: Option<f32>,
+    pub(super) revival: revival::State,
     pub next_guid: u64,
     pub damage_done: f64,
     /// Bumped whenever abilities or passives change, so the HUD rebuilds the icon rows once.
@@ -202,6 +208,7 @@ impl Default for Run {
             balance: balance::Config::default(),
             expeditions: expedition_config::Config::default(),
             expedition_map: data::CAMPAIGN[0],
+            expedition_players: 1,
             meter: combat_ui::Meter::default(),
             spell_modifiers: spell_engine::Modifiers::default(),
             equipment_version: None,
@@ -235,6 +242,7 @@ impl Default for Run {
             heal_rate: 0.0,
             heal_t: 0.0,
             talent_runtime: default(),
+            healer_buffs: default(),
             legendary: default(),
             mobile: mobility::MobilityState::default(),
             pending_levels: 0,
@@ -243,6 +251,7 @@ impl Default for Run {
             rings: 0,
             won: false,
             dead_t: None,
+            revival: default(),
             next_guid: 1,
             damage_done: 0.0,
             version: 0,
@@ -256,9 +265,11 @@ impl Run {
         self.resolve_spell_with_weapon_roll(def, level, 0.5)
     }
     pub fn stats(&self) -> Stats {
+        let (level_health, level_damage) = level_stats::bonuses(self.level, self.meta_level);
         let mut s = Stats {
             might: 1.0,
-            max_hp: BASE_HP + self.equipment_hp,
+            level_damage,
+            max_hp: BASE_HP + self.equipment_hp + level_health,
             speed: BASE_SPEED,
             regen: 0.0,
             haste: 0.0,
@@ -266,6 +277,7 @@ impl Run {
             magnet: BASE_MAGNET,
             growth: 1.0,
             armor: self.equipment_armour,
+            resistances: self.equipment.resistances,
             crit: 0.05,
         };
         // Tanky classes start tougher, cloth starts quicker.
@@ -297,6 +309,8 @@ impl Run {
             }
         }
         talents::apply_stats(self, &mut s);
+        s.speed *= 1.0 + self.healer_buffs.bonuses.speed;
+        s.resistances.add_all(self.healer_buffs.bonuses.resistance);
         s
     }
 

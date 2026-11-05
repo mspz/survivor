@@ -110,9 +110,15 @@ pub struct Stats {
     pub max_hp: f32,
     pub elapsed: f32,
     pub level: u32,
+    #[serde(default)]
+    pub character_level: u32,
     pub xp: f32,
     pub kills: u32,
     pub dead: bool,
+    #[serde(default)]
+    pub revival: [f32; 2],
+    #[serde(default)]
+    pub coop_revive: bool,
     pub won: bool,
     pub abilities: Vec<(String, u8, f32)>,
     pub passives: Vec<(String, u64)>,
@@ -121,6 +127,8 @@ pub struct Stats {
     pub mobility: [f32; 4],
     pub shield: [f32; 2],
     pub immune: f32,
+    #[serde(default)]
+    pub support_bonuses: [f32; 6],
     pub damage_done: f64,
 }
 
