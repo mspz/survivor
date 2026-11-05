@@ -39,6 +39,8 @@ pub(super) struct View {
     stats_scroll: f32,
     meter_scroll: f32,
     drag: Option<Drag>,
+    /// The character sheet shows the Runes tab instead of the paper doll.
+    rune_page: bool,
 }
 impl Default for View {
     fn default() -> Self {
@@ -54,6 +56,7 @@ impl Default for View {
             stats_scroll: 0.0,
             meter_scroll: 0.0,
             drag: None,
+            rune_page: false,
         };
         if let Some(text) = crate::local_state::home().and_then(|home| {
             crate::local_state::read_to_string(&home.join("survivors-panels.txt")).ok()
@@ -100,6 +103,8 @@ pub(super) enum Click {
     Skill(usize),
     Rotate(f32),
     Bags,
+    /// Character sheet tab: false = Character, true = Runes.
+    SheetPage(bool),
 }
 #[derive(Component)]
 pub(super) struct DragTitle(Pane);
@@ -230,6 +235,7 @@ pub(super) fn input(
             Click::Skill(index) => view.selected = index,
             Click::Rotate(delta) => view.yaw += delta,
             Click::Bags => {}
+            Click::SheetPage(runes) => view.rune_page = runes,
         }
     }
     if (selection.sheet_open || selection.bags_open || selection.talents_open)

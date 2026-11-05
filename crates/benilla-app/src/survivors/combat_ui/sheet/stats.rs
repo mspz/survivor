@@ -425,6 +425,48 @@ mod tests {
         assert_eq!(world.query::<&StatTooltip>().iter(&world).count(), 0);
     }
     #[test]
+    fn the_equipped_rune_shows_in_offense_and_utility() {
+        use crate::survivors::runes::{self, Rune, RuneStat, Runes, Slot};
+        let stat = |id: &str, value: f32, bonus: f32| RuneStat {
+            id: id.into(),
+            value,
+            bonus,
+        };
+        let mut runes = Runes::default();
+        runes.save.slots = vec![Slot {
+            rune: Some(Rune {
+                rarity: 0,
+                level: 2,
+                stats: vec![
+                    stat("crit_damage", 30.0, 10.0),
+                    stat("movement_speed", 10.0, 0.0),
+                    stat("experience", 20.0, 0.0),
+                ],
+            }),
+        }];
+        runes.save.equipped = Some(0);
+        runes.revision = 1;
+        let mut run = Run::default();
+        run.abilities.push(crate::survivors::Owned {
+            def: data::ability("heroic_strike"),
+            level: 1,
+            cd: 0.0,
+        });
+        let offense = category_text(2, &run, None, 0);
+        assert!(offense.contains("Critical damage: 200%"), "{offense}");
+        let speed = run.stats().speed;
+        runes::apply(&runes, &mut run);
+        // Roll and upgrade bonus both reach the sheet: 200 % + 30 % + 10 %.
+        let offense = category_text(2, &run, None, 0);
+        assert!(offense.contains("Critical damage: 240%"), "{offense}");
+        let utility = category_text(4, &run, None, 0);
+        assert!(
+            utility.contains(&format!("Movement speed: {:.1} yd/s", speed * 1.1)),
+            "{utility}"
+        );
+        assert!(utility.contains("Experience: +20.0%"), "{utility}");
+    }
+    #[test]
     fn defense_shows_the_actual_combined_reduction_instead_of_adding_percentages() {
         let mut run = Run::default();
         run.equipment_armour = 100.0;

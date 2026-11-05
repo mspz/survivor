@@ -30,6 +30,7 @@ mod passives;
 mod procs;
 mod progression;
 mod reward_config;
+mod runes;
 mod server;
 mod session;
 mod spell_engine;
