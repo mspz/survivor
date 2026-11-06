@@ -205,7 +205,131 @@ mod spell_engine_integration_tests {
         assert_eq!(world.resource::<Run>().hp, hp);
     }
 
+    #[test]
+    fn totemic_recall_moves_all_owned_totem_types_without_refreshing_or_stealing_them() {
+        for owner in [None, Some(42)] {
+            for exclude_others in [false, true] {
+                let (mut world, _) = legendary_world("searing_totem", 0, &[1.0]);
+                {
+                    let mut run = world.resource_mut::<Run>();
+                    run.legendary.equipped.clear();
+                    run.owner = owner;
+                    run.abilities = [
+                        "searing_totem",
+                        "magma_totem",
+                        "earthbind_totem",
+                        "strength_of_earth_totem",
+                        "healing_stream_totem",
+                    ]
+                    .into_iter()
+                    .map(|key| Owned {
+                        def: data::ability(key),
+                        level: 1,
+                        cd: 0.0,
+                    })
+                    .collect();
+                }
+                world.run_system_once(cast_abilities).unwrap();
+                let mut generic: Vec<_> = world
+                    .query::<(Entity, &Totem, &Transform)>()
+                    .iter(&world)
+                    .map(|(e, t, tf)| (e, t.left, t.tick, tf.translation))
+                    .collect();
+                generic.sort_by_key(|(e, ..)| e.to_bits());
+                assert_eq!(generic.len(), 3);
+                if exclude_others {
+                    world.get_mut::<Totem>(generic[0].0).unwrap().owner = Some(99);
+                    world.get_mut::<Totem>(generic[1].0).unwrap().left = 0.0;
+                }
+                for zone in &mut world.resource_mut::<Run>().support.zones {
+                    zone.next = 1.0;
+                }
+                let zones: Vec<_> = world
+                    .resource::<Run>()
+                    .support
+                    .zones
+                    .iter()
+                    .map(|z| (z.entity, z.until, z.power, z.next))
+                    .collect();
+                assert_eq!(zones.len(), 2);
+                let hero = world
+                    .query_filtered::<Entity, With<Hero>>()
+                    .single(&world)
+                    .unwrap();
+                world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+                world.resource_mut::<Run>().abilities = vec![Owned {
+                    def: data::ability("totemic_recall"),
+                    level: 1,
+                    cd: 0.0,
+                }];
+                world.run_system_once(cast_abilities).unwrap();
+                for (index, (entity, left, tick, original)) in generic.iter().enumerate() {
+                    let totem = world.get::<Totem>(*entity).unwrap();
+                    let position = world.get::<Transform>(*entity).unwrap().translation;
+                    if exclude_others && index < 2 {
+                        assert_eq!(position, *original);
+                    } else {
+                        assert!((position - Vec3::X * 30.0).length() <= 3.01);
+                        assert_eq!(totem.left, *left);
+                    }
+                    assert_eq!(totem.tick, *tick);
+                }
+                for (entity, until, power, next) in zones {
+                    let zone = world
+                        .resource::<Run>()
+                        .support
+                        .zones
+                        .iter()
+                        .find(|z| z.entity == entity)
+                        .unwrap();
+                    assert!((zone.pos - Vec3::X * 30.0).length() <= 3.01);
+                    assert_eq!(
+                        world.get::<Transform>(entity).unwrap().translation,
+                        zone.pos
+                    );
+                    assert_eq!((zone.until, zone.power, zone.next), (until, power, next));
+                }
+                assert!(world.resource::<Run>().abilities[0].cd > 1.0);
+                world.get_mut::<Transform>(hero).unwrap().translation.x = 60.0;
+                world.run_system_once(cast_abilities).unwrap();
+                assert!(world
+                    .resource::<Run>()
+                    .support
+                    .zones
+                    .iter()
+                    .all(|z| z.pos.x < 35.0));
+            }
+        }
+    }
 
+    #[test]
+    fn totemic_recall_is_a_learnable_utility_and_waits_for_distant_totems() {
+        let (mut world, _) = legendary_world("totemic_recall", 0, &[]);
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Run>().abilities[0].cd, 0.2);
+        let run = world.resource::<Run>();
+        let def = data::ability("totemic_recall");
+        assert!(data::CLASSES
+            .iter()
+            .find(|c| c.id == 7)
+            .unwrap()
+            .pool
+            .contains(&def.key));
+        let low = run.resolve_spell(def, 1);
+        let gold = run.resolve_spell(def, 6);
+        assert!(low
+            .tags
+            .contains(engine::Tags::UTILITY | engine::Tags::TOTEM | engine::Tags::SPELL));
+        assert!(!low
+            .tags
+            .intersects(engine::Tags::DAMAGE | engine::Tags::BUFF | engine::Tags::DURATION));
+        assert_eq!(gold.dmg, 0.0);
+        assert!(gold.cooldown < low.cooldown * 0.75);
+        let text =
+            super::super::hud::describe_card(super::super::hud::Choice::NewAbility(def), run, None);
+        assert_eq!(text.name, "Totemic Recall");
+        assert!(text.desc.contains("remaining duration"));
+    }
 
     #[test]
     fn added_skills_are_learnable_classified_and_cast_in_the_real_system() {
@@ -2242,6 +2366,56 @@ pub(super) struct Totem {
     pulse: bool,
 }
 
+fn recall_totems(
+    run: &mut Run,
+    position: Vec3,
+    totems: &Query<(Entity, &Transform, &Totem)>,
+    summons: &Query<(Entity, &Transform, &super::talent_runtime::Summon)>,
+    commands: &mut Commands,
+) -> bool {
+    let mut owned: Vec<_> = totems
+        .iter()
+        .filter(|(_, _, t)| t.owner == run.owner && t.left > 0.0)
+        .map(|(e, tf, _)| (e, tf.translation))
+        .collect();
+    owned.extend(
+        summons
+            .iter()
+            .filter(|(_, _, s)| s.owned_totem(run.owner))
+            .map(|(e, tf, _)| (e, tf.translation)),
+    );
+    owned.extend(
+        run.support
+            .zones
+            .iter()
+            .filter(|z| {
+                z.until > run.elapsed
+                    && matches!(z.key, "strength_of_earth_totem" | "healing_stream_totem")
+            })
+            .map(|z| (z.entity, z.pos)),
+    );
+    if !owned
+        .iter()
+        .any(|(_, pos)| flat(*pos - position).length() > 4.0)
+    {
+        return false;
+    }
+    owned.sort_by_key(|(e, _)| e.to_bits());
+    for (index, (entity, _)) in owned.into_iter().enumerate() {
+        let angle = index as f32 * std::f32::consts::FRAC_PI_2;
+        let radius = 2.0 + (index / 4) as f32;
+        let destination = position + Vec3::new(angle.cos(), 0.0, angle.sin()) * radius;
+        if let Some(zone) = run.support.zones.iter_mut().find(|z| z.entity == entity) {
+            zone.pos = destination;
+        }
+        commands.queue(move |world: &mut World| {
+            if let Some(mut tf) = world.get_mut::<Transform>(entity) {
+                tf.translation = destination;
+            }
+        });
+    }
+    true
+}
 
 pub(super) fn hit_for(
     def: &AbilityDef,
@@ -2398,6 +2572,8 @@ pub(super) fn cast_abilities(
     mut hits: MessageWriter<Hit>,
     mut healing: super::healing::PartyHealing,
     mut debuffs: Option<ResMut<super::support_spells::Debuffs>>,
+    totems: Query<(Entity, &Transform, &Totem)>,
+    summons: Query<(Entity, &Transform, &super::talent_runtime::Summon)>,
 ) {
     let dt = time.delta_secs();
     if run.pending_levels > 0 || dt <= 0.0 {
@@ -2554,7 +2730,13 @@ pub(super) fn cast_abilities(
                         skill_level,
                         p.buff_effect,
                     );
-                    if matches!(def.key, "hunters_mark" | "curse_of_elements") {
+                    if def.key == "totemic_recall" {
+                        let moved = recall_totems(&mut run, hpos, &totems, &summons, &mut commands);
+                        if moved {
+                            fx.cast(me, def.spell, &[me], Some(hpos));
+                        }
+                        moved
+                    } else if matches!(def.key, "hunters_mark" | "curse_of_elements") {
                         if let Some(target) = foes
                             .iter()
                             .filter(|f| f.dist <= p.range)

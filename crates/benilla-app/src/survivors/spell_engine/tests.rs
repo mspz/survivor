@@ -192,7 +192,11 @@ fn run_ranks_boost_specializations_and_grant_one_signature_effect_for_every_spel
             assert!(
                 (p.cooldown
                     - ((def.cooldown - 0.1 * cooldown_rank).max(0.0)
-
+                        * if def.key == "totemic_recall" && level == 6 {
+                            0.75
+                        } else {
+                            1.0
+                        }
                         * (1.0 - stats.haste).max(0.35))
                     .max(0.2)
                         * 1.2)

@@ -128,6 +128,7 @@ multiplier = 1.1
 [classes.shaman.spells]
 strength_of_earth_totem = 1.0
 healing_stream_totem = 1.0
+totemic_recall = 1.0
 earthbind_totem = 1.0
 lava_lash = 1.0
 stormstrike = 1.0

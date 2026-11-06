@@ -161,9 +161,9 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Flametongue Weapon","Skill hits deal an extra Fire hit for 25% damage.",Seal),
         m!("Stormstrike","Every fifth skill hit strikes up to 4 nearby enemies for 100% damage as Lightning.",Stormstrike)]},
     Design {title:"Restauration",focus:"Totems de soin et de dégâts",filter:T::TOTEM,milestones:[
-        m!("Healing Totem","Summon a totem that heals nearby allies for 2% max health per second.",HealTotem),
-        m!("Totemic Harmony","Your healing totem also fires a 24-damage bolt every second. +50% totem duration.",DualTotem,C::IncreasedDuration(0.5)),
-        m!("Spirit Totem","Your totem heals for 4% max health per second and its bolts hit 3 enemies.",SpiritTotem)]},
+        m!("Ancestral Totem","Summon a stationary totem that heals allies within 12 yd for 2% max health per second. Unlocks Healing Stream Totem and Totemic Recall. +20% totem power and buff effect.",HealTotem,C::IncreasedEffect(0.2),C::IncreasedBuffEffect(0.2)),
+        m!("Totemic Harmony","Your ancestral totem also fires a 24-damage Lightning bolt. Unlocks Strength of Earth Totem. +50% totem duration and +25% totem cooldown recovery.",DualTotem,C::IncreasedDuration(0.5),C::IncreasedCooldownRecovery(0.25)),
+        m!("Spirit Council","Summon a second ancestral totem. Their healing rises to 4% max health per second without stacking, and each volley hits up to 3 enemies. All totems deal 35% more damage and gain +25% buff effect. Party blessings are retained.",SpiritTotem,C::MoreDamage(0.35),C::IncreasedBuffEffect(0.25))]},
     Design {title:"Arcanes",focus:"Répétition des sorts et résonance magique",filter:T::SPELL,milestones:[
         m!("Arcane Echo","Offensive spells gain 50% repeat chance. Repeated casts cannot repeat again.",None,C::RecastChance(0.50)),
         m!("Resonant Casting","Repeated spells trigger another learned spell, or the source if it is your only spell. 0.5s internal cooldown, reduced by cooldown recovery. This extra cast cannot repeat or trigger any other proc.",ArcaneCompanion),

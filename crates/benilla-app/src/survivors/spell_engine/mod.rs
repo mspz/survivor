@@ -454,7 +454,11 @@ pub(super) fn resolve_tagged(
         radius,
         duration: ((def.duration + rank_duration) * (1.0 + duration).max(0.0)).min(300.0),
         cooldown: (((def.cooldown - 0.1 * super::specialization::cooldown_steps(level)).max(0.0)
-
+            * if def.key == "totemic_recall" && level >= 6 {
+                0.75
+            } else {
+                1.0
+            }
             * (1.0 - stats.haste).max(0.35))
             / ((1.0 + recovery).max(0.05) * (1.0 + attack_speed).max(0.05)))
         .max(0.2)

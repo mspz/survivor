@@ -298,6 +298,7 @@ pub(crate) static ABILITIES: &[AbilityDef] = &[
             totem: (4588, 5394)
         }
     ),
+    ability!("totemic_recall", 8143, Buff { cooldown: 8.0 }),
     ability!(
         "arcane_intellect",
         1459,
@@ -1865,6 +1866,7 @@ pub(crate) static CLASSES: &[ClassDef] = &[
             "earthbind_totem",
             "strength_of_earth_totem",
             "healing_stream_totem",
+            "totemic_recall",
             "lava_lash",
             "lesser_healing_wave",
             "lightning_bolt",

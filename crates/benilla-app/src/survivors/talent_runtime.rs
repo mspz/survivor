@@ -61,6 +61,11 @@ pub(super) struct Summon {
     carry_until: f32,
     harvested: Option<Entity>,
 }
+impl Summon {
+    pub(super) fn owned_totem(&self, owner: Option<u64>) -> bool {
+        self.family == 2 && self.stationary && self.owner == owner
+    }
+}
 
 const PET_LEASH: f32 = 100.0;
 fn within_pet_leash(position: Vec3, owner: Vec3) -> bool {
@@ -209,6 +214,12 @@ pub(super) fn configure(run: &mut Run) {
     }
     if class == 8 && run.talent_build[2][8] > 0 {
         unlocks.push("rejuvenation");
+    }
+    if class == 5 && run.talent_build[2][8] > 0 {
+        unlocks.extend(["healing_stream_totem", "totemic_recall"]);
+    }
+    if class == 5 && run.talent_build[2][12] > 0 {
+        unlocks.push("strength_of_earth_totem");
     }
     for key in unlocks {
         if !run.abilities.iter().any(|a| a.def.key == key) {
@@ -947,7 +958,11 @@ pub(super) fn tick(
         } else {
             u8::from(active(&run, M::Demon))
         },
-        u8::from(active(&run, M::HealTotem)),
+        if active(&run, M::SpiritTotem) {
+            2
+        } else {
+            u8::from(active(&run, M::HealTotem))
+        },
     ];
     if now >= run.talent_runtime.summon {
         run.talent_runtime.summon = now + 1.0;
@@ -1067,7 +1082,7 @@ pub(super) fn tick(
             }
         }
         let destination = if pet.stationary {
-            pos + Vec3::X * 2.0
+            tf.translation
         } else {
             target.as_ref().map_or(pos, |t| t.1.translation)
         };
@@ -1083,7 +1098,9 @@ pub(super) fn tick(
         let len = delta.length();
         let move_by = (dt * 8.0).min((len - 1.5).max(0.0));
         tf.translation += delta.normalize_or_zero() * move_by;
-        tf.translation.y = pos.y;
+        if !pet.stationary {
+            tf.translation.y = pos.y;
+        }
         mv.speed = if move_by > 0.0 { 8.0 } else { 0.0 };
         mv.flags = if move_by > 0.0 { 1 } else { 0 };
         pet.cooldown -= dt;
@@ -1211,6 +1228,7 @@ pub(super) fn support(
     mut players: Option<ResMut<Companions>>,
     hero: Query<&Transform, With<Hero>>,
     remotes: Query<(&Transform, &RemoteOwner)>,
+    totems: Query<(&Transform, &Summon)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -1224,11 +1242,23 @@ pub(super) fn support(
         owner: Option<u64>,
         pos: Vec3,
         rate: (f32, f32),
+        healing_centers: Vec<Vec3>,
         pulse: (f32, f32),
         flat: (f32, f32),
         buff: super::healer_buffs::Source,
     }
-    fn source(run: &mut Run, pos: Vec3) -> Source {
+    fn source(run: &mut Run, pos: Vec3, totems: &Query<(&Transform, &Summon)>) -> Source {
+        let totem_healing =
+            (active(run, M::HealTotem) || active(run, M::SpiritTotem)) && !run.legendary.has(194);
+        let healing_centers = if totem_healing {
+            totems
+                .iter()
+                .filter(|(_, t)| t.owned_totem(run.owner))
+                .map(|(tf, _)| tf.translation)
+                .collect()
+        } else {
+            vec![pos]
+        };
         let rate = if active(run, M::SpiritTotem) && !run.legendary.has(194) {
             0.04
         } else if active(run, M::HealTotem) && !run.legendary.has(194) {
@@ -1271,19 +1301,20 @@ pub(super) fn support(
             owner: run.owner,
             pos,
             rate: (rate.dmg, rate.radius),
+            healing_centers,
             pulse: (pulse.dmg, pulse.radius),
             flat: (healing, procs::radius(run, "proc_holy_heal", 12.0)),
             buff,
         }
     }
     if run.dead_t.is_none() {
-        sources.push(source(&mut run, tf.translation));
+        sources.push(source(&mut run, tf.translation, &totems));
     }
     if let Some(players) = players.as_deref_mut() {
         for (tf, owner) in &remotes {
             if let Some(p) = players.0.get_mut(&owner.0) {
                 if p.run.dead_t.is_none() {
-                    sources.push(source(&mut p.run, tf.translation));
+                    sources.push(source(&mut p.run, tf.translation, &totems));
                 }
             }
         }
@@ -1299,8 +1330,18 @@ pub(super) fn support(
         for source in sources {
             let distance = units::flat(source.pos - pos).length();
             let in_range = |(amount, radius)| if distance <= radius { amount } else { 0.0 };
-            let amount = run.stats().max_hp * (in_range(source.rate) * dt + in_range(source.pulse))
-                + in_range(source.flat);
+            // Overlapping ancestral totems extend coverage without multiplying the same HoT.
+            let rate = if source
+                .healing_centers
+                .iter()
+                .any(|center| units::flat(*center - pos).length() <= source.rate.1)
+            {
+                source.rate.0
+            } else {
+                0.0
+            };
+            let amount =
+                run.stats().max_hp * (rate * dt + in_range(source.pulse)) + in_range(source.flat);
             credits.push((source.owner, run.recover(amount)));
         }
         super::healer_buffs::receive(run, pos, dt, sources.iter().map(|s| (s.pos, &s.buff)));
@@ -1328,6 +1369,149 @@ pub(super) fn support(
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    fn restoration_world() -> (World, Entity) {
+        use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
+        let mut world = World::new();
+        let mut shaman = run(5, 2, &[8, 12, 18]);
+        shaman.hp = 10.0;
+        world.insert_resource(shaman);
+        world.insert_resource(Rng(42));
+        world.init_resource::<Time>();
+        world.init_resource::<PendingHits>();
+        world.init_resource::<PlaySeq>();
+        world.init_resource::<Messages<CastEvent>>();
+        world.init_resource::<Messages<SpellGoTargets>>();
+        world.init_resource::<Messages<SwingMessage>>();
+        world.init_resource::<Messages<crate::combat_text::CombatTextSpawn>>();
+        world.init_resource::<Messages<Hit>>();
+        world.init_resource::<Messages<super::super::enemies::Loot>>();
+        world.init_resource::<Messages<crate::net::FieldChanged>>();
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(100));
+        let hero = world
+            .spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()))
+            .id();
+        world.run_system_once(tick).unwrap();
+        (world, hero)
+    }
+    #[test]
+    fn spirit_council_has_two_stationary_totems_and_three_targets_per_volley() {
+        let (mut world, hero) = restoration_world();
+        assert_eq!(world.query::<&Summon>().iter(&world).count(), 2);
+        let targets = world
+            .run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+                [4.0, 5.0, 6.0, 70.0].map(|x| {
+                    super::super::enemies::spawn_enemy(
+                        &mut commands,
+                        &mut run,
+                        &data::roster(0).enemies[0],
+                        Vec3::X * x,
+                        Vec3::ZERO,
+                        false,
+                    )
+                })
+            })
+            .unwrap();
+        for entity in targets {
+            world.get_mut::<Enemy>(entity).unwrap().hp = 10000.0;
+        }
+        for mut totem in world.query::<&mut Summon>().iter_mut(&mut world) {
+            totem.cooldown = 0.0;
+        }
+        world.run_system_once(tick).unwrap();
+        assert_eq!(world.resource::<PendingHits>().0.len(), 2);
+        world
+            .run_system_once(super::super::abilities::apply_hits)
+            .unwrap();
+        for entity in &targets[..3] {
+            assert!(world.get::<Enemy>(*entity).unwrap().hp < 10000.0);
+        }
+        assert_eq!(world.get::<Enemy>(targets[3]).unwrap().hp, 10000.0);
+        let original: Vec<_> = world
+            .query::<(Entity, &Transform, &Summon)>()
+            .iter(&world)
+            .map(|(e, tf, _)| (e, tf.translation))
+            .collect();
+        world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+        world.run_system_once(tick).unwrap();
+        for (entity, pos) in &original {
+            assert_eq!(world.get::<Transform>(*entity).unwrap().translation, *pos);
+        }
+        world.resource_mut::<Run>().abilities = vec![Owned {
+            def: data::ability("totemic_recall"),
+            level: 1,
+            cd: 0.0,
+        }];
+        let cooldowns: Vec<_> = original
+            .iter()
+            .map(|(e, _)| (*e, world.get::<Summon>(*e).unwrap().cooldown))
+            .collect();
+        world
+            .run_system_once(super::super::abilities::cast_abilities)
+            .unwrap();
+        for (entity, cd) in cooldowns {
+            assert!(
+                world
+                    .get::<Transform>(entity)
+                    .unwrap()
+                    .translation
+                    .distance(Vec3::X * 30.0)
+                    <= 3.01
+            );
+            assert_eq!(world.get::<Summon>(entity).unwrap().cooldown, cd);
+        }
+    }
+    #[test]
+    fn restoration_heals_from_totems_without_stacking_and_keeps_party_blessings() {
+        let (mut world, hero) = restoration_world();
+        world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+        let mut players = Companions::default();
+        for (id, x) in [(42, 2.0), (43, 31.0)] {
+            let entity = world
+                .spawn((RemoteOwner(id), Transform::from_xyz(x, 0.0, 0.0)))
+                .id();
+            players.0.insert(
+                id,
+                super::super::multiplayer::Companion {
+                    entity,
+                    run: Run {
+                        owner: Some(id),
+                        hp: 10.0,
+                        ..default()
+                    },
+                    physics: Hero { vy: 0.0, air: 0.0 },
+                    offer: default(),
+                    offer_id: 0,
+                },
+            );
+        }
+        world.insert_resource(players);
+        world.run_system_once(support).unwrap();
+        let healing = world.resource::<Companions>().0[&42].run.hp - 10.0;
+        assert!(healing > 0.0);
+        assert_eq!(world.resource::<Run>().hp, 10.0);
+        let players = world.resource::<Companions>();
+        assert_eq!(players.0[&43].run.hp, 10.0);
+        assert!(players.0[&43].run.healer_buffs.bonuses.recovery > 0.0);
+        assert!(players.0[&43].run.healer_buffs.bonuses.damage > 0.0);
+        let one = world
+            .query_filtered::<Entity, With<Summon>>()
+            .iter(&world)
+            .next()
+            .unwrap();
+        world.despawn(one);
+        world
+            .resource_mut::<Companions>()
+            .0
+            .get_mut(&42)
+            .unwrap()
+            .run
+            .hp = 10.0;
+        world.run_system_once(support).unwrap();
+        assert!((world.resource::<Companions>().0[&42].run.hp - 10.0 - healing).abs() < 0.001);
+    }
 
     #[test]
     fn pet_targets_vary_between_nearby_enemies_without_ignoring_reach() {

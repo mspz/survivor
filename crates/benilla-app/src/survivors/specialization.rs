@@ -54,6 +54,9 @@ pub(super) fn extra_target(def: &AbilityDef, level: u8) -> usize {
     ) * 2
 }
 pub(super) fn signature_text(def: &AbilityDef) -> &'static str {
+    if def.key == "totemic_recall" {
+        return "Signature: 25% less cooldown";
+    }
     match def.kind {
         Kind::Bolt => "Signature: +2 projectiles",
         Kind::Chain => "Signature: +2 chain targets",

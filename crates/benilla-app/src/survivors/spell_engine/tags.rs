@@ -98,7 +98,7 @@ pub fn school(key: &str) -> Option<Tags> {
         }
         "holy_shield" | "hammer_of_the_righteous" | "penance" => T::HOLY,
         "frost_trap" | "ice_armor" => T::COLD,
-        "earthbind_totem" | "efflorescence" => T::NATURE,
+        "earthbind_totem" | "efflorescence" | "totemic_recall" => T::NATURE,
         "lava_lash" | "living_bomb" => T::FIRE,
         "devouring_plague" | "seed_of_corruption" | "soul_burn" => T::SHADOW,
         "claw" => T::PHYSICAL,
@@ -175,6 +175,9 @@ pub fn mobility(spell: u32) -> Option<(&'static str, Tags)> {
 }
 
 pub fn for_spell(def: &AbilityDef) -> Tags {
+    if def.key == "totemic_recall" {
+        return Tags::SPELL | Tags::NATURE | Tags::UTILITY | Tags::TOTEM;
+    }
     if let Some(spell) = super::super::procs::find(def.key) {
         return spell.tags;
     }

@@ -1940,7 +1940,7 @@ mod tests {
                 pets,
                 match class {
                     2 => 2,
-                    5 => 1,
+                    5 => 2,
                     7 => 3,
                     _ => 0,
                 },

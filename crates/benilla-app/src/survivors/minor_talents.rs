@@ -945,33 +945,33 @@ static MINORS: [[Minor; 16]; 27] = [
             "proc_totem_heal",
             C::IncreasedEffect(0.05)
         ),
-        m!("Gentle Touch", Tags(T::HEAL.0), C::IncreasedEffect(0.04)),
         m!(
-            "Swift Mending",
-            Tags(T::HEAL.0),
-            C::IncreasedCooldownRecovery(0.025)
+            "Empowered Offerings",
+            Tags(T::TOTEM.0),
+            C::IncreasedBuffEffect(0.04)
         ),
         k!(
-            "Spiritual Might",
-            "proc_spirit_bolt",
-            C::IncreasedDamage(0.05)
+            "Swift Recall",
+            "totemic_recall",
+            C::IncreasedCooldownRecovery(0.06)
         ),
-        k!(
-            "Spirit Guidance",
-            "proc_spirit_bolt",
+        m!(
+            "Totemic Precision",
+            Tags(T::TOTEM.0),
             C::CriticalChance(0.01)
         ),
-        k!(
-            "Spirit Rhythm",
-            "proc_spirit_bolt",
-            C::IncreasedCooldownRecovery(0.03)
+        m!(
+            "Totemic Fury",
+            Tags(T::TOTEM.0),
+            C::CriticalMultiplier(0.05)
         ),
         m!(
-            "Gathering Storm",
-            Tags(T::LIGHTNING.0),
-            C::IncreasedDamage(0.04)
+            "Totemic Cadence",
+            Tags(T::TOTEM.0),
+            C::IncreasedCooldownRecovery(0.03)
         ),
-        m!("Wild Power", Tags(T::NATURE.0), C::IncreasedDamage(0.04)),
+        k!("Searing Focus", "searing_totem", C::IncreasedDamage(0.06)),
+        k!("Magma Reach", "magma_totem", C::IncreasedArea(0.06)),
         m!("Expanding Reach", Tags(T::TOTEM.0), C::IncreasedArea(0.04)),
         s!("Enduring Spirit", MaxHp, 0.03),
         s!("Second Breath", Regen, 0.4),
@@ -1455,6 +1455,51 @@ mod tests {
         };
         talents::Account::from_shared(class, 0, build).apply(class, &mut run);
         run
+    }
+    #[test]
+    fn restoration_tree_empowers_damage_healing_and_support_totems_instead_of_direct_spells() {
+        let run = apply_tree(
+            5,
+            2,
+            &[
+                (8, 1),
+                (12, 1),
+                (18, 1),
+                (0, 5),
+                (1, 5),
+                (2, 5),
+                (3, 5),
+                (4, 5),
+                (5, 5),
+            ],
+        );
+        let base = Run {
+            class: run.class,
+            ..Default::default()
+        };
+        for key in [
+            "healing_stream_totem",
+            "totemic_recall",
+            "strength_of_earth_totem",
+        ] {
+            assert!(run.abilities.iter().any(|o| o.def.key == key), "{key}");
+        }
+        for key in ["searing_totem", "magma_totem"] {
+            let trained = run.resolve_spell(data::ability(key), 1);
+            let untrained = base.resolve_spell(data::ability(key), 1);
+            assert!(trained.dmg > untrained.dmg * 1.35);
+            assert!(trained.duration > untrained.duration * 1.5);
+            assert!(trained.cooldown < untrained.cooldown);
+        }
+        let trained = run.resolve_spell(data::ability("healing_stream_totem"), 1);
+        let untrained = base.resolve_spell(data::ability("healing_stream_totem"), 1);
+        assert!(trained.buff_effect > untrained.buff_effect + 0.4);
+        for key in ["lightning_bolt", "lesser_healing_wave"] {
+            assert_eq!(
+                run.resolve_spell(data::ability(key), 1).dmg,
+                base.resolve_spell(data::ability(key), 1).dmg
+            );
+        }
     }
 
     #[test]
