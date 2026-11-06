@@ -10,6 +10,10 @@ pub(super) enum Click {
     Tab(Tab),
     Bind(Action, usize),
     Sensitivity(i8),
+    Zoom(i8),
+    Distance(i8),
+    DistanceReset,
+    ViewDistance(i8),
     Volume(&'static str, i8),
     Cvar(&'static str),
     Flag(u8),
@@ -25,6 +29,7 @@ fn value(cvars: Option<&Cvars>, name: &str) -> f32 {
             "MusicVolume" => 0.4,
             "AmbienceVolume" => 0.6,
             "gxWindow" => 0.0,
+            "farclip" => 350.0,
             _ => 1.0,
         })
 }
@@ -93,9 +98,29 @@ pub(super) fn input(
             Click::Tab(tab) => {
                 panel.tab = tab;
                 panel.capture = None;
+                panel.scroll = 0.0;
             }
             Click::Bind(action, slot) => panel.capture = Some((action, slot)),
             Click::Sensitivity(step) => rig.adjust_sensitivity(f32::from(step) * 0.1),
+            Click::Zoom(step) => {
+                settings.zoom_speed = ((settings.zoom_speed + f32::from(step) * 0.25) * 4.0)
+                    .round()
+                    .clamp(1.0, 8.0)
+                    / 4.0;
+                settings.save();
+            }
+            Click::Distance(step) => rig.dist = (rig.dist + f32::from(step) * 2.0).clamp(1.5, 70.0),
+            Click::DistanceReset => {
+                rig.dist = 12.0;
+                rig.pitch = 0.3;
+            }
+            Click::ViewDistance(step) => {
+                if let Some(c) = cvars.as_deref_mut() {
+                    let distance =
+                        (value(Some(c), "farclip") + f32::from(step) * 25.0).clamp(177.0, 777.0);
+                    c.set("farclip", &format!("{distance:.0}"));
+                }
+            }
             Click::Volume(name, step) => {
                 if let Some(c) = cvars.as_deref_mut() {
                     change_volume(c, name, step);
@@ -109,7 +134,7 @@ pub(super) fn input(
                         "0"
                     };
                     c.set(name, v);
-                    if name == "gxWindow" {
+                    if matches!(name, "gxWindow" | "gxVSync" | "gxMaximize") {
                         c.commit_latched();
                     }
                 }
@@ -120,6 +145,8 @@ pub(super) fn input(
                     1 => settings.healing = !settings.healing,
                     2 => settings.incoming = !settings.incoming,
                     3 => settings.critical_only = !settings.critical_only,
+                    5 => settings.invert_x = !settings.invert_x,
+                    6 => settings.invert_y = !settings.invert_y,
                     _ => settings.grade = !settings.grade,
                 };
                 settings.save();
@@ -134,6 +161,11 @@ pub(super) fn input(
                     Tab::Mouse => {
                         let delta = 1.0 - rig.sensitivity;
                         rig.adjust_sensitivity(delta);
+                        settings.invert_x = false;
+                        settings.invert_y = false;
+                        settings.zoom_speed = 1.0;
+                        rig.dist = 12.0;
+                        rig.pitch = 0.3;
                     }
                     Tab::Sound => {
                         if let Some(c) = cvars.as_deref_mut() {
@@ -145,6 +177,7 @@ pub(super) fn input(
                                 ("MasterSoundEffects", "1"),
                                 ("EnableMusic", "1"),
                                 ("EnableAmbience", "1"),
+                                ("SoundOutputLimiter", "1"),
                             ] {
                                 c.set(k, v);
                             }
@@ -157,6 +190,20 @@ pub(super) fn input(
                         settings.critical_only = false;
                         settings.grade = true;
                     }
+                    Tab::Video => {
+                        if let Some(c) = cvars.as_deref_mut() {
+                            for (k, v) in [
+                                ("gxWindow", "0"),
+                                ("gxVSync", "1"),
+                                ("gxMaximize", "0"),
+                                ("farclip", "350"),
+                            ] {
+                                c.set(k, v);
+                            }
+                            c.commit_latched();
+                        }
+                    }
+                    Tab::Help => {}
                 }
                 settings.save();
             }
@@ -214,7 +261,7 @@ fn key_label(key: Option<KeyCode>) -> String {
             .replace("Digit", "")
             .replace("Arrow", "")
     })
-    .unwrap_or("Unbound".to_owned())
+    .unwrap_or("Non assignée".to_owned())
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render(
@@ -241,16 +288,20 @@ pub(super) fn render(
         "EnableMusic",
         "EnableAmbience",
         "gxWindow",
+        "gxVSync",
+        "gxMaximize",
+        "farclip",
+        "SoundOutputLimiter",
     ]
     .map(|k| value(cv, k));
     let stamp = format!(
-        "{:?} {} {:?} {:?} {:?} {} {:?}",
+        "{:?} {} {:?} {:?} {:?} {:?} {:?}",
         phase.get(),
         panel.open,
         panel.tab,
         panel.capture,
         *settings,
-        rig.sensitivity,
+        (rig.sensitivity, rig.dist),
         audio
     );
     if *cache == stamp {
@@ -264,49 +315,156 @@ pub(super) fn render(
         return;
     }
     let f = &font.0;
-    commands.spawn((Root,Button,GlobalZIndex(800),BackgroundColor(Color::srgba(0.0,0.0,0.0,0.8)),Node{position_type:PositionType::Absolute,width:Val::Percent(100.0),height:Val::Percent(100.0),justify_content:JustifyContent::Center,align_items:AlignItems::Center,..default()}))
-        .with_children(|overlay|{
-            overlay.spawn((BackgroundColor(Color::srgb(0.045,0.035,0.03)),BorderColor::all(GOLD),Node{width:Val::Px(720.0),height:Val::Px(710.0),max_height:Val::Vh(95.0),padding:UiRect::all(Val::Px(20.0)),border:UiRect::all(Val::Px(2.0)),flex_direction:FlexDirection::Column,row_gap:Val::Px(12.0),..default()})).with_children(|frame|{ super::super::combat_ui::skin::backdrop(frame);
-                frame.spawn(text(f,"OPTIONS",30.0,GOLD));
-                frame.spawn(Node{column_gap:Val::Px(8.0),..default()}).with_children(|tabs|{
-                    for (tab,label) in [(Tab::Controls,"Key bindings"),(Tab::Sound,"Sound"),(Tab::Mouse,"Mouse"),(Tab::Display,"Display")]{button(tabs,f,Click::Tab(tab),if tab==panel.tab{format!("[{label}]")}else{label.to_owned()},158.0);}
-                });
-                frame.spawn(Node{width:Val::Percent(100.0),flex_direction:FlexDirection::Column,row_gap:Val::Px(2.0),flex_grow:1.0,..default()}).with_children(|body|{
-                    match panel.tab {
-                        Tab::Controls=>{
-                            body.spawn(text(f,"Click a binding, then press a key. Conflicting keys swap assignments.",13.0,GOLD));
-                            for action in Action::ALL {row(body,f,action.name(),|r|{
-                                for slot in 0..2 {let label=if panel.capture==Some((action,slot)){"Press a key...".to_owned()}else{key_label(settings.bindings[action as usize][slot])};button(r,f,Click::Bind(action,slot),label,164.0);}
-                            });}
-                            body.spawn(text(f,"Esc cancels capture / always opens pause. Backspace clears a binding.\nMouse: left drag orbits; right drag turns; both buttons move forward; wheel zooms.\nEnter confirms menu choices. Key bindings use physical key positions.",12.0,Color::srgb(0.7,0.7,0.7)));
-                        }
-                        Tab::Sound=>{
-                            for (name,label) in [("MasterVolume","Master volume"),("SoundVolume","Effects volume"),("MusicVolume","Music volume"),("AmbienceVolume","Ambience volume")] {
-                                row(body,f,label,|r|{button(r,f,Click::Volume(name,-1),"-",48.0);r.spawn((text(f,format!("{:.0}%",value(cv,name)*100.0),18.0,GOLD),Node{width:Val::Px(80.0),..default()}));button(r,f,Click::Volume(name,1),"+",48.0);});
-                            }
-                            for (name,label) in [("MasterSoundEffects","Enable sound"),("EnableMusic","Enable music"),("EnableAmbience","Enable ambience")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),if value(cv,name)>0.0 {"ON"}else{"OFF"},180.0));}
-                            body.spawn(text(f,"Changes apply immediately. Volumes are saved in the engine configuration.",13.0,GOLD));
-                        }
-                        Tab::Mouse=>{
-                            row(body,f,"Mouse sensitivity",|r|{button(r,f,Click::Sensitivity(-1),"-",48.0);r.spawn((text(f,format!("{:.1}x",rig.sensitivity),20.0,GOLD),Node{width:Val::Px(80.0),..default()}));button(r,f,Click::Sensitivity(1),"+",48.0);});
-                            body.spawn(text(f,"0.1x to 3.0x. Applies to camera orbit and right-button character turning.",14.0,Color::WHITE));
-                        }
-                        Tab::Display=>{
-                            for (flag,label,on) in [(0,"Outgoing damage numbers",settings.damage),(1,"Healing numbers",settings.healing),(2,"Incoming damage numbers",settings.incoming),(3,"Outgoing critical numbers only",settings.critical_only),(4,"Colour / sharpening filter",settings.grade)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),if on{"ON"}else{"OFF"},180.0));}
-                            row(body,f,"Windowed mode",|r|button(r,f,Click::Cvar("gxWindow"),if value(cv,"gxWindow")>0.0{"ON"}else{"OFF"},180.0));
-                            body.spawn(text(f,"Combat-number filters apply to new floating numbers; damage and healing still resolve normally.",13.0,GOLD));
-                        }
-                    }
-                });
-                frame.spawn(Node{column_gap:Val::Px(12.0),..default()}).with_children(|footer|{button(footer,f,Click::Reset,"Reset this tab",200.0);button(footer,f,Click::Back,"Back to pause [Esc]",240.0);});
-                frame.spawn(text(f,"Preferences are saved automatically.",12.0,GOLD));
+    commands.spawn((Root,Button,GlobalZIndex(800),BackgroundColor(Color::srgba(0.0,0.0,0.0,0.8)),Node{position_type:PositionType::Absolute,width:Val::Percent(100.0),height:Val::Percent(100.0),justify_content:JustifyContent::Center,align_items:AlignItems::Center,..default()})).with_children(|overlay| {
+        overlay.spawn(Node{width:Val::Px(740.0),max_width:Val::Percent(98.0),height:Val::Px(710.0),max_height:Val::Vh(94.0),padding:UiRect::all(Val::Px(20.0)),flex_direction:FlexDirection::Column,row_gap:Val::Px(12.0),..default()}).with_children(|frame| {
+            super::super::combat_ui::skin::backdrop(frame);
+            frame.spawn(text(f,"OPTIONS",26.0,GOLD));
+            frame.spawn(Node{column_gap:Val::Px(5.0),row_gap:Val::Px(5.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|tabs| {
+                for (tab,label) in [(Tab::Controls,"Raccourcis"),(Tab::Mouse,"Caméra"),(Tab::Sound,"Audio"),(Tab::Display,"Interface"),(Tab::Video,"Vidéo"),(Tab::Help,"Aide")] {
+                    button(tabs,f,Click::Tab(tab),if tab==panel.tab{format!("[{label}]")}else{label.into()},104.0);
+                }
             });
+            frame.spawn((Body,Interaction::default(),bevy::ui::RelativeCursorPosition::default(),ScrollPosition(Vec2::new(0.0,panel.scroll)),Node{width:Val::Percent(100.0),min_height:Val::Px(0.0),flex_direction:FlexDirection::Column,row_gap:Val::Px(8.0),flex_grow:1.0,flex_basis:Val::Px(0.0),overflow:Overflow::scroll_y(),..default()})).with_children(|body| {
+                match panel.tab {
+                    Tab::Controls => {
+                        body.spawn(text(f,"Choisissez une touche principale ou secondaire. Les conflits échangent les raccourcis.",13.0,GOLD));
+                        for action in Action::ALL { row(body,f,action.name(),|r| {
+                            for slot in 0..2 { button(r,f,Click::Bind(action,slot),if panel.capture==Some((action,slot)){"Appuyez sur une touche…".into()}else{key_label(settings.bindings[action as usize][slot])},164.0); }
+                        }); }
+                        body.spawn(text(f,"Échap annule la saisie. Retour arrière retire la touche.\nLes raccourcis suivent la position physique des touches.",12.0,Color::WHITE));
+                    }
+                    Tab::Sound => {
+                        for (name,label) in [("MasterVolume","Volume général"),("SoundVolume","Effets sonores"),("MusicVolume","Musique"),("AmbienceVolume","Ambiance")] {
+                            row(body,f,label,|r| { button(r,f,Click::Volume(name,-1),"−",45.0);r.spawn(text(f,format!("{:3.0} %",value(cv,name)*100.0),16.0,GOLD));button(r,f,Click::Volume(name,1),"+",45.0); });
+                        }
+                        for (name,label) in [("MasterSoundEffects","Activer le son"),("EnableMusic","Activer la musique"),("EnableAmbience","Activer l'ambiance"),("SoundOutputLimiter","Limiter la saturation audio")] {
+                            row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));
+                        }
+                        body.spawn(text(f,"Le limiteur réduit la distorsion quand de nombreux sons se superposent. Réglages appliqués immédiatement.",13.0,GOLD));
+                    }
+                    Tab::Mouse => {
+                        row(body,f,"Sensibilité",|r|{button(r,f,Click::Sensitivity(-1),"−",45.0);r.spawn(text(f,format!("{:.1}×",rig.sensitivity),16.0,GOLD));button(r,f,Click::Sensitivity(1),"+",45.0);});
+                        for(flag,label,on)in[(5,"Inverser l'axe horizontal",settings.invert_x),(6,"Inverser l'axe vertical",settings.invert_y)]{row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
+                        row(body,f,"Vitesse du zoom",|r|{button(r,f,Click::Zoom(-1),"−",45.0);r.spawn(text(f,format!("{:.2}×",settings.zoom_speed),16.0,GOLD));button(r,f,Click::Zoom(1),"+",45.0);});
+                        row(body,f,"Distance actuelle",|r|{button(r,f,Click::Distance(-1),"−",45.0);r.spawn(text(f,format!("{:.1} m",rig.dist),16.0,GOLD));button(r,f,Click::Distance(1),"+",45.0);});
+                        button(body,f,Click::DistanceReset,"Recentrer la hauteur et le zoom",320.0);
+                        body.spawn(text(f,"Glisser avec un bouton de souris fait pivoter la caméra. La molette règle le zoom. Maintenir les deux boutons fait avancer.\nLa distance actuelle peut ensuite être modifiée à la molette.",13.0,Color::WHITE));
+                    }
+                    Tab::Display => {
+                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
+                        body.spawn(text(f,"Les filtres concernent les nouveaux nombres flottants. Les calculs de combat restent identiques.\nLes fenêtres Personnage et Dégâts peuvent être déplacées par leur titre.",13.0,GOLD));
+                    }
+                    Tab::Video => {
+                        for(name,label)in[("gxWindow","Mode fenêtré"),("gxMaximize","Fenêtre maximisée"),("gxVSync","Synchronisation verticale")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));}
+                        row(body,f,"Distance d'affichage",|r|{button(r,f,Click::ViewDistance(-1),"−",45.0);r.spawn(text(f,format!("{:.0} m",value(cv,"farclip")),16.0,GOLD));button(r,f,Click::ViewDistance(1),"+",45.0);});
+                        body.spawn(text(f,"Une distance plus faible réduit la charge graphique. La synchronisation verticale limite les déchirures.\nLe plein écran utilise le mode sans bordure. Le navigateur gère sa propre fenêtre.",13.0,GOLD));
+                    }
+                    Tab::Help => {
+                        for(title,description)in[
+                            ("Hub et progression","Expéditions : choisir une zone et commencer une run. Talents : progression permanente du personnage. Runes : préparer votre équipement au Hub."),
+                            ("Objets et coffre partagé","Clic droit dans les sacs : équiper ou retirer un objet. Au coffre ouvert : clic droit pour transférer. Glisser un objet vers l'autre fenêtre permet aussi de le transférer. Relâcher ailleurs annule."),
+                            ("Gheed","Approchez du vendeur devant la forge, puis utilisez le bouton Parier. Survolez un emplacement pour son prix ; cliquez pour acheter un objet de votre classe et de votre niveau."),
+                            ("Multijoueur","Créez ou rejoignez un salon depuis la sélection du personnage. Utilisez l'IPv4 Hamachi de l'hôte. Les objets du coffre sont partagés entre les membres du salon."),
+                            ("Pause","En solo, les menus interrompent la run. En multijoueur, le monde continue : ouvrez les menus dans un endroit sûr."),
+                        ]{body.spawn(text(f,title,17.0,GOLD));body.spawn(text(f,description,14.0,Color::WHITE));}
+                    }
+                }
+            });
+            frame.spawn(Node{column_gap:Val::Px(10.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|footer| {
+                if panel.tab!=Tab::Help {button(footer,f,Click::Reset,"Réinitialiser cet onglet",240.0);}
+                button(footer,f,Click::Back,"Retour [Échap]",200.0);
+            });
+            frame.spawn(text(f,"Préférences enregistrées automatiquement · Molette pour faire défiler",12.0,GOLD));
         });
+    });
+}
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "Activé"
+    } else {
+        "Désactivé"
+    }
+}
+#[derive(Component)]
+pub(super) struct Body;
+pub(super) fn scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut panel: ResMut<Panel>,
+    mut bodies: Query<
+        (
+            &ComputedNode,
+            &bevy::ui::RelativeCursorPosition,
+            &mut ScrollPosition,
+        ),
+        With<Body>,
+    >,
+) {
+    if !panel.open {
+        wheel.clear();
+        return;
+    }
+    for event in wheel.read() {
+        for (node, cursor, mut position) in &mut bodies {
+            if cursor.cursor_over() {
+                let step = if event.unit == bevy::input::mouse::MouseScrollUnit::Line {
+                    32.0
+                } else {
+                    1.0
+                };
+                position.0.y = (position.0.y - event.y * step).clamp(
+                    0.0,
+                    ((node.content_size.y - node.size.y) * node.inverse_scale_factor).max(0.0),
+                );
+                panel.scroll = position.0.y;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_preferences_and_video_buttons_apply_and_reset_their_real_settings() {
+        let mut app = App::new();
+        app.insert_resource(State::new(Phase::Paused))
+            .init_resource::<Settings>()
+            .init_resource::<CamRig>()
+            .init_resource::<Cvars>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Panel {
+                open: true,
+                tab: Tab::Mouse,
+                ..default()
+            })
+            .add_systems(Update, input);
+        let click = |app: &mut App, action| {
+            let e = app.world_mut().spawn((Interaction::Pressed, action)).id();
+            app.update();
+            app.world_mut().despawn(e);
+        };
+        click(&mut app, Click::Flag(6));
+        click(&mut app, Click::Zoom(1));
+        assert!(app.world().resource::<Settings>().invert_y);
+        assert_eq!(app.world().resource::<Settings>().zoom_speed, 1.25);
+        click(&mut app, Click::Reset);
+        assert!(!app.world().resource::<Settings>().invert_y);
+        assert_eq!(app.world().resource::<Settings>().zoom_speed, 1.0);
+        app.world_mut().resource_mut::<Panel>().tab = Tab::Video;
+        click(&mut app, Click::ViewDistance(1));
+        assert_eq!(
+            value(Some(app.world().resource::<Cvars>()), "farclip"),
+            375.0
+        );
+        click(&mut app, Click::Cvar("gxVSync"));
+        assert_eq!(value(Some(app.world().resource::<Cvars>()), "gxVSync"), 0.0);
+        click(&mut app, Click::Reset);
+        assert_eq!(
+            value(Some(app.world().resource::<Cvars>()), "farclip"),
+            350.0
+        );
+        assert_eq!(value(Some(app.world().resource::<Cvars>()), "gxVSync"), 1.0);
+    }
     #[test]
     fn escape_closes_options_without_resuming_and_capture_consumes_the_key() {
         let mut app = App::new();
@@ -387,7 +545,14 @@ mod tests {
         app.world_mut()
             .resource_mut::<NextState<Phase>>()
             .set(Phase::Paused);
-        for tab in [Tab::Controls, Tab::Sound, Tab::Mouse, Tab::Display] {
+        for tab in [
+            Tab::Controls,
+            Tab::Sound,
+            Tab::Mouse,
+            Tab::Display,
+            Tab::Video,
+            Tab::Help,
+        ] {
             app.world_mut().resource_mut::<Panel>().tab = tab;
             app.update();
             let world = app.world_mut();

@@ -385,7 +385,8 @@ pub(super) fn place_camera(
             MouseScrollUnit::Line => w.y,
             MouseScrollUnit::Pixel => w.y * 0.02,
         };
-        rig.dist = (rig.dist * (1.0 - 0.12 * notches).clamp(0.5, 1.5)).clamp(ZOOM_MIN, ZOOM_MAX);
+        rig.dist = (rig.dist * (1.0 - 0.12 * notches * settings.zoom_speed).clamp(0.5, 1.5))
+            .clamp(ZOOM_MIN, ZOOM_MAX);
     }
     let (eye, look) = if *phase.get() == Phase::Menu {
         let angle = std::f32::consts::PI + rig.orbit;
@@ -397,9 +398,16 @@ pub(super) fn place_camera(
     } else {
         // Unlocked, either mouse button drags the camera around the hero, as in WoW.
         if interactive && mouse.any_pressed([MouseButton::Left, MouseButton::Right]) {
-            rig.yaw -= motion.delta.x * ORBIT_RATE * rig.sensitivity;
-            rig.pitch = (rig.pitch + motion.delta.y * ORBIT_RATE * rig.sensitivity)
-                .clamp(PITCH_MIN, PITCH_MAX);
+            rig.yaw -= motion.delta.x
+                * ORBIT_RATE
+                * rig.sensitivity
+                * if settings.invert_x { -1.0 } else { 1.0 };
+            rig.pitch = (rig.pitch
+                + motion.delta.y
+                    * ORBIT_RATE
+                    * rig.sensitivity
+                    * if settings.invert_y { -1.0 } else { 1.0 })
+            .clamp(PITCH_MIN, PITCH_MAX);
         } else if interactive
             && [
                 Action::Forward,
