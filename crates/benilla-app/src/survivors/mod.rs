@@ -20,6 +20,7 @@ mod extra_spells;
 mod fill;
 mod forms;
 mod gambling;
+mod codex;
 mod player_auras;
 mod grade;
 mod healer_buffs;

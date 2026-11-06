@@ -143,6 +143,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(characters::plugin)
         .add_plugins(hub_ground::plugin)
         .add_plugins(options::plugin)
+        .add_plugins(codex::plugin)
         .add_plugins(player_auras::plugin)
         .add_plugins(combat_ui::plugin)
         .add_plugins(unit_frames::plugin)

@@ -806,6 +806,7 @@ mod tooltip_tests;
 
 #[derive(Component, Clone, Copy, PartialEq)]
 pub(super) enum UiAction {
+    Codex,
     Options,
     Resume,
     MainMenu,
@@ -1322,6 +1323,7 @@ pub(super) fn setup_hud(
                 root.spawn(centered(f, "Game Menu", 26.0, GOLD));
                 for (label, action) in [
                     ("Options", UiAction::Options),
+                    ("Codex", UiAction::Codex),
                     ("Resume", UiAction::Resume),
                     ("Return to Hub", UiAction::MainMenu),
                     ("Character selection", UiAction::Logout),
@@ -1735,10 +1737,11 @@ pub(super) fn keys(
     phase: Res<State<Phase>>,
     settings: Res<super::options::Settings>,
     panel: Res<super::options::Panel>,
+    codex: Option<Res<super::codex::Panel>>,
     mut selection: ResMut<Selection>,
     mut next: ResMut<NextState<Phase>>,
 ) {
-    if panel.open {
+    if panel.open || codex.as_ref().is_some_and(|c| c.open) {
         return;
     }
     match phase.get() {
