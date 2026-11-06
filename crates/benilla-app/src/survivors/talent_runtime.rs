@@ -700,7 +700,7 @@ pub(super) fn tick(
         let skill = procs::source_key(&run, burst.meter_source)
             .filter(|key| !key.ends_with("_spread"))
             .unwrap_or("proc_plagueburst");
-        let p = procs::resolve(
+        let mut p = procs::resolve(
             &run,
             skill,
             burst.damage,
@@ -709,6 +709,13 @@ pub(super) fn tick(
             burst.radius,
             burst.targets,
         );
+        p.roll_extras(std::array::from_fn(|i| {
+            if p.extra_chances[i] > 0.0 {
+                rng.f32()
+            } else {
+                1.0
+            }
+        }));
         if !procs::ready(&mut run, skill, p.tags) {
             continue;
         }

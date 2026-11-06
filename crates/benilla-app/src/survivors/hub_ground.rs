@@ -1,4 +1,4 @@
-//! Stormwind's streets are WMO floors above the ADT heightfield.
+//! Hub floors use streamed collision when available, otherwise follow the outdoor terrain.
 use super::{
     data,
     hero::{self, Hero},
@@ -30,7 +30,7 @@ pub(super) fn plugin(app: &mut App) {
     );
 }
 fn floor_height(collision: &WorldCollision, position: Vec3, previous: &HubFloor) -> Option<f32> {
-    // Initially stay near the authored street altitude until the city colliders stream in.
+    // Initially probe near the authored ground altitude until nearby colliders stream in.
     // Afterwards probe from the previous ground, not the jumping body's height or the ADT.
     let lift = if previous.settled { 0.75 } else { 3.0 };
     let origin = Vec3::new(position.x, previous.height + lift, position.z);
@@ -63,6 +63,9 @@ fn place_on_floor(
         if let Some(height) = floor_height(&collision, transform.translation, floor) {
             floor.height = height;
             floor.settled = true;
+        } else {
+            floor.height = transform.translation.y - hero.air;
+            floor.settled = false;
         }
         transform.translation.y = floor.height + hero.air;
         player.pos = transform.translation;
@@ -94,13 +97,12 @@ mod tests {
         });
         app.add_systems(Update, place_on_floor);
         let origin = hero::arena(&data::HUB);
-        // At this hub coordinate, the installed ADT is 59.457424 while the city street is 94.00618.
         floor(&mut app, 59.457_424);
         let entity = app
             .world_mut()
             .spawn((
                 Hero { vy: 0.0, air: 0.0 },
-                Transform::from_translation(Vec3::new(origin.x, 59.457_424, origin.z)),
+                Transform::from_translation(origin),
             ))
             .id();
         app.finish();
@@ -116,7 +118,7 @@ mod tests {
         ));
     }
     #[test]
-    fn stormwind_spawn_waits_above_adt_then_settles_on_city_street_without_picking_the_roof() {
+    fn hub_spawn_follows_ground_then_settles_on_collision_without_picking_the_roof() {
         let (mut app, entity) = app();
         let origin = hero::arena(&data::HUB);
         app.update();

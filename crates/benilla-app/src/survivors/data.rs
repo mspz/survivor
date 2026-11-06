@@ -22,6 +22,8 @@ pub(crate) struct ClassDef {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Kind {
+    /// Personal or party support; never creates a damaging hit.
+    Buff,
     /// A missile at the lowest-health enemies in range (or instant without missile speed).
     Bolt,
     /// An instant hit on the lowest-health enemies in range.
@@ -123,6 +125,399 @@ macro_rules! ability {
 }
 
 pub(crate) static ABILITIES: &[AbilityDef] = &[
+    ability!(
+        "mangle",
+        6785,
+        Melee {
+            damage: 32.0,
+            range: 3.5,
+            duration: 8.0,
+            cooldown: 4.0
+        }
+    ),
+    ability!(
+        "rip",
+        1079,
+        Melee {
+            dot: 10.0,
+            range: 3.5,
+            duration: 10.0,
+            cooldown: 8.0,
+            mark: 1079
+        }
+    ),
+    ability!(
+        "ferocious_bite",
+        22568,
+        Melee {
+            damage: 42.0,
+            range: 3.5,
+            cooldown: 6.0
+        }
+    ),
+    ability!(
+        "savage_roar",
+        5229,
+        Buff {
+            duration: 6.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "barkskin",
+        22812,
+        Buff {
+            duration: 6.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "mark_of_the_wild",
+        1126,
+        Buff {
+            radius: 20.0,
+            duration: 10.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "stampeding_roar",
+        9845,
+        Buff {
+            radius: 15.0,
+            duration: 4.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "battle_shout",
+        6673,
+        Buff {
+            radius: 20.0,
+            duration: 8.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "commanding_shout",
+        2687,
+        Buff {
+            radius: 15.0,
+            duration: 6.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "blessing_of_might",
+        19740,
+        Buff {
+            radius: 20.0,
+            duration: 8.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "devotion_aura",
+        465,
+        Buff {
+            radius: 12.0,
+            duration: 2.0,
+            cooldown: 1.0
+        }
+    ),
+    ability!(
+        "hunters_mark",
+        1130,
+        Buff {
+            range: 30.0,
+            duration: 8.0,
+            cooldown: 8.0
+        }
+    ),
+    ability!(
+        "aspect_of_the_pack",
+        13159,
+        Buff {
+            radius: 15.0,
+            duration: 4.0,
+            cooldown: 8.0
+        }
+    ),
+    ability!(
+        "slice_and_dice",
+        6774,
+        Buff {
+            duration: 6.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "smoke_bomb",
+        2094,
+        Buff {
+            radius: 6.0,
+            duration: 6.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "prayer_of_mending",
+        596,
+        Buff {
+            range: 20.0,
+            duration: 12.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "wand_attack",
+        14281,
+        Bolt {
+            damage: 9.0,
+            range: 25.0,
+            cooldown: 1.6
+        }
+    ),
+    ability!(
+        "strength_of_earth_totem",
+        8075,
+        Buff {
+            radius: 12.0,
+            duration: 8.0,
+            cooldown: 12.0,
+            totem: (4588, 8075)
+        }
+    ),
+    ability!(
+        "healing_stream_totem",
+        5394,
+        Buff {
+            radius: 12.0,
+            duration: 8.0,
+            cooldown: 12.0,
+            totem: (4588, 5394)
+        }
+    ),
+    ability!(
+        "arcane_intellect",
+        1459,
+        Buff {
+            radius: 20.0,
+            duration: 8.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "frost_guardian",
+        6143,
+        Buff {
+            radius: 15.0,
+            duration: 6.0,
+            cooldown: 12.0
+        }
+    ),
+    ability!(
+        "curse_of_elements",
+        1490,
+        Buff {
+            range: 30.0,
+            duration: 8.0,
+            cooldown: 8.0
+        }
+    ),
+    ability!(
+        "demon_armor",
+        706,
+        Buff {
+            duration: 8.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "bloodthirst",
+        23881,
+        Melee {
+            damage: 34.0,
+            range: 3.5,
+            cooldown: 4.5,
+            effect: Effect::Drain(0.15)
+        }
+    ),
+    ability!(
+        "revenge",
+        6572,
+        Cone {
+            damage: 42.0,
+            radius: 5.0,
+            range: 5.0,
+            cooldown: 3.0
+        }
+    ),
+    ability!(
+        "holy_shield",
+        20925,
+        Thorns {
+            damage: 18.0,
+            duration: 6.0,
+            cooldown: 10.0
+        }
+    ),
+    ability!(
+        "hammer_of_the_righteous",
+        5614,
+        Melee {
+            damage: 28.0,
+            radius: 3.0,
+            range: 3.5,
+            cooldown: 4.0
+        }
+    ),
+    ability!(
+        "frost_trap",
+        13809,
+        GroundSelf {
+            radius: 6.0,
+            duration: 7.0,
+            cooldown: 12.0,
+            effect: Effect::Slow(0.5, 1.5),
+            mark: 13809
+        }
+    ),
+    ability!(
+        "mongoose_bite",
+        1495,
+        Melee {
+            damage: 26.0,
+            range: 3.5,
+            cooldown: 3.0
+        }
+    ),
+    ability!(
+        "fan_of_knives",
+        5171,
+        Nova {
+            damage: 18.0,
+            radius: 5.0,
+            cooldown: 4.0
+        }
+    ),
+    ability!(
+        "garrote",
+        703,
+        Melee {
+            damage: 6.0,
+            dot: 7.0,
+            duration: 8.0,
+            range: 3.5,
+            cooldown: 6.0,
+            mark: 703
+        }
+    ),
+    ability!(
+        "devouring_plague",
+        2944,
+        Dot {
+            dot: 9.0,
+            duration: 8.0,
+            range: 24.0,
+            cooldown: 7.0,
+            effect: Effect::Drain(0.15),
+            mark: 2944
+        }
+    ),
+    ability!(
+        "penance",
+        591,
+        Strike {
+            damage: 14.0,
+            range: 25.0,
+            cooldown: 6.0
+        }
+    ),
+    ability!(
+        "earthbind_totem",
+        2484,
+        Totem {
+            radius: 8.0,
+            range: 8.0,
+            duration: 8.0,
+            cooldown: 12.0,
+            effect: Effect::Slow(0.5, 2.5),
+            totem: (4588, 2484)
+        }
+    ),
+    ability!(
+        "lava_lash",
+        8052,
+        Melee {
+            damage: 28.0,
+            range: 3.5,
+            cooldown: 4.0
+        }
+    ),
+    ability!(
+        "living_bomb",
+        143,
+        Dot {
+            dot: 7.0,
+            duration: 6.0,
+            radius: 4.0,
+            range: 25.0,
+            cooldown: 7.0
+        }
+    ),
+    ability!(
+        "ice_armor",
+        7302,
+        Thorns {
+            duration: 6.0,
+            cooldown: 10.0,
+            effect: Effect::Slow(0.6, 2.0)
+        }
+    ),
+    ability!(
+        "seed_of_corruption",
+        6222,
+        Dot {
+            dot: 6.0,
+            duration: 10.0,
+            radius: 5.0,
+            range: 25.0,
+            cooldown: 8.0
+        }
+    ),
+    ability!(
+        "soul_burn",
+        18867,
+        Strike {
+            damage: 16.0,
+            range: 25.0,
+            cooldown: 8.0
+        }
+    ),
+    ability!(
+        "rake",
+        1822,
+        Melee {
+            damage: 10.0,
+            dot: 7.0,
+            duration: 7.0,
+            range: 3.5,
+            cooldown: 5.0,
+            mark: 1822
+        }
+    ),
+    ability!(
+        "efflorescence",
+        740,
+        Heal {
+            damage: 48.0,
+            radius: 5.0,
+            range: 20.0,
+            duration: 6.0,
+            cooldown: 10.0
+        }
+    ),
     AbilityDef {
         damage: 18.0,
         range: 3.5,
@@ -452,7 +847,7 @@ pub(crate) static ABILITIES: &[AbilityDef] = &[
         845,
         Melee {
             damage: 14.0,
-            cooldown: 1.1,
+            cooldown: 1.6,
             range: 5.5,
             count: 3
         }
@@ -1093,7 +1488,7 @@ pub(crate) fn ability(key: &str) -> &'static AbilityDef {
         .unwrap_or_else(|| panic!("survivors: no ability {key:?}"))
 }
 
-pub(crate) const MAX_ABILITY_LEVEL: u8 = 8;
+pub(crate) const MAX_ABILITY_LEVEL: u8 = 6;
 pub(crate) const MAX_ABILITIES: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1156,6 +1551,13 @@ const fn tagged(
 }
 use super::spell_engine::{Change as C, Tags as T};
 pub(crate) static PASSIVES: &[PassiveDef] = &[
+    tagged(
+        "buff_effect",
+        "Buff Effect",
+        10060,
+        T::BUFF,
+        C::IncreasedBuffEffect(0.05),
+    ),
     tagged(
         "crit_multi",
         "Deadly Precision",
@@ -1272,22 +1674,29 @@ pub(crate) static PASSIVES: &[PassiveDef] = &[
         "Multiple Projectiles",
         7268,
         T::PROJECTILE,
-        C::AdditionalProjectiles(1),
+        C::ProjectileChance(0.2),
     ),
-    tagged("chains", "Ricochet", 421, T::DAMAGE, C::AdditionalChains(1)),
+    tagged("chains", "Ricochet", 421, T::DAMAGE, C::ChainChance(0.2)),
     tagged(
         "fork",
         "Forking Projectiles",
         2643,
         T::PROJECTILE,
-        C::Fork(1),
+        C::ForkChance(0.2),
     ),
     tagged(
         "melee_targets",
         "Sweeping Blows",
         845,
         T::MELEE,
-        C::AdditionalMeleeTargets(1),
+        C::MeleeTargetChance(0.2),
+    ),
+    tagged(
+        "attack_range",
+        "Extended Reach",
+        845,
+        T::ATTACK,
+        C::FlatRange(2.0),
     ),
     tagged(
         "dot",
@@ -1314,6 +1723,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "cleave",
         pool: &[
             "rend",
+            "bloodthirst",
+            "battle_shout",
+            "commanding_shout",
+            "revenge",
             "overpower",
             "cleave",
             "heroic_strike",
@@ -1340,6 +1753,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "hammer_of_wrath",
         pool: &[
             "holy_light",
+            "holy_shield",
+            "blessing_of_might",
+            "devotion_aura",
+            "hammer_of_the_righteous",
             "seal_of_righteousness",
             "hammer_of_wrath",
             "consecration",
@@ -1363,6 +1780,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "arcane_shot",
         pool: &[
             "raptor_strike",
+            "frost_trap",
+            "hunters_mark",
+            "aspect_of_the_pack",
+            "mongoose_bite",
             "wing_clip",
             "arcane_shot",
             "multi_shot",
@@ -1387,6 +1808,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "sinister_strike",
         pool: &[
             "backstab",
+            "fan_of_knives",
+            "slice_and_dice",
+            "smoke_bomb",
+            "garrote",
             "hemorrhage",
             "sinister_strike",
             "eviscerate",
@@ -1409,6 +1834,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "smite",
         pool: &[
             "mind_flay",
+            "devouring_plague",
+            "prayer_of_mending",
+            "wand_attack",
+            "penance",
             "renew",
             "smite",
             "shadow_word_pain",
@@ -1433,6 +1862,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "lightning_bolt",
         pool: &[
             "stormstrike",
+            "earthbind_totem",
+            "strength_of_earth_totem",
+            "healing_stream_totem",
+            "lava_lash",
             "lesser_healing_wave",
             "lightning_bolt",
             "chain_lightning",
@@ -1456,6 +1889,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "frostbolt",
         pool: &[
             "scorch",
+            "living_bomb",
+            "arcane_intellect",
+            "frost_guardian",
+            "ice_armor",
             "ice_barrier",
             "frostbolt",
             "fireball",
@@ -1484,6 +1921,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "shadow_bolt",
         pool: &[
             "drain_life",
+            "seed_of_corruption",
+            "curse_of_elements",
+            "demon_armor",
+            "soul_burn",
             "siphon_life",
             "shadow_bolt",
             "corruption",
@@ -1509,6 +1950,15 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         start: "wrath",
         pool: &[
             "swipe",
+            "rake",
+            "mangle",
+            "rip",
+            "ferocious_bite",
+            "savage_roar",
+            "barkskin",
+            "mark_of_the_wild",
+            "stampeding_roar",
+            "efflorescence",
             "claw",
             "regrowth",
             "wrath",
@@ -1656,15 +2106,35 @@ pub(crate) fn wave_pool(elapsed: f32, tiers: usize) -> [usize; 3] {
     [lo, lo + 1, lo + 2]
 }
 
-/// Run XP: preserve the first ten levels, then stretch the old level-50 cost to level 100.
+/// Run XP: gentler through 30, smoothly back to baseline at 40, then steeper at 60 and 100.
 /// This is independent of the character's persistent meta-progression.
 pub(crate) fn xp_to_next(level: u32) -> f32 {
     let steps = f64::from(level.saturating_sub(1));
     let steps = steps.min(9.0) + (steps - 9.0).max(0.0) * (40.0 / 90.0);
-    (5.0 + 10.0 * (1.06_f64.powf(steps) - 1.0) / 0.06)
+    let early_run = match level {
+        0..=20 => 0.65,
+        21..=30 => 0.65 + f64::from(level - 20) * 0.015,
+        31..=39 => 0.8 + f64::from(level - 30) * 0.02,
+        _ => 1.0,
+    };
+    let late_run = if level >= 60 {
+        1.5 * 1.02_f64.powf(f64::from(level - 60))
+    } else {
+        1.0
+    };
+    let endgame = if level >= 100 {
+        2.0 * 1.03_f64.powf(f64::from(level - 100))
+    } else {
+        1.0
+    };
+    ((5.0 + 10.0 * (1.06_f64.powf(steps) - 1.0) / 0.06) * early_run * late_run * endgame)
         .round()
         .min(f64::from(f32::MAX)) as f32
 }
+
+#[cfg(test)]
+#[path = "xp_curve_tests.rs"]
+mod xp_curve_tests;
 
 /// A creature on a battleground's roster: who it is, its pace and its size. Its health, damage
 /// and experience come from its place on the roster, read off The Barrens' tuned ladder.
@@ -1716,13 +2186,12 @@ pub(crate) struct MapDef {
     bosses: &'static [Foe],
 }
 
-// Stormwind's trade district, shared offline sanctuary for every race. Coordinates match the
-// existing Stormwind capture fixture in capture/scenarios.rs; no server population is simulated.
+// Goldshire crossroads, outside the inn. Height measured from the installed Azeroth ADT.
 pub(crate) static HUB: MapDef = MapDef {
-    name: "Stormwind City",
-    zone: "Sanctuary",
+    name: "Hub",
+    zone: "Goldshire",
     map: 0,
-    center: [-8833.38, 628.63, 94.01],
+    center: [-9464.0, 64.0, 55.855_316],
     leash: 250.0,
     victory: "",
     foes: &[],

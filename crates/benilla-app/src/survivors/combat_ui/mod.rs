@@ -5,7 +5,7 @@ use super::{
     Phase, Run, Selection,
 };
 use bevy::{prelude::*, window::PrimaryWindow};
-mod bags;
+pub(super) mod bags;
 mod boss_bars;
 mod meter;
 mod meter_panel;
@@ -181,6 +181,7 @@ pub(super) fn input(
     titles: Query<(&Interaction, &DragTitle)>,
 ) {
     selection.ui_captured = false;
+    selection.pointer_captured = false;
     if *phase.get() == Phase::Menu {
         selection.sheet_open = false;
         selection.bags_open = false;
@@ -304,7 +305,10 @@ pub(super) fn input(
     }
     if let Some(drag) = view.drag {
         if mouse.pressed(MouseButton::Left) {
-            selection.ui_captured = true;
+            match drag.pane {
+                Pane::Meter => selection.pointer_captured = true,
+                Pane::Sheet => selection.ui_captured = true,
+            }
             if let Some(cursor) = cursor {
                 let point = drag.origin + cursor - drag.cursor;
                 match drag.pane {
@@ -377,15 +381,23 @@ fn launchers(
     phase: Res<State<Phase>>,
     font: Option<Res<hud::HudFont>>,
     roots: Query<Entity, With<Launcher>>,
-    mut cache: Local<Option<Phase>>,
+    lobby: Option<Res<super::multiplayer::lobby::Lobby>>,
+    selection: Res<Selection>,
+    account: Option<Res<super::talents::Account>>,
+    mut cache: Local<Option<(Phase, bool, bool, u32)>>,
 ) {
     let Some(font) = font else {
         return;
     };
-    if *cache == Some(*phase.get()) {
+    let multiplayer = lobby.as_ref().is_some_and(|l| l.active);
+    let points = account
+        .as_ref()
+        .map_or(0, |a| selection.class.map_or(0, |c| a.available(c)));
+    let key = (*phase.get(), multiplayer, selection.in_hub, points);
+    if *cache == Some(key) {
         return;
     }
-    *cache = Some(*phase.get());
+    *cache = Some(key);
     for e in &roots {
         commands.entity(e).despawn();
     }
@@ -398,16 +410,70 @@ fn launchers(
             GlobalZIndex(445),
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(16.0),
-                bottom: Val::Px(85.0),
+                left: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                padding: UiRect::all(Val::Px(6.0)),
                 column_gap: Val::Px(6.0),
+                flex_wrap: FlexWrap::Wrap,
+                row_gap: Val::Px(6.0),
+                max_width: Val::Percent(100.0),
                 ..default()
             },
         ))
         .with_children(|ui| {
-            button(ui, &font.0, Click::Character, "Character", 105.0);
-            button(ui, &font.0, Click::Meter, "Damage meter", 120.0);
-            button(ui, &font.0, Click::Bags, "Bags", 80.0);
+            skin::backdrop(ui);
+            button(ui, &font.0, Click::Character, "Personnage", 105.0);
+            button(ui, &font.0, Click::Meter, "Dégâts", 90.0);
+            button(ui, &font.0, Click::Bags, "Sacs", 80.0);
+            skin::button(
+                ui,
+                &font.0,
+                format!("Talents ({points})"),
+                super::talent_ui::Action::Toggle,
+                115.0,
+            );
+            if selection.in_hub {
+                skin::button(
+                    ui,
+                    &font.0,
+                    "Expéditions",
+                    super::characters::Click::Expeditions,
+                    110.0,
+                );
+                skin::button(
+                    ui,
+                    &font.0,
+                    "Runes [R]",
+                    super::characters::Click::Runes,
+                    100.0,
+                );
+            }
+            skin::button(
+                ui,
+                &font.0,
+                "Menu [Esc]",
+                super::characters::Click::Options,
+                110.0,
+            );
+            if selection.in_hub {
+                skin::button(
+                    ui,
+                    &font.0,
+                    "Déconnexion",
+                    super::characters::Click::Logout,
+                    115.0,
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if multiplayer {
+                skin::button(
+                    ui,
+                    &font.0,
+                    "Rejoindre une partie",
+                    super::multiplayer::lobby::Action::Toggle,
+                    180.0,
+                );
+            }
         });
 }
 fn scroll_meter(
@@ -436,7 +502,7 @@ fn scroll_meter(
             if !cursor.cursor_over() {
                 continue;
             }
-            selection.ui_captured = true;
+            selection.pointer_captured = true;
             scroll.0.y = (scroll.0.y - amount).clamp(
                 0.0,
                 ((node.content_size.y - node.size.y) * node.inverse_scale_factor).max(0.0),
@@ -682,12 +748,13 @@ mod tests {
             app.world().resource::<View>().position,
             Vec2::new(50.0, 40.0)
         );
-        assert!(app.world().resource::<Selection>().ui_captured);
+        assert!(app.world().resource::<Selection>().pointer_captured);
+        assert!(!app.world().resource::<Selection>().ui_captured);
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
             .release(MouseButton::Left);
         app.update();
-        assert!(!app.world().resource::<Selection>().ui_captured);
+        assert!(!app.world().resource::<Selection>().pointer_captured);
         app.world_mut().resource_mut::<Selection>().sheet_open = true;
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()

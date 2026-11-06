@@ -371,6 +371,7 @@ pub(super) fn place_camera(
         && !selection.sheet_open
         && !selection.bags_open
         && !selection.ui_captured
+        && !selection.pointer_captured
         && !roster.expeditions;
     // With no hero yet, the focus `drive_hero` grounded.
     let focus = hero.single().map_or(player.pos, |t| t.translation);
@@ -446,14 +447,24 @@ pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engin
         return 0.0;
     }
     let shield = if run.shield_t > 0.0 { run.shield } else { 0.0 };
-    let raw = raw
-        * (1.0 - run.damage_reduction_tagged(tags))
-        * if super::talent_runtime::active(run, super::talent_design::Mechanic::FeralGuard) {
+    let raw =
+        raw * if run.extra_spells.ice_until > run.elapsed {
             0.85
         } else {
             1.0
-        };
-    let (dmg, absorbed) = super::spell_engine::mitigate(raw, 0.0, shield, false);
+        } * (1.0 - run.damage_reduction_tagged(tags))
+            * (1.0 - run.support.power(run.elapsed, "barkskin"))
+            * if super::talent_runtime::active(run, super::talent_design::Mechanic::FeralGuard) {
+                0.85
+            } else {
+                1.0
+            };
+    // Apply the minimum hit before protection, so a fully absorbed hit cannot leak damage.
+    let raw = raw.max(1.0);
+    let after_support = super::support_spells::absorb(run, raw);
+    let support_absorbed = raw - after_support;
+    let absorbed = after_support.min(shield.max(0.0));
+    let dmg = after_support - absorbed;
     run.shield -= absorbed;
     if shield > 0.0 && run.shield <= 0.0 {
         super::items::legendary::effects::shield_expired(run, 0.0, true);
@@ -473,7 +484,8 @@ pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engin
         tags.contains(super::spell_engine::Tags::DOT),
     );
     run.hp -= dmg;
-    super::items::legendary::events::hurt(run, run.hp + dmg, absorbed, dmg);
+    super::items::legendary::events::hurt(run, run.hp + dmg, absorbed + support_absorbed, dmg);
+    super::support_spells::hurt(run, dmg);
     dmg
 }
 
@@ -483,9 +495,21 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
     if run.pending_levels > 0 {
         return 0.0;
     }
-    if raw > 0.0
-        && roll < (run.equipment.block + super::talent_runtime::block_chance(run)).clamp(0.0, 0.75)
-    {
+    let block = (run.equipment.block
+        + super::talent_runtime::block_chance(run)
+        + super::extra_spells::block_bonus(run))
+    .clamp(0.0, 0.75);
+    if raw > 0.0 && roll >= block && roll < block + super::extra_spells::dodge_chance(run) {
+        super::extra_spells::reacted(run, true);
+        return 0.0;
+    }
+    if raw > 0.0 && roll < block {
+        let recovery =
+            run.equipment.life_on_block + run.stats().max_hp * run.equipment.life_on_block_percent;
+        if recovery > 0.0 {
+            run.heal(recovery);
+        }
+        super::extra_spells::reacted(run, false);
         run.talent_runtime.blocked = true;
         super::items::legendary::effects::blocked(run, raw);
         super::items::legendary::events::blocked(run);
@@ -621,9 +645,17 @@ pub(super) fn hero_vitals(
         shown.push(774);
     }
     for owned in &run.abilities {
+        if (owned.def.key == "holy_shield" && run.extra_spells.holy_until > run.elapsed)
+            || (owned.def.key == "ice_armor" && run.extra_spells.ice_until > run.elapsed)
+        {
+            shown.push(owned.def.spell);
+        }
         if owned.def.key == "lightning_shield" {
             shown.push(owned.def.spell);
         }
+    }
+    for buff in run.support.buffs.iter().filter(|b| b.until > run.elapsed) {
+        shown.push(data::ability(buff.key).spell);
     }
     if run.passives.iter().any(|(p, _)| p.key == "renew") {
         shown.push(139);

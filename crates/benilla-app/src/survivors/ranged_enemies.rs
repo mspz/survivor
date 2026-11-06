@@ -51,7 +51,7 @@ pub(super) fn spawn(
             .find(|d| d.name == caster.name)
             .expect("authored caster belongs to its expedition")
     });
-    let entity = enemies::spawn_enemy(commands, run, def, pos, hero, false);
+    let entity = enemies::spawn_mob(commands, run, rng, def, pos, hero);
     if let Some(caster) = caster {
         commands.entity(entity).insert(caster);
     }
@@ -114,7 +114,8 @@ pub(super) fn impact(missile: Missile, run: &mut Run, fx: &mut Fx) {
     }
     run.legendary.events.attacker = Some(missile.attacker);
     run.taken_source = missile.caster.name;
-    let damage = hero::hurt_hero_tagged(run, missile.damage, missile.caster.tags);
+    let raw = missile.damage * (1.0 - run.support.power(run.elapsed, "smoke_bomb"));
+    let damage = hero::hurt_hero_tagged(run, raw, missile.caster.tags);
     run.legendary.events.attacker = None;
     fx.impact(missile.target, missile.caster.spell);
     if damage > 0.0 {

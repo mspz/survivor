@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 15;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +119,8 @@ pub enum Effect {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stats {
     #[serde(default)]
+    pub auras: Vec<super::super::player_auras::Aura>,
+    #[serde(default)]
     pub healing_meter: super::super::combat_ui::Meter,
     #[serde(default)]
     pub taken_meter: super::super::combat_ui::Meter,
@@ -163,6 +165,8 @@ pub enum Choice {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Cumulative copper earned on this connection; duplicate snapshots cannot pay twice.
+    pub money_earned: u64,
     #[serde(default)]
     pub chest: super::super::shared_chest::Replica,
     #[serde(default)]

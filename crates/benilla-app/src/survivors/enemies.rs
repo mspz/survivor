@@ -44,6 +44,21 @@ pub(super) struct Enemy {
     pub dead: bool,
 }
 
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Rank {
+    Normal,
+    Elite,
+    Boss,
+}
+const ELITE_CHANCE: f32 = 0.02;
+fn roll_rank(roll: f32) -> Rank {
+    if roll < ELITE_CHANCE {
+        Rank::Elite
+    } else {
+        Rank::Normal
+    }
+}
+
 #[derive(Component)]
 pub(super) struct ExpeditionScaling {
     damage: f32,
@@ -153,6 +168,40 @@ pub(super) fn spawn_enemy(
     hero: Vec3,
     boss: bool,
 ) -> Entity {
+    spawn_rank(
+        commands,
+        run,
+        def,
+        pos,
+        hero,
+        if boss { Rank::Boss } else { Rank::Normal },
+    )
+}
+pub(super) fn spawn_mob(
+    commands: &mut Commands,
+    run: &mut Run,
+    rng: &mut Rng,
+    def: &'static EnemyDef,
+    pos: Vec3,
+    hero: Vec3,
+) -> Entity {
+    let rank = if super::training::actor(def) {
+        Rank::Normal
+    } else {
+        roll_rank(rng.f32())
+    };
+    spawn_rank(commands, run, def, pos, hero, rank)
+}
+fn spawn_rank(
+    commands: &mut Commands,
+    run: &mut Run,
+    def: &'static EnemyDef,
+    pos: Vec3,
+    hero: Vec3,
+    rank: Rank,
+) -> Entity {
+    let boss = rank == Rank::Boss;
+    let elite = rank == Rank::Elite;
     let training = super::training::actor(def);
     let (base_health, base_damage) = if training {
         (def.hp, def.damage)
@@ -164,7 +213,13 @@ pub(super) fn spawn_enemy(
     } else {
         run.expeditions.factor(run.elapsed)
     };
-    let size_multiplier = if boss { 2.0 } else { 1.0 };
+    let size_multiplier = if boss {
+        2.0
+    } else if elite {
+        1.25
+    } else {
+        1.0
+    };
     let serial = run.guid();
     let e = units::spawn_unit(
         commands,
@@ -186,7 +241,7 @@ pub(super) fn spawn_enemy(
     } else {
         run.expeditions.party_health(run.expedition_players)
     };
-    let hp = base_health * scale * party;
+    let hp = base_health * scale * party * if elite { 6.0 } else { 1.0 };
     commands.entity(e).insert((
         Enemy {
             def,
@@ -195,7 +250,11 @@ pub(super) fn spawn_enemy(
             speed: def.speed,
             damage: base_damage * scale,
             radius: radius_for(def) * size_multiplier,
-            xp: def.xp,
+            xp: if elite {
+                def.xp.saturating_mul(3)
+            } else {
+                def.xp
+            },
             boss,
             attack_cd: 0.5,
             slow: 1.0,
@@ -209,7 +268,13 @@ pub(super) fn spawn_enemy(
             dead: false,
         },
         Marks::debuffs(),
+        rank,
     ));
+    if elite {
+        commands
+            .entity(e)
+            .insert(super::unit_frames::Label(format!("{} · Élite", def.name)));
+    }
     if !training {
         commands.entity(e).insert(ExpeditionScaling {
             damage: base_damage,
@@ -388,8 +453,8 @@ pub(super) fn move_enemies(
     const CELL: f32 = 3.0;
     let bodies: Vec<(Entity, Vec3, f32)> = enemies
         .iter()
-        .filter(|(_, _, e, _, _, _)| !e.dead)
-        .map(|(ent, tf, e, _, _, _)| (ent, tf.translation, e.radius))
+        .filter(|(_, _, e, ..)| !e.dead)
+        .map(|(ent, tf, e, ..)| (ent, tf.translation, e.radius))
         .collect();
     let key = |p: Vec3| ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
     let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
@@ -583,7 +648,11 @@ pub(super) fn move_enemies(
         {
             e.attack_cd = if e.boss { 1.0 } else { 1.3 };
             let raw = e.damage * e.weaken;
-            let roll = if target_run.equipment.block > 0.0 {
+            let roll = if target_run.equipment.block > 0.0
+                || super::talent_runtime::block_chance(target_run) > 0.0
+                || super::extra_spells::block_bonus(target_run) > 0.0
+                || super::extra_spells::dodge_chance(target_run) > 0.0
+            {
                 rng.f32()
             } else {
                 1.0
@@ -591,6 +660,10 @@ pub(super) fn move_enemies(
             target_run.legendary.events.attacker = Some(ent);
             target_run.taken_source = e.def.name;
             let taken = hero::hurt_hero_with_block(target_run, raw, roll);
+            if target_run.extra_spells.ice_until > target_run.elapsed {
+                e.slow = e.slow.min(0.6);
+                e.slow_t = e.slow_t.max(2.0);
+            }
             target_run.legendary.events.attacker = None;
             fx.swing(ent, hero_e, taken);
             if taken > 0.0 {
@@ -899,6 +972,70 @@ pub(super) fn still_gems(
 }
 
 #[cfg(test)]
+mod elite_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn two_percent_of_regular_spawn_rolls_are_elite() {
+        assert_eq!(roll_rank(0.0), Rank::Elite);
+        assert_eq!(roll_rank(0.02), Rank::Normal);
+        assert_eq!(
+            (0..10_000)
+                .filter(|i| roll_rank(*i as f32 / 10_000.0) == Rank::Elite)
+                .count(),
+            200
+        );
+    }
+    #[test]
+    fn elites_have_six_times_health_and_triple_xp_without_boss_damage_or_rewards() {
+        let mut world = World::new();
+        world.insert_resource(Run {
+            elapsed: 120.0,
+            expedition_players: 3,
+            ..default()
+        });
+        world
+            .run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+                let def = &data::roster(run.expedition_map).enemies[0];
+                for rank in [Rank::Normal, Rank::Elite, Rank::Boss] {
+                    spawn_rank(&mut commands, &mut run, def, Vec3::ZERO, Vec3::ZERO, rank);
+                }
+            })
+            .unwrap();
+        let mut query = world.query::<(
+            &Rank,
+            &Enemy,
+            &crate::net::NetEntity,
+            Option<&super::super::unit_frames::Label>,
+        )>();
+        let (_, normal, normal_model, _) = query
+            .iter(&world)
+            .find(|(r, ..)| **r == Rank::Normal)
+            .unwrap();
+        let (_, elite, elite_model, label) = query
+            .iter(&world)
+            .find(|(r, ..)| **r == Rank::Elite)
+            .unwrap();
+        assert_eq!(elite.max_hp, normal.max_hp * 6.0);
+        assert_eq!(elite.hp, elite.max_hp);
+        assert_eq!(elite.damage, normal.damage);
+        assert_eq!(elite.speed, normal.speed);
+        assert_eq!(elite.xp, normal.xp * 3);
+        assert!(!elite.boss);
+        assert!((elite_model.scale - normal_model.scale * 1.25).abs() < 0.001);
+        assert!(label.unwrap().0.ends_with("Élite"));
+        assert!(
+            query
+                .iter(&world)
+                .find(|(r, ..)| **r == Rank::Boss)
+                .unwrap()
+                .1
+                .boss
+        );
+    }
+}
+
+#[cfg(test)]
 mod pickup_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
@@ -1067,9 +1204,9 @@ mod pickup_tests {
         gem(&mut world, GemKind::Vacuum, Vec3::Y);
         gem(&mut world, GemKind::Xp(100), Vec3::X * 10_000.0);
         world.run_system_once(collect_gems).unwrap();
-        assert_eq!(world.resource::<Run>().level, 7);
-        assert_eq!(world.resource::<Run>().pending_levels, 6);
-        let remainder = 100.0 * data::XP_RATE - (1..7).map(data::xp_to_next).sum::<f32>();
+        assert_eq!(world.resource::<Run>().level, 8);
+        assert_eq!(world.resource::<Run>().pending_levels, 7);
+        let remainder = 100.0 * data::XP_RATE - (1..8).map(data::xp_to_next).sum::<f32>();
         assert_eq!(world.resource::<Run>().xp, remainder);
         assert!(matches!(
             world.resource::<NextState<Phase>>(),

@@ -37,6 +37,7 @@ pub(super) fn scale(effect: Effect, value: f32, level: u32) -> f32 {
     if matches!(
         effect,
         Effect::BlockChance
+            | Effect::LifeOnBlockPercent
             | Effect::Proc
             | Effect::CritChance
             | Effect::Repeat

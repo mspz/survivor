@@ -86,9 +86,11 @@ pub(in crate::survivors) fn family(dot: &Dot) -> Family {
         return dot.meta.family;
     }
     match dot.skill {
-        "rend" | "rupture" | "hemorrhage" | "proc_bleed" => Family::Bleed,
+        "rend" | "rupture" | "hemorrhage" | "proc_bleed" | "garrote" | "rake" | "rip" => {
+            Family::Bleed
+        }
         "proc_poison" | "deadly_poison" => Family::Poison,
-        "proc_plague" => Family::Disease,
+        "proc_plague" | "devouring_plague" => Family::Disease,
         "curse_of_agony" => Family::Curse,
         _ if dot.tags.is_some_and(|t| t.contains(Tags::FIRE)) => Family::Burn,
         _ => Family::Other,

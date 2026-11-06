@@ -181,6 +181,12 @@ impl Default for Config {
 }
 #[cfg(test)]
 mod tests {
+    fn fixed_scaling_config() -> String {
+        let mut table: toml::Value = toml::from_str(super::FILE).unwrap();
+        table["end_multiplier"] = toml::Value::Float(3.0);
+        table["multiplayer_health_per_extra_player"] = toml::Value::Float(2.5);
+        toml::to_string(&table).unwrap()
+    }
     use super::*;
     #[test]
     fn defenses_scale_and_final_reduction_survives_full_penetration() {
@@ -219,7 +225,8 @@ mod tests {
     }
     #[test]
     fn campaign_and_time_scaling() {
-        let c = Config::parse(FILE).unwrap();
+        let file = fixed_scaling_config();
+        let c = Config::parse(&file).unwrap();
         assert_eq!(c.factor(0.0), 1.0);
         assert_eq!(c.factor(450.0), 2.0);
         assert_eq!(c.factor(900.0), 3.0);
@@ -232,7 +239,7 @@ mod tests {
             }
         }
         assert!(
-            Config::parse(&FILE.replace("end_multiplier = 3.0", "end_multiplier = -1.0")).is_err()
+            Config::parse(&file.replace("end_multiplier = 3.0", "end_multiplier = -1.0")).is_err()
         );
     }
 
@@ -318,7 +325,8 @@ mod tests {
     }
     #[test]
     fn party_health_follows_the_requested_linear_ladder_and_legacy_config_defaults() {
-        let c = Config::parse(FILE).unwrap();
+        let file = fixed_scaling_config();
+        let c = Config::parse(&file).unwrap();
         for (players, expected) in [
             (0, 1.0),
             (1, 1.0),
@@ -330,10 +338,10 @@ mod tests {
         ] {
             assert_eq!(c.party_health(players), expected);
         }
-        let legacy = FILE.replace("multiplayer_health_per_extra_player = 2.5", "");
+        let legacy = file.replace("multiplayer_health_per_extra_player = 2.5", "");
         assert_eq!(Config::parse(&legacy).unwrap().party_health(3), 5.0);
         for invalid in ["0", "-1", "nan", "1001"] {
-            assert!(Config::parse(&FILE.replace(
+            assert!(Config::parse(&file.replace(
                 "multiplayer_health_per_extra_player = 2.5",
                 &format!("multiplayer_health_per_extra_player = {invalid}")
             ))
@@ -352,6 +360,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(Run {
             expedition_players: 2,
+            expeditions: Config::parse(&fixed_scaling_config()).unwrap(),
             ..default()
         });
         world.init_resource::<Companions>();

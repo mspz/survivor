@@ -12,6 +12,7 @@ pub(super) enum Request {
 
 #[derive(Resource, Default)]
 pub(in crate::survivors) struct Lobby {
+    pub panel_open: bool,
     pub joining: bool,
     pub busy: bool,
     pub input: String,
@@ -71,14 +72,16 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(not(target_arch = "wasm32"))]
 fn capture(
     buttons: Query<&Interaction, With<Action>>,
+    lobby: Res<Lobby>,
     mut selection: ResMut<super::super::Selection>,
 ) {
-    selection.ui_captured |= buttons.iter().any(|i| *i != Interaction::None);
+    selection.ui_captured |= lobby.joining || buttons.iter().any(|i| *i != Interaction::None);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component, Clone, Copy)]
-pub(super) enum Action {
+pub(in crate::survivors) enum Action {
+    Toggle,
     Join,
     Cancel,
     Paste,
@@ -139,6 +142,11 @@ pub(super) fn input(
     }
     for action in actions {
         match action {
+            Action::Toggle => {
+                lobby.panel_open = !lobby.panel_open;
+                lobby.joining = lobby.panel_open;
+                lobby.revision += 1;
+            }
             Action::Join if !lobby.busy => {
                 if let Err(error) = super::native::address::parse(&lobby.input) {
                     lobby.fail(error);
@@ -159,8 +167,11 @@ pub(super) fn input(
                 lobby.revision += 1;
             }
             Action::Cancel => {
-                lobby.request = Some(Request::Cancel);
+                if lobby.busy || !lobby.active {
+                    lobby.request = Some(Request::Cancel);
+                }
                 lobby.joining = false;
+                lobby.panel_open = false;
                 lobby.revision += 1;
             }
             Action::Paste if !lobby.busy => {
@@ -207,7 +218,7 @@ fn draw(
         commands.entity(root).despawn();
     }
     let f = &font.0;
-    if lobby.joining && *phase.get() == Phase::Menu {
+    if lobby.joining && (*phase.get() == Phase::Menu || in_hub) {
         commands
             .spawn((
                 Overlay,
@@ -294,16 +305,15 @@ fn draw(
                         skin::button(ui, f, "Annuler", Action::Cancel, 240.0);
                     });
             });
-    } else if lobby.active && *phase.get() != Phase::Menu && in_hub {
+    } else if lobby.active && lobby.panel_open && *phase.get() != Phase::Menu && in_hub {
         commands
             .spawn((
                 Overlay,
                 GlobalZIndex(650),
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Percent(50.0),
-                    margin: UiRect::left(Val::Px(-150.0)),
-                    bottom: Val::Px(10.0),
+                    left: Val::Px(0.0),
+                    bottom: Val::Px(50.0),
                     width: Val::Px(300.0),
                     padding: UiRect::all(Val::Px(7.0)),
                     align_items: AlignItems::Center,
@@ -416,6 +426,7 @@ mod tests {
             })
             .insert_resource(Lobby {
                 active: true,
+                panel_open: true,
                 members: 2,
                 ..default()
             })
@@ -431,7 +442,7 @@ mod tests {
             .single(world)
             .unwrap();
         assert_eq!(node.width, Val::Px(300.0));
-        assert_eq!(node.left, Val::Percent(50.0));
+        assert_eq!(node.left, Val::Px(0.0));
         world
             .resource_mut::<super::super::super::Selection>()
             .in_hub = false;

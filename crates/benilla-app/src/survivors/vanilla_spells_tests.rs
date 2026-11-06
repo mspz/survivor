@@ -19,6 +19,7 @@ fn two_new_skills_per_class_are_learnable_classified_balanced_and_weighted() {
         let class = data::CLASSES.iter().find(|class| class.id == id).unwrap();
         let run = Run {
             class,
+            balance: super::balance::Config::parse("version=1\nclasses={}").unwrap(),
             ..Run::default()
         };
         for key in [first, second] {
@@ -47,64 +48,66 @@ fn added_spell_icons_and_visual_chains_exist_in_local_vanilla_data() {
     let mut chain = benilla_formats::open_chain(&path).unwrap();
     let spells = benilla_formats::load_spell_catalog(&mut chain).unwrap();
     let visuals = benilla_formats::load_spell_visual_catalog(&mut chain).unwrap();
-    for &(_, first, second) in ADDITIONS {
-        for key in [first, second] {
-            let def = data::ability(key);
-            let display = spells
-                .get(def.spell)
-                .unwrap_or_else(|| panic!("missing Vanilla spell {key}"));
-            assert!(!display.name.is_empty());
-            let icon = display.icon.as_ref().unwrap();
-            let icon = if icon.to_ascii_lowercase().ends_with(".blp") {
-                icon.clone()
-            } else {
-                format!("{icon}.blp")
-            };
-            let bytes = chain
-                .read_file(&icon)
-                .unwrap_or_else(|error| panic!("{key} icon: {error}"));
-            benilla_formats::blp_to_rgba(&bytes).unwrap();
-            if display.visual != 0 {
-                let stages = visuals
-                    .stages(display.visual)
-                    .unwrap_or_else(|| panic!("missing visual for {key}"));
-                for kit in [
-                    stages.precast,
-                    stages.cast,
-                    stages.impact,
-                    stages.state,
-                    stages.channel,
-                ] {
-                    if kit == 0 {
+    let keys = ADDITIONS
+        .iter()
+        .chain(super::extra_spells::ADDITIONS)
+        .flat_map(|&(_, first, second)| [first, second])
+        .chain(super::support_spells::SPELLS.iter().map(|s| s.1));
+    for key in keys {
+        let def = data::ability(key);
+        let display = spells
+            .get(def.spell)
+            .unwrap_or_else(|| panic!("missing Vanilla spell {key}"));
+        assert!(!display.name.is_empty());
+        let icon = display.icon.as_ref().unwrap();
+        let icon = if icon.to_ascii_lowercase().ends_with(".blp") {
+            icon.clone()
+        } else {
+            format!("{icon}.blp")
+        };
+        let bytes = chain
+            .read_file(&icon)
+            .unwrap_or_else(|error| panic!("{key} icon: {error}"));
+        benilla_formats::blp_to_rgba(&bytes).unwrap();
+        if display.visual != 0 {
+            let stages = visuals
+                .stages(display.visual)
+                .unwrap_or_else(|| panic!("missing visual for {key}"));
+            for kit in [
+                stages.precast,
+                stages.cast,
+                stages.impact,
+                stages.state,
+                stages.channel,
+            ] {
+                if kit == 0 {
+                    continue;
+                }
+                let kit = visuals.kit(kit).unwrap();
+                for (_, effect) in kit.effects() {
+                    if effect == 0 {
                         continue;
                     }
-                    let kit = visuals.kit(kit).unwrap();
-                    for (_, effect) in kit.effects() {
-                        if effect == 0 {
-                            continue;
-                        }
-                        if let Some(path) = visuals.effect_path(effect) {
-                            let path = if let Some(stem) = path
-                                .strip_suffix(".mdx")
-                                .or_else(|| path.strip_suffix(".MDX"))
-                            {
-                                format!("{stem}.m2")
-                            } else {
-                                path.to_owned()
-                            };
-                            chain
-                                .read_file(&path)
-                                .unwrap_or_else(|error| panic!("{key} model {path}: {error}"));
-                        }
+                    if let Some(path) = visuals.effect_path(effect) {
+                        let path = if let Some(stem) = path
+                            .strip_suffix(".mdx")
+                            .or_else(|| path.strip_suffix(".MDX"))
+                        {
+                            format!("{stem}.m2")
+                        } else {
+                            path.to_owned()
+                        };
+                        chain
+                            .read_file(&path)
+                            .unwrap_or_else(|error| panic!("{key} model {path}: {error}"));
                     }
                 }
-            } else {
-                assert_eq!(
-                    def.kind,
-                    data::Kind::Melee,
-                    "spell {key} requires a visual or a weapon swing"
-                );
             }
+        } else {
+            assert!(
+                matches!(def.kind, data::Kind::Melee | data::Kind::Buff),
+                "spell {key} requires a visual or a weapon swing"
+            );
         }
     }
 }

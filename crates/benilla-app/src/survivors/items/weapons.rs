@@ -125,7 +125,16 @@ impl Run {
         } else {
             0.5
         };
-        self.resolve_spell_with_weapon_roll(def, level, roll)
+        let mut resolved = self.resolve_spell_with_weapon_roll(def, level, roll);
+        let rolls = std::array::from_fn(|i| {
+            if resolved.extra_chances[i] > 0.0 {
+                rng.f32()
+            } else {
+                1.0
+            }
+        });
+        resolved.roll_extras(rolls);
+        resolved
     }
     pub fn resolve_spell_with_weapon_roll(
         &self,
@@ -230,6 +239,7 @@ mod tests {
         inventory.equip(1, "Main hand").unwrap();
         let mut run = Run {
             class: &data::CLASSES[1],
+            balance: crate::survivors::balance::Config::parse("version=1\nclasses={}").unwrap(),
             ..Default::default()
         };
         let attack = data::ability("heroic_strike");
@@ -259,9 +269,9 @@ mod tests {
                 (run.resolve_spell_with_weapon_roll(heal, 1, roll).dmg - heal_before * 1.2).abs()
                     < 0.001
             );
-            assert_eq!(
-                run.resolve_spell_with_weapon_roll(guard, 1, roll).dmg,
-                guard_before
+            assert!(
+                (run.resolve_spell_with_weapon_roll(guard, 1, roll).dmg - guard_before * 1.2).abs()
+                    < 0.001
             );
         }
         run.replace_spell_modifiers(

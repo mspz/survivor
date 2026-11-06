@@ -44,7 +44,16 @@ pub(super) fn interact(
     mut view: ResMut<View>,
     mut selection: ResMut<Selection>,
     mut rows: Query<(&Interaction, &MeterSkill, &mut BackgroundColor), Changed<Interaction>>,
-    panels: Query<&Interaction, Or<(With<MeterRoot>, With<DetailsRoot>)>>,
+    panels: Query<
+        &Interaction,
+        Or<(
+            With<MeterRoot>,
+            With<DetailsRoot>,
+            With<MeterSkill>,
+            With<TabButton>,
+            With<ResetButton>,
+        )>,
+    >,
     tabs: Query<(&Interaction, &TabButton), Changed<Interaction>>,
     resets: Query<&Interaction, (With<ResetButton>, Changed<Interaction>)>,
     mut run: ResMut<Run>,
@@ -70,18 +79,18 @@ pub(super) fn interact(
         view.meter_selected = None;
         view.meter_scroll = 0.0;
         view.details_scroll = 0.0;
-        selection.ui_captured = true;
+        selection.pointer_captured = true;
     }
     for (interaction, tab) in &tabs {
         if *interaction == Interaction::Pressed {
             view.meter_tab = tab.0;
             view.meter_selected = None;
             view.meter_scroll = 0.0;
-            selection.ui_captured = true;
+            selection.pointer_captured = true;
         }
     }
     if panels.iter().any(|i| *i != Interaction::None) {
-        selection.ui_captured = true;
+        selection.pointer_captured = true;
     }
     for (interaction, skill, mut background) in &mut rows {
         background.0 = if *interaction == Interaction::None {
@@ -92,7 +101,7 @@ pub(super) fn interact(
         if *interaction == Interaction::Pressed && view.meter_tab == Tab::Damage {
             view.meter_selected = Some(skill.0.clone());
             view.details_scroll = 0.0;
-            selection.ui_captured = true;
+            selection.pointer_captured = true;
         }
     }
 }
@@ -274,7 +283,8 @@ mod tests {
             world.resource::<View>().meter_selected.as_deref(),
             Some("fireball")
         );
-        assert!(world.resource::<Selection>().ui_captured);
+        assert!(world.resource::<Selection>().pointer_captured);
+        assert!(!world.resource::<Selection>().ui_captured);
         assert_eq!(
             world
                 .query_filtered::<Entity, With<DetailsRoot>>()

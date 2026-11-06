@@ -117,6 +117,178 @@ fn health(run: &Run) -> Option<f32> {
 }
 
 impl PartyHealing<'_, '_> {
+    fn visit(
+        &mut self,
+        caster: &mut Run,
+        me: Entity,
+        center: Vec3,
+        radius: f32,
+        mut apply: impl FnMut(Entity, &mut Run),
+    ) {
+        let positions = &self.positions;
+        let near = |entity| {
+            positions
+                .get(entity)
+                .is_ok_and(|t| super::units::flat(t.translation - center).length() <= radius)
+        };
+        if near(me) && health(caster).is_some() {
+            apply(me, caster);
+        }
+        if let Some(host) = self.host.as_deref_mut() {
+            if host.entity != me && near(host.entity) && health(&host.run).is_some() {
+                apply(host.entity, &mut host.run);
+            }
+        }
+        if let Some(players) = self.players.as_deref_mut() {
+            for player in players.0.values_mut() {
+                if player.entity != me && near(player.entity) && health(&player.run).is_some() {
+                    apply(player.entity, &mut player.run);
+                }
+            }
+        }
+    }
+    pub fn buff(
+        &mut self,
+        caster: &mut Run,
+        me: Entity,
+        center: Vec3,
+        radius: f32,
+        key: &'static str,
+        power: f32,
+        duration: f32,
+    ) {
+        let owner = caster.owner;
+        self.visit(caster, me, center, radius, |_, run| {
+            super::support_spells::grant(run, key, power, duration, owner)
+        });
+    }
+    pub fn process_support(&mut self, caster: &mut Run, me: Entity, commands: &mut Commands) {
+        let now = caster.elapsed;
+        caster.support.buffs.retain(|b| b.until > now);
+        let center = self.positions.get(me).map_or(Vec3::ZERO, |t| t.translation);
+        for (owner, amount) in std::mem::take(&mut caster.support.credits) {
+            if owner == caster.owner {
+                caster
+                    .healing_meter
+                    .record_hit("prayer_of_mending", now, amount, false, false);
+            } else if let Some(host) = self.host.as_deref_mut().filter(|h| h.run.owner == owner) {
+                host.run.healing_meter.record_hit(
+                    "prayer_of_mending",
+                    host.run.elapsed,
+                    amount,
+                    false,
+                    false,
+                );
+            } else if let Some(source) = self
+                .players
+                .as_deref_mut()
+                .and_then(|p| p.0.values_mut().find(|p| p.run.owner == owner))
+            {
+                source.run.healing_meter.record_hit(
+                    "prayer_of_mending",
+                    source.run.elapsed,
+                    amount,
+                    false,
+                    false,
+                );
+            }
+        }
+        for buff in std::mem::take(&mut caster.support.transfers) {
+            let mut chosen = None;
+            let mut lowest = f32::INFINITY;
+            self.visit(caster, me, center, 20.0, |entity, run| {
+                let fraction = health(run).unwrap_or(f32::INFINITY);
+                if entity != me && fraction < lowest {
+                    lowest = fraction;
+                    chosen = Some(entity);
+                }
+            });
+            if let Some(chosen) = chosen {
+                self.visit(caster, me, center, 20.0, |entity, run| {
+                    if entity == chosen && buff.until > now {
+                        run.support.grant(buff.clone());
+                    }
+                });
+            }
+        }
+        let mut zones = std::mem::take(&mut caster.support.zones);
+        for zone in &mut zones {
+            if zone.until <= now {
+                commands.entity(zone.entity).despawn();
+                continue;
+            }
+            if caster.dead_t.is_some() || zone.next > now {
+                continue;
+            }
+            if zone.key == "healing_stream_totem" {
+                let owner = caster.owner;
+                let outgoing = zone.power * (1.0 + caster.equipment.healing).max(0.0);
+                let mut total = 0.0;
+                self.visit(caster, me, zone.pos, zone.radius, |_, target| {
+                    let amount = outgoing / (1.0 + target.equipment.healing).max(0.001);
+                    total += apply(target, amount, 0.0, (owner, zone.key), false);
+                });
+                caster
+                    .healing_meter
+                    .record_hit(zone.key, now, total, false, true);
+                zone.next = now + 2.0;
+            } else {
+                self.buff(caster, me, zone.pos, zone.radius, zone.key, zone.power, 1.5);
+                zone.next = now + 1.0;
+            }
+        }
+        zones.retain(|z| z.until > now);
+        caster.support.zones = zones;
+    }
+    pub fn urgent(&self, caster: &Run, me: Entity, range: f32) -> bool {
+        let origin = self.positions.get(me).map_or(Vec3::ZERO, |t| t.translation);
+        let urgent = |entity, run: &Run| {
+            health(run).is_some_and(|h| h < 0.35)
+                && self
+                    .positions
+                    .get(entity)
+                    .is_ok_and(|t| super::units::flat(t.translation - origin).length() <= range)
+        };
+        urgent(me, caster)
+            || self
+                .host
+                .as_deref()
+                .is_some_and(|h| urgent(h.entity, &h.run))
+            || self
+                .players
+                .as_deref()
+                .is_some_and(|p| p.0.values().any(|p| urgent(p.entity, &p.run)))
+    }
+    pub fn area(&mut self, caster: &mut Run, me: Entity, center: Vec3, radius: f32, amount: f32) {
+        let credit = (caster.owner, "efflorescence");
+        let near = |entity| {
+            self.positions
+                .get(entity)
+                .is_ok_and(|t| super::units::flat(t.translation - center).length() <= radius)
+        };
+        let mut total = 0.0;
+        let outgoing = amount * (1.0 + caster.equipment.healing).max(0.0);
+        if near(me) && health(caster).is_some() {
+            total += apply(caster, amount, 0.0, credit, false);
+        }
+        let mut heal = |entity, target: &mut Run| {
+            if entity != me && near(entity) && health(target).is_some() {
+                let amount = outgoing / (1.0 + target.equipment.healing).max(0.001);
+                total += apply(target, amount, 0.0, credit, false);
+            }
+        };
+        if let Some(host) = self.host.as_deref_mut() {
+            heal(host.entity, &mut host.run);
+        }
+        if let Some(players) = self.players.as_deref_mut() {
+            for p in players.0.values_mut() {
+                heal(p.entity, &mut p.run);
+            }
+        }
+        caster
+            .healing_meter
+            .record_hit("efflorescence", caster.elapsed, total, false, true);
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn cast(
         &mut self,
@@ -164,6 +336,26 @@ impl PartyHealing<'_, '_> {
             }
         }
         let credit = (caster.owner, def.key);
+        if def.key == "prayer_of_mending" {
+            let amount = amount * (1.0 + caster.equipment.healing).max(0.0);
+            if chosen == me {
+                super::support_spells::grant(caster, def.key, amount, duration, credit.0);
+            } else {
+                let target =
+                    if let Some(host) = self.host.as_deref_mut().filter(|h| h.entity == chosen) {
+                        Some(&mut host.run)
+                    } else {
+                        self.players
+                            .as_deref_mut()
+                            .and_then(|p| p.0.values_mut().find(|p| p.entity == chosen))
+                            .map(|p| &mut p.run)
+                    };
+                if let Some(target) = target {
+                    super::support_spells::grant(target, def.key, amount, duration, credit.0);
+                }
+            }
+            return chosen;
+        }
         let mut healed = 0.0;
         if chosen == me {
             if !triggered && caster.legendary.has(305) && def.key == "regrowth" {

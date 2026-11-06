@@ -30,6 +30,7 @@ mod rooms;
 mod saves;
 
 struct Peer {
+    money_earned: u64,
     trade: game::items::TradeAccount,
     socket: Socket,
     session: Option<session::LocalSession>,
@@ -59,6 +60,7 @@ struct Guest {
 
 #[derive(Resource)]
 struct Network {
+    coins: MessageCursor<game::enemies::Loot>,
     connecting: Option<(
         std::net::SocketAddr,
         crossbeam_channel::Receiver<Result<TcpStream, String>>,
@@ -167,6 +169,7 @@ pub(super) fn plugin(app: &mut App) {
         tick: 0,
         since_snapshot: 0.0,
         effects: Vec::new(),
+        coins: default(),
         casts: default(),
         gos: default(),
         swings: default(),
@@ -310,6 +313,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
             network.peers.insert(
                 network.next_peer,
                 Peer {
+                    money_earned: 0,
                     trade: default(),
                     socket,
                     session: None,
@@ -936,6 +940,7 @@ fn decode_choice(choice: wire::Choice) -> Option<hud::Choice> {
 
 fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
     wire::Stats {
+        auras: game::player_auras::collect(run),
         healing_meter: run.healing_meter.clone(),
         taken_meter: run.taken_meter.clone(),
         movement_speed: run.stats().speed * run.haste_mult(),
@@ -1014,6 +1019,16 @@ fn publish(world: &mut World) {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let money = world
+        .get_resource::<Messages<game::enemies::Loot>>()
+        .map(|messages| {
+            network
+                .coins
+                .read(messages)
+                .map(|drop| game::currency::reward(drop.item_level, drop.boss))
+                .fold(0u64, u64::saturating_add)
+        })
+        .unwrap_or(0);
     for peer in network.peers.values_mut() {
         let Some(connection) = &peer.session else {
             continue;
@@ -1022,6 +1037,10 @@ fn publish(world: &mut World) {
             continue;
         };
         let (class, magic_find) = (player.run.class.id, player.run.equipment.magic_find);
+        peer.money_earned = peer
+            .money_earned
+            .saturating_add(money)
+            .min(game::currency::MAX_BALANCE);
         for &level in &opened {
             let item = world.resource_scope(|world, mut rng: Mut<Rng>| {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
@@ -1222,6 +1241,7 @@ fn publish(world: &mut World) {
             chest.notice = notice.clone();
         }
         let snapshot = wire::Snapshot {
+            money_earned: peer.money_earned,
             chest,
             party: party.clone(),
             run_id: world.get::<Guid>(companion.entity).map_or(0, |g| g.0),
@@ -1490,6 +1510,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         }
     }
     let stats = snapshot.stats;
+    world.insert_resource(game::player_auras::Remote(stats.auras.clone()));
     let class = world
         .resource::<Selection>()
         .class
@@ -1708,6 +1729,17 @@ fn interpolate(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn player_buff_snapshots_include_authoritative_effects_and_remaining_durations() {
+        let mut run = game::Run::default();
+        game::support_spells::grant(&mut run, "battle_shout", 0.4, 5.0, None);
+        let snapshot = super::stats(&run, &game::hud::Offer::default(), 0);
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let decoded: super::wire::Stats = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.auras.len(), 1);
+        assert_eq!(decoded.auras[0].left, Some(5.0));
+        assert!(decoded.auras[0].description.contains("40.0%"));
+    }
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use std::time::Instant;
@@ -1934,6 +1966,7 @@ mod tests {
             tick: 0,
             since_snapshot: 0.0,
             effects: default(),
+            coins: default(),
             casts: default(),
             gos: default(),
             swings: default(),
@@ -1956,6 +1989,73 @@ mod tests {
                 },
             })
             .unwrap();
+    }
+
+    #[test]
+    fn kill_money_is_given_to_every_guest_once_even_when_a_guest_is_dead() {
+        let mut host = world();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut clients = [
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+        ];
+        for (i, client) in clients.iter_mut().enumerate() {
+            join(client, i);
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while host.resource::<Companions>().0.len() < 2 {
+            tick(&mut host);
+            for client in &mut clients {
+                client.receive::<wire::ToClient>().unwrap();
+            }
+            assert!(Instant::now() < deadline);
+        }
+        host.resource_mut::<Companions>()
+            .0
+            .values_mut()
+            .next()
+            .unwrap()
+            .run
+            .hp = 0.0;
+        host.write_message(game::enemies::Loot {
+            item_level: 1,
+            pos: Vec3::ZERO,
+            xp: 1,
+            boss: false,
+        });
+        host.write_message(game::enemies::Loot {
+            item_level: 60,
+            pos: Vec3::ZERO,
+            xp: 1,
+            boss: true,
+        });
+        publish(&mut host);
+        assert!(host
+            .resource::<Network>()
+            .peers
+            .values()
+            .all(|p| p.money_earned == 100003));
+        publish(&mut host);
+        assert!(host
+            .resource::<Network>()
+            .peers
+            .values()
+            .all(|p| p.money_earned == 100003));
+        let mut seen = [false; 2];
+        while !seen.iter().all(|s| *s) {
+            for (i, client) in clients.iter_mut().enumerate() {
+                for message in client.receive::<wire::ToClient>().unwrap() {
+                    if let wire::ToClient::Snapshot(snapshot) = message {
+                        if snapshot.money_earned == 100003 {
+                            seen[i] = true;
+                        }
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline);
+        }
     }
 
     #[test]
@@ -2191,7 +2291,7 @@ mod tests {
             .query_filtered::<Entity, With<hero::Hero>>()
             .single(&host)
             .unwrap();
-        host.get_mut::<Transform>(local).unwrap().translation = hero::arena(&data::HUB);
+        host.get_mut::<Transform>(local).unwrap().translation = game::shared_chest::position();
         host.init_resource::<game::shared_chest::Store>();
         host.init_resource::<game::shared_chest::View>();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2233,6 +2333,15 @@ mod tests {
                 Instant::now() < deadline,
                 "both traders should receive the chest"
             );
+        }
+        let traders: Vec<_> = host
+            .resource::<Companions>()
+            .0
+            .values()
+            .map(|p| p.entity)
+            .collect();
+        for trader in traders {
+            host.get_mut::<Transform>(trader).unwrap().translation = game::shared_chest::position();
         }
         let vault = views[0].replica.identity.clone();
         inventories[0].begin_deposit(1, &vault).unwrap();
@@ -2916,6 +3025,7 @@ mod tests {
             tick: 0,
             since_snapshot: 0.0,
             effects: default(),
+            coins: default(),
             casts: default(),
             gos: default(),
             swings: default(),

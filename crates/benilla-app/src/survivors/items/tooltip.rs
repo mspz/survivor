@@ -19,6 +19,7 @@ impl Affix {
             Effect::ShadowResistance => Some("Shadow resistance"),
             Effect::AllResistance => Some("All resistances"),
             Effect::LifeOnKill => Some("Life on kill"),
+            Effect::LifeOnBlock => Some("Life on block"),
             Effect::FlatDamage => Some("Damage"),
             Effect::SpellDamage => Some("Spell damage"),
             Effect::Projectiles => Some("Projectiles"),
@@ -56,6 +57,7 @@ impl Affix {
         } else {
             let label = match self.effect {
                 Effect::BlockChance => "Increased chance to block",
+                Effect::LifeOnBlockPercent => "Maximum life recovered on block",
                 Effect::Damage => "Damage",
                 Effect::DotDamage => "Damage over time",
                 Effect::CritChance => "Critical strike",

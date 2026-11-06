@@ -11,6 +11,7 @@ pub(super) fn signature(world: &mut World, class: usize) -> Option<Signature> {
     let account = world.get_resource::<game::talents::Account>()?;
     let (xp, talents) = (account.xp, account.shared_build(class));
     let mut hash = std::collections::hash_map::DefaultHasher::new();
+    inventory.money().hash(&mut hash);
     if let Ok((net, store)) = world
         .query_filtered::<(&NetEntity, &ObjectStore), With<hero::Hero>>()
         .single(world)
@@ -29,6 +30,7 @@ pub(super) fn signature(world: &mut World, class: usize) -> Option<Signature> {
 
 #[derive(Default)]
 pub(super) struct Receipts {
+    money: u64,
     run: u64,
     earned: u64,
     victory: bool,
@@ -261,6 +263,15 @@ pub(super) fn persist(
         }
     }
     let gained = receipts.credit(snapshot.run_id, snapshot.stats.earned);
+    let money = snapshot.money_earned.saturating_sub(receipts.money);
+    if money > 0 {
+        if let Some(mut inventory) = world.get_resource_mut::<game::items::Inventory>() {
+            match inventory.add_money(money) {
+                Ok(()) => receipts.money = snapshot.money_earned,
+                Err(error) => inventory.notice = format!("Co-op money could not be saved: {error}"),
+            }
+        }
+    }
     if gained > 0 {
         if let Some(mut account) = world.get_resource_mut::<game::talents::Account>() {
             if account.character.is_some() {
@@ -345,6 +356,7 @@ mod tests {
             ..default()
         };
         let snapshot = wire::Snapshot {
+            money_earned: 12345,
             chest: default(),
             party: vec![],
             run_id: 9,
@@ -364,6 +376,8 @@ mod tests {
         persist(&mut world, &mut receipts, &snapshot, Some(1));
         assert_eq!(world.resource::<game::talents::Account>().xp, 525);
         assert_eq!(world.resource::<game::items::Inventory>().all().len(), 1);
+        assert_eq!(world.resource::<game::items::Inventory>().money(), 12345);
+        assert_eq!(receipts.money, 12345);
         assert_eq!(receipts.loot, 1);
         let encoded = world
             .resource::<game::items::Inventory>()
@@ -371,6 +385,7 @@ mod tests {
             .unwrap();
         let restored = game::items::Inventory::from_shared(1, &encoded).unwrap();
         assert_eq!(restored.all()[0].name, item.name);
+        assert_eq!(restored.money(), 12345);
         let next_zone = game::progression::zone_order()[1];
         assert!(world.resource::<Selection>().progress.allows(next_zone));
         // A packet for the previous character must not touch the newly selected save.

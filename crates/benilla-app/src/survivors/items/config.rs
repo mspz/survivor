@@ -458,9 +458,46 @@ impl Config {
     fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
         self.roll_for_target(level, class_id, 0.0, rng)
     }
+    pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind, class: u8) -> bool {
+        self.bases.iter().any(|b| {
+            b.slot == slot
+                && b.weight > 0.0
+                && b.equipment_type.can_drop(class)
+                && !(slot == SlotKind::OffHand
+                    && b.equipment_type.one_handed()
+                    && !super::equipment::dual_wield(class))
+        })
+    }
+    pub(in crate::survivors) fn generate_gamble(
+        &self,
+        level: u32,
+        class: u8,
+        slot: SlotKind,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        if !self.gamble_available(slot, class) {
+            return Err("Aucun objet disponible pour cette classe et cet emplacement.".into());
+        }
+        let mut pool = self.clone();
+        pool.bases.retain(|b| {
+            b.slot == slot
+                && b.equipment_type.can_drop(class)
+                && !(slot == SlotKind::OffHand
+                    && b.equipment_type.one_handed()
+                    && !super::equipment::dual_wield(class))
+        });
+        pool.roll_for_target(level, class, 0.0, rng)
+    }
     fn rarity_weights(&self, level: u32, magic_find: f32) -> [f64; 4] {
         let ordinary = item_level::quality_weights(self.weights(), level, magic_find);
         let total = ordinary.iter().sum::<f64>();
+        if level < 20 {
+            return if total > 0.0 {
+                [ordinary[0], ordinary[1], ordinary[2], 0.0]
+            } else {
+                [0.0, 0.0, 1.0, 0.0]
+            };
+        }
         let find = if magic_find.is_finite() {
             f64::from(magic_find.max(0.0))
         } else {
@@ -489,7 +526,26 @@ impl Config {
             .iter()
             .find(|c| c.id == class_id)
             .ok_or("Unknown loot class")?;
-        let weights = self.rarity_weights(level, magic_find);
+        let pool: Vec<_> = legendary::DEFINITIONS
+            .iter()
+            .filter(|d| {
+                level >= d.min_drop_level()
+                    && legendary::eligible(d.id, class_id)
+                    && self.bases.iter().any(|b| {
+                        b.slot == d.slot
+                            && b.weight > 0.0
+                            && b.equipment_type.can_drop(class_id)
+                            && legendary::base_allowed(d.id, class_id, b.equipment_type)
+                    })
+            })
+            .collect();
+        let mut weights = self.rarity_weights(level, magic_find);
+        if pool.is_empty() {
+            weights[3] = 0.0;
+            if weights.iter().sum::<f64>() == 0.0 {
+                weights[2] = 1.0;
+            }
+        }
         let rarity = [
             Rarity::Normal,
             Rarity::Magic,
@@ -497,18 +553,6 @@ impl Config {
             Rarity::Legendary,
         ][weighted_index(&weights, rng.f32()).ok_or("No rarity available")?];
         let unique = if rarity == Rarity::Legendary {
-            let pool: Vec<_> = legendary::DEFINITIONS
-                .iter()
-                .filter(|d| {
-                    legendary::eligible(d.id, class_id)
-                        && self.bases.iter().any(|b| {
-                            b.slot == d.slot
-                                && b.weight > 0.0
-                                && b.equipment_type.can_drop(class_id)
-                                && legendary::base_allowed(d.id, class_id, b.equipment_type)
-                        })
-                })
-                .collect();
             if pool.is_empty() {
                 return Err("No compatible legendary".into());
             }
@@ -772,6 +816,71 @@ impl Config {
 mod tests {
     use super::*;
     #[test]
+    fn life_on_block_affixes_are_rare_shield_only_rolls_and_persist() {
+        let config = Config::builtin();
+        for effect in [Effect::LifeOnBlock, Effect::LifeOnBlockPercent] {
+            let affix = config.affixes.iter().find(|a| a.effect == effect).unwrap();
+            assert!(affix.weight > 0.0 && affix.weight < 12.0);
+            for base in &config.bases {
+                assert_eq!(
+                    affix.compatible_base(base),
+                    base.equipment_type == EquipmentType::Shield
+                );
+            }
+            let mut pool = config.clone();
+            pool.bases
+                .retain(|b| b.equipment_type == EquipmentType::Shield);
+            pool.affixes.retain(|a| a.effect == effect);
+            pool.rarities = RarityWeights {
+                normal: 100.0,
+                magic: 0.0,
+                epic: 0.0,
+                legendary: 0.0,
+            };
+            let item = pool.generate_for_target(60, 1, &mut Rng(42)).unwrap();
+            assert!(item
+                .affixes
+                .iter()
+                .any(|a| a.effect == effect && a.value > 0.0));
+            assert!(item.valid_equipment());
+            let saved: Item = toml::from_str(&toml::to_string(&item).unwrap()).unwrap();
+            assert_eq!(saved.affixes[0].effect, effect);
+            assert!(saved.affixes[0]
+                .description()
+                .contains(if effect == Effect::LifeOnBlock {
+                    "Life on block"
+                } else {
+                    "Maximum life recovered on block"
+                }));
+        }
+    }
+    #[test]
+    fn gambling_uses_run_loot_rarities_at_the_same_level() {
+        let config = Config::builtin();
+        let mut normal_count = 0;
+        for slot in [SlotKind::Head, SlotKind::Ring] {
+            let mut run_pool = config.clone();
+            run_pool.bases.retain(|b| b.slot == slot);
+            for level in [1, 20, 40, 60] {
+                for seed in 1..=64 {
+                    let expected = run_pool
+                        .roll_for_target(level, 1, 0.0, &mut Rng(seed))
+                        .unwrap();
+                    let actual = config
+                        .generate_gamble(level, 1, slot, &mut Rng(seed))
+                        .unwrap();
+                    assert_eq!(
+                        actual.rarity, expected.rarity,
+                        "{slot:?}, level {level}, seed {seed}"
+                    );
+                    assert_eq!(actual.base, expected.base);
+                    normal_count += usize::from(actual.rarity == Rarity::Normal);
+                }
+            }
+        }
+        assert!(normal_count > 0, "Gambling must allow ordinary white drops");
+    }
+    #[test]
     fn level_bases_keep_all_twenty_one_variants_between_one_and_sixty_without_double_scaling() {
         let config = Config::builtin();
         for base in &config.bases {
@@ -913,7 +1022,12 @@ mod tests {
             for level in [1, 60, 100] {
                 for _ in 0..50 {
                     let item = c.generate_for_target(level, 1, &mut rng).unwrap();
-                    assert_eq!(item.rarity, rarity);
+                    let expected = if rarity == Rarity::Legendary && level < 20 {
+                        Rarity::Epic
+                    } else {
+                        rarity
+                    };
+                    assert_eq!(item.rarity, expected);
                     assert!((0.25..=MAX_BASE_BLOCK).contains(&item.base_block));
                     rolled_block_affix |=
                         item.affixes.iter().any(|a| a.effect == Effect::BlockChance);
@@ -950,7 +1064,11 @@ mod tests {
             let weights: Vec<_> = c
                 .affixes
                 .iter()
-                .filter(|a| a.kind == kind && a.weight > 0.0)
+                .filter(|a| {
+                    a.kind == kind
+                        && a.weight > 0.0
+                        && !matches!(a.effect, Effect::LifeOnBlock | Effect::LifeOnBlockPercent)
+                })
                 .map(|a| a.weight)
                 .collect();
             let min = weights.iter().copied().fold(f64::INFINITY, f64::min);
@@ -1130,6 +1248,11 @@ mod tests {
     #[test]
     fn new_allocations_reject_overflow_and_legacy_items_keep_their_rolls() {
         use super::super::tests::{affix, item};
+        let mut old_white = item(SlotKind::Chest, vec![]);
+        old_white.affix_rules = 1;
+        old_white.rarity = Rarity::Normal;
+        let old_inventory = Inventory::fixture(vec![old_white]);
+        assert!(Inventory::decode(&toml::to_string(&old_inventory.save).unwrap()).is_ok());
         let mut rolled = item(
             SlotKind::Chest,
             vec![
@@ -1173,9 +1296,12 @@ mod tests {
         assert_eq!(toml::to_string(&decoded).unwrap(), expected);
     }
     #[test]
-    fn legendary_chance_is_five_percent_before_find_at_every_item_level() {
+    fn legendary_chance_starts_at_item_level_twenty_then_scales_with_find() {
         let config = Config::builtin();
-        for level in [1, 20, 60, 100] {
+        for level in [1, 10, 19] {
+            assert_eq!(config.rarity_weights(level, 100.0)[3], 0.0);
+        }
+        for level in [20, 60, 100] {
             for (find, expected) in [
                 (0.0, 0.05),
                 (0.1, 0.055),
@@ -1187,6 +1313,45 @@ mod tests {
                 assert!((weights[3] / weights.iter().sum::<f64>() - expected).abs() < 1e-8);
             }
         }
+    }
+    #[test]
+    fn legendary_drops_respect_each_effects_minimum_item_level() {
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights {
+            normal: 0.0,
+            magic: 0.0,
+            epic: 0.0,
+            legendary: 100.0,
+        };
+        let mut rng = Rng(160);
+        for class in super::super::super::data::CLASSES {
+            for level in [1, 19, 20, 29, 30, 39, 40, 49, 50, 59, 60, 100] {
+                for _ in 0..20 {
+                    let item = config
+                        .roll_for_target(level, class.id, 100.0, &mut rng)
+                        .unwrap();
+                    if level < 20 {
+                        assert!(item.legendary.is_none());
+                    } else {
+                        let roll = item
+                            .legendary
+                            .as_ref()
+                            .expect("eligible legendary available");
+                        assert!(
+                            legendary::definition(roll.unique).unwrap().min_drop_level()
+                                <= item.level
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            legendary::DEFINITIONS
+                .iter()
+                .filter(|d| d.min_drop_level() >= 50)
+                .count()
+                > legendary::DEFINITIONS.len() / 2
+        );
     }
     #[test]
     fn legendary_rolls_keep_identity_stats_and_quality_across_saving() {

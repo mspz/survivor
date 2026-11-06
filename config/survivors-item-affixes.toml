@@ -8,7 +8,8 @@
 # slots controls compatible slots; tags requires ALL listed tags; group prevents duplicates.
 
 [[affixes]]
-# Flat damage on damaging Spell hits only; never attacks, healing or DoT ticks.
+# Flat power on damaging Spell hits and spell absorption; never attacks, healing or DoT ticks.
+# Staple offensive roll, available on every combat equipment slot.
 id = "spell_damage"
 name = "Empowered"
 kind = "prefix"
@@ -16,7 +17,7 @@ group = "spell_damage"
 effect = "spell_damage"
 min = 3
 max = 9
-weight = 20
+weight = 24
 tags = ["spell"]
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -157,8 +158,8 @@ group = "regeneration"
 effect = "regeneration"
 min = 0.5
 max = 2.0
-weight = 20
-slots = ["chest", "waist", "neck"]
+weight = 24
+slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
 [[affixes]]
 id = "movement_speed"
@@ -426,6 +427,28 @@ effect = "block_chance"
 min = 0.02
 max = 0.08
 weight = 20
+slots = ["off_hand"]
+
+[[affixes]]
+id = "life_on_block"
+name = "of Recovery"
+kind = "suffix"
+group = "life_on_block"
+effect = "life_on_block"
+min = 2
+max = 5
+weight = 6
+slots = ["off_hand"]
+
+[[affixes]]
+id = "life_on_block_percent"
+name = "of Renewal"
+kind = "suffix"
+group = "life_on_block_percent"
+effect = "life_on_block_percent"
+min = 0.005
+max = 0.015
+weight = 4
 slots = ["off_hand"]
 
 [[affixes]]

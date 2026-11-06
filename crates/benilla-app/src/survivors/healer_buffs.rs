@@ -62,6 +62,7 @@ pub(super) struct Bonuses {
 }
 #[derive(Default)]
 pub(super) struct State {
+    pub visible: Vec<super::player_auras::Aura>,
     pending: Vec<Blessing>,
     timed: Vec<Timed>,
     pub bonuses: Bonuses,
@@ -181,11 +182,15 @@ pub(super) fn receive<'a>(
     }
     state.timed.retain(|buff| buff.left > 0.0);
     let mut powers = [0.0_f32; 4];
+    let mut visible = [None; 4];
     if run.dead_t.is_none() {
         for (source_pos, source) in sources {
             let distance = units::flat(source_pos - pos).length();
             if let Some(aura) = source.aura.filter(|b| distance <= b.radius) {
                 let value = &mut powers[aura.family.index()];
+                if aura.power >= *value {
+                    visible[aura.family.index()] = Some((aura, None));
+                }
                 *value = value.max(aura.power);
             }
             for blessing in source
@@ -211,12 +216,32 @@ pub(super) fn receive<'a>(
         }
         for buff in &state.timed {
             let value = &mut powers[buff.blessing.family.index()];
+            if buff.blessing.power > *value || visible[buff.blessing.family.index()].is_none() {
+                visible[buff.blessing.family.index()] = Some((buff.blessing, Some(buff.left)));
+            }
             *value = value.max(buff.blessing.power);
         }
     } else {
         state.timed.clear();
         state.pending.clear();
     }
+    state.visible = visible
+        .into_iter()
+        .flatten()
+        .map(|(b, left)| {
+            super::player_auras::Aura::buff(
+                b.family.aura_spell().spell,
+                match b.family {
+                    Family::Light => "Bénédiction de lumière",
+                    Family::Inspiration => "Inspiration",
+                    Family::Tides => "Bénédiction des marées",
+                    Family::Wild => "Bienfait sauvage",
+                },
+                description(b),
+                left,
+            )
+        })
+        .collect();
     let next = bonuses(powers);
     apply(run, next);
 }

@@ -12,11 +12,15 @@ mod cards;
 mod characters;
 mod client;
 mod combat_ui;
+mod currency;
 mod data;
 mod enemies;
 mod expedition_config;
+mod extra_spells;
 mod fill;
 mod forms;
+mod gambling;
+mod player_auras;
 mod grade;
 mod healer_buffs;
 mod healing;
@@ -42,8 +46,10 @@ mod runes;
 mod server;
 mod session;
 mod shared_chest;
+mod specialization;
 mod spell_engine;
 mod starter_spells;
+mod support_spells;
 mod talent_design;
 mod talent_effects;
 mod talent_runtime;
@@ -121,6 +127,8 @@ pub(super) struct Selection {
     pub sheet_open: bool,
     pub bags_open: bool,
     pub ui_captured: bool,
+    /// Non-modal panels consume camera/mouse gestures while keyboard movement continues.
+    pub pointer_captured: bool,
     pub in_hub: bool,
     talents_open: bool,
     progress: progression::Progress,

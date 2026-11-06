@@ -34,7 +34,7 @@ pub(super) fn input(
         direction = super::auto::steer(auto);
     } else if interactive && run.dead_t.is_none() {
         {
-            let right = mouse.pressed(MouseButton::Right);
+            let right = mouse.pressed(MouseButton::Right) && !selection.pointer_captured;
             if right {
                 // Camera input is applied later in this chain; include this frame's drag.
                 let yaw = rig.yaw - motion.delta.x * hero::ORBIT_RATE * rig.sensitivity;
@@ -71,6 +71,71 @@ pub(super) fn input(
     );
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn meter_pointer_capture_keeps_keyboard_movement_but_blocks_mouse_movement() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+            .init_resource::<options::Settings>()
+            .init_resource::<characters::Roster>()
+            .init_resource::<Run>()
+            .init_resource::<hero::CamRig>()
+            .init_resource::<hero::AimPoint>()
+            .init_resource::<session::Sessions>()
+            .init_resource::<session::LocalSession>()
+            .init_resource::<session::ServerInput>()
+            .insert_resource(State::new(Phase::Playing))
+            .insert_resource(Selection {
+                pointer_captured: true,
+                ..default()
+            })
+            .add_systems(Update, (input, session::receive).chain());
+        let id = app.world().resource::<session::LocalSession>().id();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        for button in [MouseButton::Left, MouseButton::Right] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(button);
+        }
+        app.update();
+        let command = app
+            .world()
+            .resource::<session::ServerInput>()
+            .for_client(id);
+        assert!(command.active);
+        assert_eq!(command.axes, Vec2::Y);
+        assert!(command.facing.is_none());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyW);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<session::ServerInput>()
+                .for_client(id)
+                .axes,
+            Vec2::ZERO
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.world_mut().resource_mut::<Selection>().ui_captured = true;
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<session::ServerInput>()
+                .for_client(id)
+                .active
+        );
+    }
+}
+
 pub(super) fn plugin(app: &mut App) {
     app.add_message::<units::CombatNumber>()
         .init_resource::<session::LocalSession>()
@@ -78,10 +143,12 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(characters::plugin)
         .add_plugins(hub_ground::plugin)
         .add_plugins(options::plugin)
+        .add_plugins(player_auras::plugin)
         .add_plugins(combat_ui::plugin)
         .add_plugins(unit_frames::plugin)
         .add_plugins(items::plugin)
         .add_plugins(shared_chest::plugin)
+        .add_plugins(super::gambling::plugin)
         .add_plugins(runes::plugin)
         .init_resource::<crate::entities::dest_fx::AreaVisualScales>()
         .init_resource::<crate::entities::dest_fx::EchoCasts>()

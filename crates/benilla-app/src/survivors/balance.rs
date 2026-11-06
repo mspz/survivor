@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 const FILE: &str = include_str!("../../../../config/survivors-balance.toml");
 const TAGS: &[(&str, Tags)] = &[
+    ("buff", Tags::BUFF),
     ("attack", Tags::ATTACK),
     ("spell", Tags::SPELL),
     ("melee", Tags::MELEE),
@@ -146,18 +147,20 @@ mod tests {
     use super::*;
     use crate::survivors::Run;
     #[test]
-    fn defaults_cover_every_class_and_spell_and_are_neutral() {
+    fn configured_defaults_cover_every_spell_and_omitted_multipliers_are_neutral() {
         let config = Config::parse(FILE).unwrap();
+        let neutral = Config::parse("version=1\nclasses={}").unwrap();
         assert_eq!(config.classes.len(), data::CLASSES.len());
         assert_eq!(config.tags.len(), TAGS.len());
         for (name, _) in TAGS {
-            assert_eq!(config.tags[*name], 1.0);
+            assert!(config.tags[*name].is_finite() && config.tags[*name] >= 0.0);
         }
         for class in data::CLASSES {
             let entry = &config.classes[&class.name.to_lowercase()];
             for spell in std::iter::once(&class.start).chain(class.pool.iter()) {
-                assert_eq!(entry.spells[*spell], 1.0);
-                assert_eq!(config.multiplier(class, spell), 1.0);
+                assert!(entry.spells.contains_key(*spell));
+                assert!(config.multiplier(class, spell).is_finite());
+                assert_eq!(neutral.multiplier(class, spell), 1.0);
             }
         }
     }
@@ -181,6 +184,7 @@ mod tests {
     #[test]
     fn matching_tags_multiply_with_class_and_spell_and_omit_unmatched_tags() {
         let mut run = Run::default();
+        run.balance = Config::parse("version=1\nclasses={}").unwrap();
         run.class = data::CLASSES
             .iter()
             .find(|class| class.name == "Mage")

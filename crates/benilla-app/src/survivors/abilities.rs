@@ -60,6 +60,351 @@ mod spell_engine_integration_tests {
     use crate::combat_text::CombatTextSpawn;
     use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
     use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn specialization_signature_adds_two_real_projectiles_at_rank_six() {
+        let (mut world, _) = legendary_world("fireball", 0, &[1.0, 2.0, 3.0]);
+        world.resource_mut::<Run>().abilities[0].level = 5;
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Messages<Hit>>().len(), 1);
+        world.resource_mut::<Messages<Hit>>().clear();
+        world.resource_mut::<Run>().abilities[0].level = 6;
+        world.resource_mut::<Run>().abilities[0].cd = 0.0;
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Messages<Hit>>().len(), 3);
+    }
+
+    #[test]
+    fn support_all_new_skills_cast_and_buffs_never_emit_damage_hits() {
+        for &(_, key, _, _) in super::super::support_spells::SPELLS {
+            let (mut world, _) = legendary_world(key, 0, &[1.0, 2.0]);
+            world.resource_mut::<Run>().support.attacks = 3;
+            world.resource_mut::<Run>().support.melee = 3;
+            world.run_system_once(cast_abilities).unwrap();
+            assert!(world.resource::<Run>().abilities[0].cd > 0.2, "{key}");
+            if data::ability(key).kind == Kind::Buff {
+                assert!(world.resource::<Messages<Hit>>().is_empty(), "{key}");
+            }
+        }
+    }
+
+    fn support_party(world: &mut World) -> [Entity; 3] {
+        let mut party = super::super::multiplayer::Companions::default();
+        let mut entities = Vec::new();
+        for (owner, x, hp) in [(42, 2.0, 50.0), (43, 40.0, 50.0), (44, 2.0, 0.0)] {
+            let entity = world.spawn(Transform::from_xyz(x, 0.0, 0.0)).id();
+            party.0.insert(
+                owner,
+                super::super::multiplayer::Companion {
+                    entity,
+                    run: Run {
+                        owner: Some(owner),
+                        hp,
+                        ..default()
+                    },
+                    physics: Hero { vy: 0.0, air: 0.0 },
+                    offer: default(),
+                    offer_id: 0,
+                },
+            );
+            entities.push(entity);
+        }
+        world.insert_resource(party);
+        entities.try_into().unwrap()
+    }
+
+    #[test]
+    fn support_buff_effect_card_increases_the_snapshot_given_to_party_members() {
+        let (mut world, _) = legendary_world("battle_shout", 0, &[1.0]);
+        support_party(&mut world);
+        {
+            let mut run = world.resource_mut::<Run>();
+            let passive = data::PASSIVES
+                .iter()
+                .find(|p| p.key == "buff_effect")
+                .unwrap();
+            run.passives.push((passive, 4));
+            super::super::passives::sync(&mut run);
+        }
+        world.run_system_once(cast_abilities).unwrap();
+        assert!((world.resource::<Run>().stats().attack_power - 0.12 * 1.2).abs() < 0.001);
+        let party = world.resource::<super::super::multiplayer::Companions>();
+        assert!((party.0[&42].run.stats().attack_power - 0.12 * 1.2).abs() < 0.001);
+        assert_eq!(
+            super::super::support_spells::effective_magnitude("barkskin", 8, 1000.0),
+            0.75
+        );
+        assert_eq!(
+            super::super::support_spells::effective_magnitude("smoke_bomb", 8, 1000.0),
+            0.75
+        );
+    }
+    #[test]
+    fn support_party_buffs_respect_range_life_and_do_not_stack() {
+        let (mut world, _) = legendary_world("battle_shout", 0, &[1.0]);
+        support_party(&mut world);
+        world.run_system_once(cast_abilities).unwrap();
+        let party = world.resource::<super::super::multiplayer::Companions>();
+        assert!((party.0[&42].run.stats().attack_power - 0.12).abs() < 0.001);
+        assert_eq!(party.0[&43].run.stats().attack_power, 0.0);
+        assert_eq!(party.0[&44].run.stats().attack_power, 0.0);
+        world.resource_mut::<Run>().abilities[0].cd = 0.0;
+        world.run_system_once(cast_abilities).unwrap();
+        let party = world.resource::<super::super::multiplayer::Companions>();
+        assert!((party.0[&42].run.stats().attack_power - 0.12).abs() < 0.001);
+    }
+
+    #[test]
+    fn support_prayer_bounces_to_a_living_ally_and_credits_original_caster() {
+        let (mut world, _) = legendary_world("prayer_of_mending", 0, &[1.0]);
+        support_party(&mut world);
+        world.resource_mut::<Run>().hp = 10.0;
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(
+            world
+                .resource::<Run>()
+                .support
+                .power(0.0, "prayer_of_mending")
+                > 0.0
+        );
+        hero::hurt_hero(&mut world.resource_mut::<Run>(), 5.0);
+        world.run_system_once(cast_abilities).unwrap();
+        let party = world.resource::<super::super::multiplayer::Companions>();
+        let prayer = party.0[&42]
+            .run
+            .support
+            .buffs
+            .iter()
+            .find(|b| b.key == "prayer_of_mending")
+            .unwrap();
+        assert_eq!(prayer.jumps, 4);
+        assert_eq!(prayer.caster, None);
+        assert!(party.0[&43].run.support.buffs.is_empty());
+        assert!(!world.resource::<Run>().healing_meter.rows(0.0).is_empty());
+    }
+
+    #[test]
+    fn support_healing_totem_is_stationary_and_heals_nearby_allies_only() {
+        let (mut world, _) = legendary_world("healing_stream_totem", 0, &[1.0]);
+        support_party(&mut world);
+        world.resource_mut::<Run>().hp = 10.0;
+        world.run_system_once(cast_abilities).unwrap();
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world.resource::<Run>().hp > 10.0);
+        let party = world.resource::<super::super::multiplayer::Companions>();
+        assert!(party.0[&42].run.hp > 50.0);
+        assert_eq!(party.0[&43].run.hp, 50.0);
+        assert_eq!(party.0[&44].run.hp, 0.0);
+        let hp = world.resource::<Run>().hp;
+        let hero = world
+            .query_filtered::<Entity, With<Hero>>()
+            .single(&world)
+            .unwrap();
+        world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+        world.resource_mut::<Run>().elapsed = 2.0;
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Run>().hp, hp);
+    }
+
+
+
+    #[test]
+    fn added_skills_are_learnable_classified_and_cast_in_the_real_system() {
+        let rewards: toml::Value =
+            toml::from_str(super::super::reward_config::DEFAULT_FILE).unwrap();
+        for &(class_id, first, second) in super::super::extra_spells::ADDITIONS {
+            let class = data::CLASSES.iter().find(|c| c.id == class_id).unwrap();
+            for key in [first, second] {
+                assert_eq!(class.pool.iter().filter(|k| **k == key).count(), 1, "{key}");
+                assert_eq!(rewards["spells"][key].as_integer(), Some(1));
+                assert!(engine::tags::school(key).is_some(), "{key}");
+                let def = data::ability(key);
+                assert_eq!(
+                    data::ABILITIES
+                        .iter()
+                        .filter(|other| other.spell == def.spell)
+                        .count(),
+                    1,
+                    "{key} needs its own visual identity"
+                );
+                let (mut world, _) = legendary_world(key, 0, &[1.0, 2.0, 6.0]);
+                world.resource_mut::<Run>().extra_spells.revenge_until = 5.0;
+                world.run_system_once(cast_abilities).unwrap();
+                assert!(world.resource::<Run>().abilities[0].cd > 0.2, "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn added_direct_synergies_and_soul_burn_use_only_the_casters_dots() {
+        for (key, expected_damage, expected_dot) in
+            [("garrote", 30.0, 15.0), ("lava_lash", 30.0, 0.0)]
+        {
+            let (mut world, targets) = legendary_world(key, 0, &[1.0]);
+            if key == "lava_lash" {
+                let mut dot = Hit::direct("flame_shock", targets[0], 0.0, false);
+                dot.dot = 10.0;
+                dot.dot_dur = 8.0;
+                world.write_message(dot);
+                world.run_system_once(apply_hits).unwrap();
+                world.resource_mut::<Messages<Hit>>().clear();
+            }
+            let before = world.get::<Enemy>(targets[0]).unwrap().hp;
+            let expected_damage = {
+                let run = world.resource::<Run>();
+                let en = world.get::<Enemy>(targets[0]).unwrap();
+                let (armour, reduction) =
+                    run.expeditions
+                        .defenses(run.expedition_map, en.def.level, en.boss, false);
+                let tags = engine::tags::for_spell(data::ability(key));
+                let mods =
+                    engine::on_hit::modifiers_tagged(key, tags, run.spell_modifiers.entries());
+                engine::on_hit::damage(expected_damage, en.hp, en.max_hp, en.boss, armour, mods)
+                    * (1.0 - reduction)
+            };
+            let mut h = Hit::direct(key, targets[0], 20.0, false);
+            if key == "garrote" {
+                h.dot = 10.0;
+                h.dot_dur = 8.0;
+            }
+            world.write_message(h);
+            world.run_system_once(apply_hits).unwrap();
+            let en = world.get::<Enemy>(targets[0]).unwrap();
+            assert!((before - en.hp - expected_damage).abs() < 0.001, "{key}");
+            if expected_dot > 0.0 {
+                assert_eq!(en.dots[0].dps, expected_dot);
+            }
+        }
+        let (mut world, targets) = legendary_world("soul_burn", 0, &[1.0]);
+        let mut dot = Hit::direct("corruption", targets[0], 0.0, false);
+        dot.dot = 10.0;
+        dot.dot_dur = 10.0;
+        world.write_message(dot);
+        world.run_system_once(apply_hits).unwrap();
+        world.resource_mut::<Messages<Hit>>().clear();
+        let before = world.get::<Enemy>(targets[0]).unwrap().hp;
+        let mut foreign = world.get::<Enemy>(targets[0]).unwrap().dots[0].clone();
+        foreign.owner = Some(42);
+        foreign.left = 8.0;
+        world
+            .get_mut::<Enemy>(targets[0])
+            .unwrap()
+            .dots
+            .push(foreign);
+        world.write_message(Hit::direct("soul_burn", targets[0], 10.0, false));
+        world.run_system_once(apply_hits).unwrap();
+        let en = world.get::<Enemy>(targets[0]).unwrap();
+        assert!(en.dots[0].left < 5.0);
+        assert!(en.dots[1].left > 7.5);
+        assert!(before - en.hp >= 50.0);
+    }
+
+    #[test]
+    fn added_penance_schedules_three_hits_and_utility_fields_apply_slow() {
+        let (mut world, _) = legendary_world("penance", 0, &[1.0]);
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.resource::<Messages<Hit>>().len(), 1);
+        assert_eq!(world.resource::<PendingHits>().0.len(), 2);
+        for key in ["frost_trap", "earthbind_totem"] {
+            let (mut world, targets) = legendary_world(key, 0, &[1.0]);
+            world.run_system_once(cast_abilities).unwrap();
+            world
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs(1));
+            world.run_system_once(tick_areas).unwrap();
+            world.run_system_once(apply_hits).unwrap();
+            let en = world.get::<Enemy>(targets[0]).unwrap();
+            assert!(en.slow_t > 0.0, "{key}");
+            assert_eq!(en.slow, 0.5, "{key}");
+            assert_eq!(en.hp, en.max_hp, "{key}");
+        }
+    }
+
+    #[test]
+    fn added_disease_ticks_heal_and_ice_armor_reduces_incoming_damage() {
+        let (mut world, targets) = legendary_world("devouring_plague", 0, &[1.0]);
+        world.resource_mut::<Run>().hp = 10.0;
+        world.run_system_once(cast_abilities).unwrap();
+        world.run_system_once(apply_hits).unwrap();
+        world.resource_mut::<Messages<Hit>>().clear();
+        world.get_mut::<Enemy>(targets[0]).unwrap().dots[0].tick = 0.0;
+        world.run_system_once(apply_hits).unwrap();
+        assert!(world.resource::<Run>().hp > 10.0);
+        let mut run = Run::default();
+        run.extra_spells.ice_until = 6.0;
+        assert!((hero::hurt_hero(&mut run, 20.0) - 17.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn added_revenge_waits_for_a_block_and_holy_shield_retalitates_only_on_block() {
+        let (mut world, targets) = legendary_world("revenge", 0, &[1.0]);
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world.resource::<Messages<Hit>>().is_empty());
+        world.resource_mut::<Run>().equipment.block = 0.5;
+        hero::hurt_hero_with_block(&mut world.resource_mut::<Run>(), 10.0, 0.1);
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(!world.resource::<Messages<Hit>>().is_empty());
+        assert_eq!(world.resource::<Run>().extra_spells.revenge_until, 0.0);
+
+        let (mut world, _) = legendary_world("holy_shield", 0, &[1.0]);
+        world.run_system_once(cast_abilities).unwrap();
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.events.attacker = Some(targets[0]);
+            assert_eq!(hero::hurt_hero_with_block(&mut run, 10.0, 0.1), 0.0);
+        }
+        world.run_system_once(tick_areas).unwrap();
+        assert_eq!(world.resource::<Messages<Hit>>().len(), 1);
+    }
+
+    #[test]
+    fn added_bombs_explode_without_reapplying_their_dot() {
+        for key in ["living_bomb", "seed_of_corruption"] {
+            let (mut world, targets) = legendary_world(key, 0, &[1.0, 2.0]);
+            world.run_system_once(cast_abilities).unwrap();
+            world.run_system_once(apply_hits).unwrap();
+            world.resource_mut::<Messages<Hit>>().clear();
+            if key == "living_bomb" {
+                world.resource_mut::<Run>().elapsed = 7.0;
+            } else {
+                world.write_message(Hit::direct("shadow_bolt", targets[0], 200.0, false));
+                world.run_system_once(apply_hits).unwrap();
+                world.resource_mut::<Messages<Hit>>().clear();
+            }
+            let before = world.get::<Enemy>(targets[1]).unwrap().hp;
+            world.run_system_once(tick_areas).unwrap();
+            assert!(!world.resource::<Messages<Hit>>().is_empty(), "{key}");
+            world.run_system_once(apply_hits).unwrap();
+            let secondary = world.get::<Enemy>(targets[1]).unwrap();
+            assert!(secondary.hp < before, "{key}");
+            assert!(secondary.dots.is_empty(), "{key}");
+        }
+    }
+
+    #[test]
+    fn added_penance_heals_critical_health_and_efflorescence_stays_at_its_origin() {
+        for key in ["penance", "efflorescence"] {
+            let (mut world, _) = legendary_world(key, 0, &[1.0]);
+            world.resource_mut::<Run>().hp = 10.0;
+            world.run_system_once(cast_abilities).unwrap();
+            if key == "penance" {
+                assert!(world.resource::<Run>().hp > 10.0);
+                assert!(world.resource::<Messages<Hit>>().is_empty());
+            } else {
+                world.resource_mut::<Run>().elapsed = 1.0;
+                world.run_system_once(cast_abilities).unwrap();
+                let hp = world.resource::<Run>().hp;
+                assert!(hp > 10.0);
+                let hero = world
+                    .query_filtered::<Entity, With<Hero>>()
+                    .single(&world)
+                    .unwrap();
+                world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+                world.resource_mut::<Run>().elapsed = 2.0;
+                world.run_system_once(cast_abilities).unwrap();
+                assert_eq!(world.resource::<Run>().hp, hp);
+            }
+        }
+    }
 
     #[test]
     fn proc_rules_only_original_skill_kills_trigger_death_explosions() {
@@ -185,6 +530,7 @@ mod spell_engine_integration_tests {
         positions: &[f32],
     ) -> (World, Vec<Entity>) {
         let mut world = World::new();
+        world.init_resource::<super::super::support_spells::Debuffs>();
         world.init_resource::<Time>();
         world.init_resource::<Rng>();
         world.init_resource::<PendingHits>();
@@ -296,6 +642,86 @@ mod spell_engine_integration_tests {
                     "{key}"
                 );
             }
+        }
+    }
+    #[test]
+    fn ranged_spells_prioritize_bosses_over_wounded_mobs_but_ignore_distant_bosses() {
+        for key in [
+            "frostbolt",
+            "pyroblast",
+            "chain_lightning",
+            "shadow_word_pain",
+        ] {
+            let (mut world, targets) = legendary_world(key, 286, &[1.0, 3.0, 5.0, 200.0]);
+            world.resource_mut::<Run>().legendary.equipped.clear();
+            world.get_mut::<Enemy>(targets[1]).unwrap().hp = 1.0;
+            world.get_mut::<Enemy>(targets[2]).unwrap().boss = true;
+            {
+                let mut distant = world.get_mut::<Enemy>(targets[3]).unwrap();
+                distant.boss = true;
+                distant.hp = 0.5;
+            }
+            world.run_system_once(cast_abilities).unwrap();
+            let gos = world
+                .resource_mut::<Messages<SpellGoTargets>>()
+                .drain()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                gos.first().unwrap().hits.first(),
+                Some(&targets[2]),
+                "{key}"
+            );
+        }
+    }
+    #[test]
+    fn legendary_attack_range_reaches_targets_outside_native_melee_and_projectile_range() {
+        for key in ["heroic_strike", "arcane_shot", "serpent_sting"] {
+            for bonus in [false, true] {
+                let (mut world, targets) =
+                    legendary_world(key, 286, &[data::ability(key).range + 1.5]);
+                world.resource_mut::<Run>().legendary.equipped.clear();
+                if bonus {
+                    let p = data::PASSIVES
+                        .iter()
+                        .find(|p| p.key == "attack_range")
+                        .unwrap();
+                    let mut run = world.resource_mut::<Run>();
+                    run.passives.push((p, 1));
+                    super::super::passives::sync(&mut run);
+                }
+                world.run_system_once(cast_abilities).unwrap();
+                let cast = if key == "heroic_strike" {
+                    world
+                        .resource_mut::<Messages<SwingMessage>>()
+                        .drain()
+                        .any(|s| s.victim == Some(targets[0]))
+                } else {
+                    world
+                        .resource_mut::<Messages<SpellGoTargets>>()
+                        .drain()
+                        .any(|s| s.hits.contains(&targets[0]))
+                };
+                assert_eq!(cast, bonus, "{key}");
+            }
+        }
+    }
+    #[test]
+    fn demoralizing_shout_ranks_apply_the_scaled_weakness_to_real_enemies() {
+        for (rank, expected) in [(1, 0.5), (3, 0.45), (5, 0.35), (6, 0.25)] {
+            let (mut world, targets) = legendary_world("demoralizing_shout", 286, &[1.0]);
+            {
+                let mut run = world.resource_mut::<Run>();
+                run.legendary.equipped.clear();
+                run.abilities[0].level = rank;
+            }
+            world.run_system_once(cast_abilities).unwrap();
+            world.run_system_once(apply_hits).unwrap();
+            let enemy = world.get::<Enemy>(targets[0]).unwrap();
+            assert!((enemy.weaken - expected).abs() < 0.001, "rank {rank}");
+            assert_eq!(
+                enemy.weaken_t,
+                5.0 + 0.25 * super::super::specialization::steps(rank)
+            );
         }
     }
     #[test]
@@ -1798,6 +2224,7 @@ pub(super) struct GroundArea {
 
 #[derive(Component)]
 pub(super) struct Totem {
+    effect: Effect,
     triggered: bool,
     cast_id: u64,
     direct_dot: Option<engine::PeriodicSnapshot>,
@@ -1814,6 +2241,7 @@ pub(super) struct Totem {
     tick: f32,
     pulse: bool,
 }
+
 
 pub(super) fn hit_for(
     def: &AbilityDef,
@@ -1845,10 +2273,12 @@ pub(super) fn hit_for(
         damage,
         dot: p.dot,
         dot_dur: p.duration,
-        effect: def.effect,
+        effect: p.effect,
         mark: def.mark,
-        mark_dur: engine::mark_duration(def.effect, p.duration),
-        splash: if matches!(def.kind, Kind::Bolt | Kind::Strike) {
+        mark_dur: engine::mark_duration(p.effect, p.duration),
+        splash: if matches!(def.kind, Kind::Bolt | Kind::Strike)
+            || def.key == "hammer_of_the_righteous"
+        {
             p.radius
         } else {
             0.0
@@ -1967,14 +2397,22 @@ pub(super) fn cast_abilities(
     mut pending: ResMut<PendingHits>,
     mut hits: MessageWriter<Hit>,
     mut healing: super::healing::PartyHealing,
+    mut debuffs: Option<ResMut<super::support_spells::Debuffs>>,
 ) {
     let dt = time.delta_secs();
-    if run.dead_t.is_some() || run.pending_levels > 0 || dt <= 0.0 {
+    if run.pending_levels > 0 || dt <= 0.0 {
         return;
     }
     let Ok((me, htf)) = hero.single() else { return };
     let hpos = htf.translation;
+    healing.process_support(&mut run, me, &mut commands);
+    if run.dead_t.is_some() {
+        return;
+    }
     let now = run.elapsed;
+    if let Some(debuffs) = debuffs.as_deref_mut() {
+        debuffs.prune(now);
+    }
     let mut foes: Vec<Foe> = enemies
         .iter()
         .filter(|(_, _, e)| !e.dead)
@@ -1987,6 +2425,19 @@ pub(super) fn cast_abilities(
         })
         .collect();
     foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+    let mut blooms = std::mem::take(&mut run.extra_spells.blooms);
+    for bloom in &mut blooms {
+        while bloom.left > 0 && bloom.next <= now {
+            healing.area(&mut run, me, bloom.center, bloom.radius, bloom.amount);
+            bloom.left -= 1;
+            bloom.next += 1.0;
+        }
+        if bloom.left == 0 {
+            commands.entity(bloom.entity).despawn();
+        }
+    }
+    blooms.retain(|b| b.left > 0);
+    run.extra_spells.blooms = blooms;
     let speed_of = |spell: u32| {
         spells
             .as_deref()
@@ -2009,6 +2460,13 @@ pub(super) fn cast_abilities(
         let repeated = ordinal.is_some() || extra;
         let o = &run.abilities[i];
         let original_def = o.def;
+        let skill_level = o.level;
+        if !super::support_spells::cast_ready(&run, original_def.key) {
+            continue;
+        }
+        if original_def.key == "revenge" && !repeated && run.extra_spells.revenge_until <= now {
+            continue;
+        }
         let profile = super::items::legendary::profile(&run, original_def);
         let def = &profile.0;
         if run.legendary.has(308) && def.key == "shadow_bolt" {
@@ -2051,6 +2509,9 @@ pub(super) fn cast_abilities(
             foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
         }
         let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
+        if def.key == "mongoose_bite" && run.extra_spells.dodge_until > now {
+            p.dmg *= 1.75;
+        }
         p.triggered = extra;
         if extra && !super::procs::ready(&mut run, "proc_arcane_companion", p.tags) {
             continue;
@@ -2087,42 +2548,160 @@ pub(super) fn cast_abilities(
             fired
         } else {
             match def.kind {
-                Kind::Bolt | Kind::Strike | Kind::Melee => {
-                    let reach = if def.kind == Kind::Melee {
-                        def.range + 0.5
-                    } else {
-                        def.range
-                    };
-                    let targets = if def.kind == Kind::Melee {
-                        nearest(&foes, reach, p.count)
-                    } else {
-                        weakest(&foes, reach, p.count)
-                    };
-                    if targets.is_empty() {
-                        false
-                    } else {
-                        primary = Some((targets[0].e, targets[0].pos));
-                        if def.kind == Kind::Melee {
-                            fx.swing(me, targets[0].e, p.dmg);
-                            for f in &targets {
-                                fx.impact(f.e, def.spell);
+                Kind::Buff => {
+                    let power = super::support_spells::effective_magnitude(
+                        def.key,
+                        skill_level,
+                        p.buff_effect,
+                    );
+                    if matches!(def.key, "hunters_mark" | "curse_of_elements") {
+                        if let Some(target) = foes
+                            .iter()
+                            .filter(|f| f.dist <= p.range)
+                            .max_by(|a, b| a.hp.total_cmp(&b.hp))
+                        {
+                            if let Some(state) = debuffs.as_deref_mut() {
+                                let boss = enemies.get(target.e).is_ok_and(|(_, _, en)| en.boss);
+                                state.apply(
+                                    target.e,
+                                    def.key,
+                                    power * if boss { 0.5 } else { 1.0 },
+                                    now,
+                                    p.duration,
+                                );
                             }
+                            primary = Some((target.e, target.pos));
+                            fx.cast(me, def.spell, &[target.e], None);
+                            true
                         } else {
-                            fx.cast(me, def.spell, &entities(&targets), None);
+                            false
                         }
-                        emit_links(
-                            &targets,
-                            &foes,
-                            &p,
-                            def,
-                            false,
-                            speed,
-                            &mut rng,
-                            &mut pending,
-                            &mut hits,
-                            now,
-                        );
+                    } else if def.key == "prayer_of_mending" {
+                        let target = healing.cast(&mut run, me, def, power, p.duration, p.range);
+                        fx.cast(me, def.spell, &[target], None);
                         true
+                    } else if matches!(
+                        def.key,
+                        "smoke_bomb" | "strength_of_earth_totem" | "healing_stream_totem"
+                    ) {
+                        let serial = run.guid();
+                        let entity = if def.totem.0 != 0 {
+                            units::spawn_unit(
+                                &mut commands,
+                                &UnitSpec {
+                                    serial,
+                                    display: def.totem.0,
+                                    scale: 1.0,
+                                    level: 60,
+                                    faction: units::FACTION_FRIENDLY,
+                                    bytes0: 0,
+                                    weapons: &[],
+                                    sheath: 0,
+                                },
+                                hpos,
+                                0.0,
+                            )
+                        } else {
+                            units::spawn_area_object(
+                                &mut commands,
+                                serial,
+                                def.spell,
+                                p.radius,
+                                area_scale,
+                                hpos,
+                            )
+                        };
+                        if let Some(owner) = run.owner {
+                            commands
+                                .entity(entity)
+                                .insert(super::multiplayer::OwnedEffect(owner));
+                        }
+                        run.support.zones.push(super::support_spells::Zone {
+                            entity,
+                            key: def.key,
+                            pos: hpos,
+                            radius: p.radius,
+                            until: now + p.duration,
+                            next: now,
+                            power,
+                        });
+                        fx.cast(me, def.spell, &[me], Some(hpos));
+                        true
+                    } else {
+                        if matches!(
+                            def.key,
+                            "savage_roar" | "slice_and_dice" | "barkskin" | "demon_armor"
+                        ) {
+                            let owner = run.owner;
+                            super::support_spells::grant(
+                                &mut run, def.key, power, p.duration, owner,
+                            );
+                        } else {
+                            healing.buff(&mut run, me, hpos, p.radius, def.key, power, p.duration);
+                        }
+                        fx.cast(me, def.spell, &[me], None);
+                        true
+                    }
+                }
+                Kind::Bolt | Kind::Strike | Kind::Melee => {
+                    if def.key == "penance" && healing.urgent(&run, me, p.range) {
+                        let target = healing.cast(&mut run, me, def, p.dmg * 3.0, 0.0, p.range);
+                        fx.cast(me, def.spell, &[target], None);
+                        true
+                    } else {
+                        let reach = if def.kind == Kind::Melee {
+                            p.range + 0.5
+                        } else {
+                            p.range
+                        };
+                        let targets = if def.kind == Kind::Melee {
+                            nearest(&foes, reach, p.count)
+                        } else {
+                            weakest(&foes, reach, p.count, |e| {
+                                enemies.get(e).is_ok_and(|(_, _, en)| en.boss)
+                            })
+                        };
+                        if targets.is_empty() {
+                            false
+                        } else {
+                            primary = Some((targets[0].e, targets[0].pos));
+                            if def.kind == Kind::Melee {
+                                fx.swing(me, targets[0].e, p.dmg);
+                                for f in &targets {
+                                    fx.impact(f.e, def.spell);
+                                }
+                            } else {
+                                fx.cast(me, def.spell, &entities(&targets), None);
+                            }
+                            emit_links(
+                                &targets,
+                                &foes,
+                                &p,
+                                def,
+                                false,
+                                speed,
+                                &mut rng,
+                                &mut pending,
+                                &mut hits,
+                                now,
+                            );
+                            if def.key == "penance" {
+                                for ordinal in 1..=2 {
+                                    for target in &targets {
+                                        let (damage, crit) =
+                                            roll(&mut rng, p.crit, p.crit_multiplier, p.dmg);
+                                        schedule(
+                                            &mut pending,
+                                            &mut hits,
+                                            now,
+                                            ordinal as f32 * 0.3,
+                                            hit_for(def, &p, target.e, damage, crit),
+                                        );
+                                    }
+                                }
+                            }
+                            true
+                        }
                     }
                 }
                 Kind::Nova | Kind::Cone => {
@@ -2176,7 +2755,7 @@ pub(super) fn cast_abilities(
                             .filter(|f| f.dist <= p.radius + 4.0)
                             .map(|_| hpos)
                     } else {
-                        densest(&foes, def.range, p.radius)
+                        densest(&foes, p.range, p.radius)
                     };
                     match center {
                         None => false,
@@ -2254,7 +2833,7 @@ pub(super) fn cast_abilities(
                                 },
                                 every: if burst { f32::INFINITY } else { 1.0 },
                                 next_tick: if burst && !trap { 0.0 } else { 0.4 },
-                                effect: def.effect,
+                                effect: p.effect,
                                 mark: def.mark,
                                 impact: if def.overhead || trap { def.spell } else { 0 },
                             });
@@ -2268,7 +2847,9 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Chain => {
-                    let targets = weakest(&foes, p.range, 1);
+                    let targets = weakest(&foes, p.range, 1, |e| {
+                        enemies.get(e).is_ok_and(|(_, _, en)| en.boss)
+                    });
                     if targets.is_empty() {
                         false
                     } else {
@@ -2290,7 +2871,9 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Dot => {
-                    let targets = weakest(&foes, def.range, p.count);
+                    let targets = weakest(&foes, p.range, p.count, |e| {
+                        enemies.get(e).is_ok_and(|(_, _, en)| en.boss)
+                    });
                     if targets.is_empty() {
                         false
                     } else {
@@ -2408,10 +2991,16 @@ pub(super) fn cast_abilities(
                 }
                 Kind::Thorns => {
                     if foes.first().is_some_and(|f| f.dist <= 8.0) {
-                        run.thorns = p.dmg;
-                        run.thorns_dot = p.direct_dot;
-                        run.thorns_t = p.duration;
-                        run.thorns_spell = def.spell;
+                        if def.key == "holy_shield" {
+                            run.extra_spells.holy_until = now + p.duration;
+                        } else if def.key == "ice_armor" {
+                            run.extra_spells.ice_until = now + p.duration;
+                        } else {
+                            run.thorns = p.dmg;
+                            run.thorns_dot = p.direct_dot;
+                            run.thorns_t = p.duration;
+                            run.thorns_spell = def.spell;
+                        }
                         fx.cast(me, def.spell, &[me], None);
                         true
                     } else {
@@ -2419,24 +3008,53 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Heal => {
-                    let level = run.abilities[i].level;
-                    if !extra {
-                        super::healer_buffs::on_heal_cast(&mut run, original_def, level);
-                    }
-                    let target = if extra {
-                        healing
-                            .cast_with_origin(&mut run, me, def, p.dmg, p.duration, p.range, true)
+                    if def.key == "efflorescence" {
+                        let ticks = p.duration.floor().max(1.0) as u32;
+                        let serial = run.guid();
+                        let entity = units::spawn_area_object(
+                            &mut commands,
+                            serial,
+                            def.spell,
+                            p.radius,
+                            area_scale,
+                            hpos,
+                        );
+                        if let Some(owner) = run.owner {
+                            commands
+                                .entity(entity)
+                                .insert(super::multiplayer::OwnedEffect(owner));
+                        }
+                        run.extra_spells.blooms.push(super::extra_spells::Bloom {
+                            entity,
+                            center: hpos,
+                            radius: p.radius,
+                            amount: p.dmg / ticks as f32,
+                            next: now + 1.0,
+                            left: ticks,
+                        });
+                        fx.cast(me, def.spell, &[me], Some(hpos));
+                        true
                     } else {
-                        healing.cast(&mut run, me, def, p.dmg, p.duration, p.range)
-                    };
-                    fx.cast(me, def.spell, &[target], None);
-                    fx.number(run.owner, target, p.dmg, false, COLOR_HEAL);
-                    true
+                        let level = run.abilities[i].level;
+                        if !extra {
+                            super::healer_buffs::on_heal_cast(&mut run, original_def, level);
+                        }
+                        let target = if extra {
+                            healing.cast_with_origin(
+                                &mut run, me, def, p.dmg, p.duration, p.range, true,
+                            )
+                        } else {
+                            healing.cast(&mut run, me, def, p.dmg, p.duration, p.range)
+                        };
+                        fx.cast(me, def.spell, &[target], None);
+                        fx.number(run.owner, target, p.dmg, false, COLOR_HEAL);
+                        true
+                    }
                 }
                 Kind::Totem => {
                     if foes
                         .first()
-                        .is_some_and(|f| f.dist <= def.range.max(p.radius) + 6.0)
+                        .is_some_and(|f| f.dist <= p.range.max(p.radius) + 6.0)
                     {
                         fx.cast(me, def.spell, &[], None);
                         let a = rng.range(0.0, std::f32::consts::TAU);
@@ -2458,6 +3076,7 @@ pub(super) fn cast_abilities(
                             0.0,
                         );
                         commands.entity(totem).insert(Totem {
+                            effect: p.effect,
                             triggered: p.triggered,
                             cast_id: p.cast_id,
                             direct_dot: p.direct_dot,
@@ -2468,11 +3087,11 @@ pub(super) fn cast_abilities(
                             crit_multiplier: p.crit_multiplier,
                             cast: def.totem.1,
                             damage: p.dmg,
-                            range: def.range,
+                            range: p.range,
                             radius: p.radius,
                             left: p.duration,
                             tick: 0.3,
-                            pulse: def.key == "magma_totem",
+                            pulse: matches!(def.key, "magma_totem" | "earthbind_totem"),
                         });
                         if let Some(owner) = run.owner {
                             commands
@@ -2487,6 +3106,9 @@ pub(super) fn cast_abilities(
             }
         };
         if fired {
+            if !repeated {
+                super::support_spells::activated(&mut run, def.key, p.tags);
+            }
             run.meter.cast(def.key);
             run.legendary.events.position = hpos;
             if !repeated {
@@ -2503,6 +3125,12 @@ pub(super) fn cast_abilities(
             }
         }
         if !repeated {
+            if fired && def.key == "revenge" {
+                run.extra_spells.revenge_until = 0.0;
+            }
+            if fired && def.key == "mongoose_bite" {
+                run.extra_spells.dodge_until = 0.0;
+            }
             run.abilities[i].cd = if fired { p.cooldown } else { 0.2 };
             if fired && p.recast > 0.0 {
                 let count = engine::recast_count(p.recast, rng.f32(), false);
@@ -2554,6 +3182,12 @@ pub(super) fn tick_areas(
             radius: en.radius,
         })
         .collect();
+    super::extra_spells::tick(&mut run, &live, &mut hits);
+    if let Some(players) = players.as_deref_mut() {
+        for player in players.0.values_mut() {
+            super::extra_spells::tick(&mut player.run, &live, &mut hits);
+        }
+    }
 
     for (e, tf, mut area, guid, store) in &mut areas {
         area.left -= dt;
@@ -2740,6 +3374,7 @@ pub(super) fn tick_areas(
                 hits.write(Hit {
                     owner: totem.owner,
                     skill: totem.skill,
+                    effect: totem.effect,
                     direct_dot: totem.direct_dot,
                     tags: Some(totem.tags),
                     triggered: totem.triggered,
@@ -2782,6 +3417,7 @@ pub(super) fn tick_areas(
                 Hit {
                     owner: totem.owner,
                     skill: totem.skill,
+                    effect: totem.effect,
                     direct_dot: totem.direct_dot,
                     triggered: totem.triggered,
                     proc_admitted: totem.triggered,
@@ -2809,6 +3445,7 @@ pub(super) fn apply_hits(
     mut rng: ResMut<Rng>,
     mut pending: ResMut<PendingHits>,
     mut incoming: MessageReader<Hit>,
+    mut debuffs: Option<ResMut<super::support_spells::Debuffs>>,
     mut enemies: Query<(
         Entity,
         &Guid,
@@ -2836,6 +3473,23 @@ pub(super) fn apply_hits(
     let dt = time.delta_secs();
     let now = run.elapsed;
     let mut due: Vec<Hit> = incoming.read().cloned().collect();
+    let mut slowed = Vec::new();
+    if let Some(target) = run.support.slow_attacker.take() {
+        slowed.push(target);
+    }
+    if let Some(players) = players.as_deref_mut() {
+        for player in players.0.values_mut() {
+            if let Some(target) = player.run.support.slow_attacker.take() {
+                slowed.push(target);
+            }
+        }
+    }
+    for target in slowed {
+        if let Ok((_, _, _, mut en, ..)) = enemies.get_mut(target) {
+            en.slow = en.slow.min(0.6);
+            en.slow_t = en.slow_t.max(2.0);
+        }
+    }
     // Equipment/buff sources stay fixed during this system, even across thousands of targets.
     let mut item_mods = std::collections::HashMap::new();
     pending.1.retain(|&(at, from, to, spell)| {
@@ -2885,7 +3539,7 @@ pub(super) fn apply_hits(
             else {
                 continue;
             };
-            let p = super::procs::resolve(
+            let mut p = super::procs::resolve(
                 player,
                 h.skill,
                 h.damage,
@@ -2894,6 +3548,13 @@ pub(super) fn apply_hits(
                 h.splash,
                 if h.skill == "proc_spirit_bolt" { 3 } else { 1 },
             );
+            p.roll_extras(std::array::from_fn(|i| {
+                if p.extra_chances[i] > 0.0 {
+                    rng.f32()
+                } else {
+                    1.0
+                }
+            }));
             (h.damage, h.crit) =
                 engine::critical_with_multiplier(p.dmg, p.crit, p.crit_multiplier, rng.f32());
             h.dot = p.dot;
@@ -3112,6 +3773,24 @@ pub(super) fn apply_hits(
         });
         super::items::legendary::periodic::before_hit(run, &h, &mut en, tf.translation, tags);
         super::items::legendary::effects::before_hit(run, &mut h, &mut en, tf.translation, tags);
+        super::extra_spells::before_hit(run, &mut h, &mut en, tf.translation);
+        if let Some(state) = debuffs.as_deref_mut() {
+            if h.skill == "mangle" && h.can_proc() {
+                let level = run
+                    .abilities
+                    .iter()
+                    .find(|o| o.def.key == "mangle")
+                    .map_or(1, |o| o.level);
+                state.apply(
+                    e,
+                    "mangle",
+                    super::support_spells::magnitude("mangle", level),
+                    run.elapsed,
+                    h.dot_dur,
+                );
+            }
+            h.damage *= state.multiplier(e, run.elapsed, tags, false);
+        }
         let mut mods = *item_mods
             .entry((h.owner, h.skill, tags.0))
             .or_insert_with(|| {
@@ -3156,6 +3835,9 @@ pub(super) fn apply_hits(
                 dmg.min(en.hp.max(0.0))
             };
             dealt_effective = effective;
+            if h.can_proc() {
+                super::extra_spells::damage(run, e, tf.translation, effective);
+            }
             if h.can_proc() {
                 super::talent_runtime::periodic_leech(run, tags, effective);
             }
@@ -3339,8 +4021,12 @@ pub(super) fn apply_hits(
             Effect::Stun(t) => en.stun_t = en.stun_t.max(if boss { t * 0.3 } else { t }),
             Effect::Fear(t) if !boss => en.fear_t = en.fear_t.max(t),
             Effect::Weaken(m, t) => {
-                en.weaken = m;
-                en.weaken_t = t;
+                en.weaken = if en.weaken_t > 0.0 {
+                    en.weaken.min(m)
+                } else {
+                    m
+                };
+                en.weaken_t = en.weaken_t.max(t);
             }
             _ => {}
         }
@@ -3445,6 +4131,15 @@ pub(super) fn apply_hits(
                     });
                 let amount =
                     engine::on_hit::damage(tick_damage, remaining_hp, max_hp, boss, armour, mods)
+                        * debuffs.as_deref().map_or(1.0, |state| {
+                            state.multiplier(
+                                e,
+                                run.elapsed,
+                                tags,
+                                super::items::legendary::periodic::family(d)
+                                    == super::items::legendary::periodic::Family::Bleed,
+                            )
+                        })
                         * (1.0 - resistance.reduction(tags))
                         * (1.0 - final_reduction);
                 dealt += amount;
@@ -3468,6 +4163,10 @@ pub(super) fn apply_hits(
                 run.damage_done += f64::from(effective);
                 if d.origin == Origin::Skill {
                     super::talent_runtime::periodic_leech(run, tags, effective);
+                    super::extra_spells::damage(run, e, tf.translation, effective);
+                    if d.skill == "devouring_plague" {
+                        run.heal(effective * 0.15);
+                    }
                 }
                 if d.origin == Origin::Skill {
                     super::items::legendary::effects::periodic_hit(

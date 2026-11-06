@@ -4,6 +4,7 @@ use super::*;
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(PostUpdate, forms::sync.run_if(multiplayer::authoritative));
     app.init_resource::<Run>()
+        .init_resource::<support_spells::Debuffs>()
         .init_resource::<talents::Account>()
         .init_resource::<abilities::PendingHits>()
         .init_resource::<enemies::Spawner>()
@@ -124,6 +125,9 @@ pub(super) struct Owned {
 /// The hero's derived numbers, from the base and the passives.
 #[derive(Clone, Copy)]
 pub(super) struct Stats {
+    pub attack_power: f32,
+    pub spell_power: f32,
+    pub attack_speed: f32,
     pub might: f32,
     pub level_damage: f32,
     pub max_hp: f32,
@@ -145,6 +149,8 @@ pub(super) const BASE_MAGNET: f32 = 4.5;
 /// One run's state.
 #[derive(Resource)]
 pub(super) struct Run {
+    pub(super) support: super::support_spells::Runtime,
+    pub(super) extra_spells: super::extra_spells::Runtime,
     pub owner: Option<u64>,
     pub(super) balance: balance::Config,
     pub(super) expeditions: expedition_config::Config,
@@ -217,6 +223,8 @@ pub(super) struct Run {
 impl Default for Run {
     fn default() -> Self {
         Self {
+            support: default(),
+            extra_spells: default(),
             owner: None,
             balance: balance::Config::default(),
             expeditions: expedition_config::Config::default(),
@@ -288,6 +296,12 @@ impl Run {
     pub fn stats(&self) -> Stats {
         let (level_health, level_damage) = level_stats::bonuses(self.level, self.meta_level);
         let mut s = Stats {
+            attack_power: self.support.power(self.elapsed, "battle_shout")
+                + self.support.power(self.elapsed, "blessing_of_might")
+                + self.support.power(self.elapsed, "strength_of_earth_totem")
+                + self.support.power(self.elapsed, "savage_roar"),
+            spell_power: self.support.power(self.elapsed, "arcane_intellect"),
+            attack_speed: self.support.power(self.elapsed, "slice_and_dice"),
             might: 1.0,
             level_damage,
             max_hp: BASE_HP + self.equipment_hp + level_health,
@@ -334,6 +348,14 @@ impl Run {
         talents::apply_stats(self, &mut s);
         s.speed *= 1.0 + self.healer_buffs.bonuses.speed;
         s.resistances.add_all(self.healer_buffs.bonuses.resistance);
+        s.armor += self.support.power(self.elapsed, "devotion_aura")
+            + self.support.power(self.elapsed, "mark_of_the_wild")
+            + self.support.power(self.elapsed, "demon_armor");
+        s.resistances
+            .add_all(self.support.power(self.elapsed, "mark_of_the_wild") * 0.25);
+        s.speed *= 1.0
+            + self.support.power(self.elapsed, "aspect_of_the_pack")
+            + self.support.power(self.elapsed, "stampeding_roar");
         s
     }
 
@@ -360,8 +382,12 @@ impl Run {
         if self.hp <= 0.0 || self.dead_t.is_some() || !amount.is_finite() {
             return 0.0;
         }
-        let recovered = (amount.max(0.0) * (1.0 + self.equipment.healing).max(0.0))
-            .min((self.stats().max_hp - self.hp).max(0.0));
+        let recovered = (amount.max(0.0)
+            * (1.0
+                + self.equipment.healing
+                + self.support.power(self.elapsed, "demon_armor") / 400.0)
+                .max(0.0))
+        .min((self.stats().max_hp - self.hp).max(0.0));
         self.hp += recovered;
         recovered
     }
@@ -438,6 +464,7 @@ pub(super) fn reset_run(
     selection.sheet_open = false;
     selection.bags_open = false;
     selection.ui_captured = false;
+    selection.pointer_captured = false;
     selection.in_hub = true;
     selection.talents_open = false;
     // The preview hero is respawned for the look still picked.

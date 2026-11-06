@@ -61,6 +61,14 @@ impl State {
     pub fn buff(&self, id: u16, now: f32) -> bool {
         self.buffs.get(&id).is_some_and(|until| *until > now)
     }
+    pub(in crate::survivors) fn active_buffs(
+        &self,
+        now: f32,
+    ) -> impl Iterator<Item = (u16, f32)> + '_ {
+        self.buffs
+            .iter()
+            .filter_map(move |(&id, &until)| (until > now).then_some((id, until - now)))
+    }
     fn ready(&mut self, id: u16, now: f32, cooldown: f32) -> bool {
         if self.cooldowns.get(&id).is_some_and(|until| *until > now) {
             return false;

@@ -66,26 +66,6 @@ pub(in crate::survivors::talent_ui) fn render(
     if !menu {
         return;
     }
-    commands
-        .spawn((
-            Root,
-            GlobalZIndex(440),
-            Node {
-                position_type: PositionType::Absolute,
-                right: Val::Px(18.0),
-                bottom: Val::Px(45.0),
-                ..default()
-            },
-        ))
-        .with_children(|ui| {
-            super::super::super::combat_ui::skin::button(
-                ui,
-                f,
-                format!("Talents · niveau {}", talents::level(account.xp)),
-                Action::Toggle,
-                190.0,
-            )
-        });
     if !selection.talents_open {
         return;
     }

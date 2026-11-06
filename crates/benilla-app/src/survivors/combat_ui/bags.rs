@@ -5,7 +5,7 @@ use bevy::ui::RelativeCursorPosition;
 mod gestures;
 mod grid;
 #[derive(Component, Clone, Copy)]
-pub(super) enum DropTarget {
+pub(in crate::survivors) enum DropTarget {
     Equipment(&'static str),
     /// A bag cell, by its index across all pages.
     Bag(usize),
@@ -21,7 +21,7 @@ enum Action {
     Delete(u64),
 }
 #[derive(Component)]
-struct ItemTip(u64);
+pub(in crate::survivors) struct ItemTip(pub u64);
 #[derive(Component)]
 struct Tooltip;
 const BAG_COLUMNS: usize = 14;
@@ -30,7 +30,7 @@ const BAG_PAGE_SIZE: usize = BAG_COLUMNS * BAG_ROWS;
 const BAG_GRID_WIDTH: f32 = 474.0;
 const BAG_GRID_HEIGHT: f32 = 270.0;
 const BAG_WIDTH: f32 = 498.0;
-const BAG_HEIGHT: f32 = 340.0;
+const BAG_HEIGHT: f32 = 364.0;
 #[derive(Component)]
 struct BagRoot;
 pub(super) fn plugin(app: &mut App) {
@@ -177,7 +177,9 @@ fn render(
         view.bag_page,
         view.selected_item,
         view.delete_armed,
-        inventory.as_ref().map(|i| (i.revision, &i.notice))
+        inventory
+            .as_ref()
+            .map(|i| (i.revision, &i.notice, i.money()))
     );
     if *cache == stamp {
         return;
@@ -220,7 +222,7 @@ fn render(
             root.spawn(Node {
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
-                ..skin::rect(12.0, 30.0, BAG_GRID_WIDTH, 302.0)
+                ..skin::rect(12.0, 30.0, BAG_GRID_WIDTH, 326.0)
             })
             .with_children(|body| panel(body, &font.0, &view, inventory.as_deref()));
         });
@@ -349,6 +351,35 @@ mod tests {
     use super::*;
     #[derive(Component)]
     struct TestRoot;
+    #[test]
+    fn bag_money_refreshes_when_only_the_wallet_changes() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(State::new(Phase::Hub))
+            .insert_resource(Selection {
+                bags_open: true,
+                ..default()
+            })
+            .init_resource::<View>()
+            .insert_resource(Inventory::fixture(vec![]))
+            .insert_resource(hud::HudFont(Handle::default()))
+            .add_systems(Update, render);
+        app.update();
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .add_money(12345)
+            .unwrap();
+        app.update();
+        let world = app.world_mut();
+        let texts: Vec<_> = world
+            .query::<&Text>()
+            .iter(world)
+            .map(|t| t.0.clone())
+            .collect();
+        for amount in ["1", "23", "45"] {
+            assert!(texts.iter().any(|t| t == amount), "{amount}");
+        }
+    }
     #[test]
     fn bag_window_is_right_anchored_and_does_not_require_the_character_sheet() {
         let mut app = App::new();

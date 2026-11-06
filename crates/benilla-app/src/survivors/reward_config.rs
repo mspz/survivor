@@ -144,7 +144,7 @@ pub(super) fn weighted_index(weights: &[f64], roll: f32) -> Option<usize> {
 mod tests {
     use super::*;
     #[test]
-    fn defaults_cover_the_entire_reward_catalog_with_equal_weights() {
+    fn defaults_cover_the_entire_reward_catalog_with_authored_weights() {
         let config = Config::builtin();
         assert_eq!(config.spells.len(), data::ABILITIES.len());
         assert_eq!(config.passives.len(), data::PASSIVES.len());
@@ -152,9 +152,14 @@ mod tests {
             assert_eq!(config.spells.get(def.key), Some(&1.0));
         }
         for def in data::PASSIVES {
-            assert_eq!(config.passives.get(def.key), Some(&1.0));
+            let weight = if super::super::passives::legendary(def) {
+                2.0
+            } else {
+                1.0
+            };
+            assert_eq!(config.passives.get(def.key), Some(&weight));
         }
-        assert_eq!(config.rarity_weights(), [50.0, 30.0, 15.0, 5.0]);
+        assert_eq!(config.rarity_weights(), [50.0, 40.0, 8.0, 2.0]);
     }
     #[test]
     fn relative_weights_are_normalized_and_zero_entries_are_never_drawn() {
@@ -173,11 +178,7 @@ mod tests {
             DEFAULT_FILE.replace("common = 50", "common = nan"),
             DEFAULT_FILE.replace("version = 1", "version = 2"),
             DEFAULT_FILE.replace("fireball = 1", "misspelled_spell = 1"),
-            DEFAULT_FILE
-                .replace("common = 50", "common = 0")
-                .replace("uncommon = 30", "uncommon = 0")
-                .replace("epic = 15", "epic = 0")
-                .replace("legendary = 5", "legendary = 0"),
+            "version=1\n[rarities]\ncommon=0\nuncommon=0\nepic=0\nlegendary=0".into(),
         ] {
             assert!(Config::parse(&text).is_err());
         }

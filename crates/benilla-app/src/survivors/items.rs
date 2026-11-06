@@ -104,7 +104,7 @@ impl Rarity {
     }
     fn affix_limits(self) -> (usize, usize) {
         match self {
-            Self::Normal => (0, 1),
+            Self::Normal => (1, 1),
             Self::Magic => (2, 2),
             Self::Epic | Self::Legendary => (4, 3),
         }
@@ -158,6 +158,8 @@ pub(super) enum Effect {
     AllResistance,
     LifeLeech,
     LifeOnKill,
+    LifeOnBlock,
+    LifeOnBlockPercent,
     Regeneration,
     MovementSpeed,
     DamageReduction,
@@ -271,13 +273,17 @@ impl Effect {
                 | Self::FlatDamage
                 | Self::SpellDamage
                 | Self::LifeOnKill
+                | Self::LifeOnBlock
         )
     }
     fn global(self) -> bool {
         if self.resistance() {
             return true;
         }
-        if self == Self::BlockChance {
+        if matches!(
+            self,
+            Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent
+        ) {
             return true;
         }
         matches!(
@@ -301,7 +307,9 @@ impl Effect {
     }
     fn valid_slot(self, slot: SlotKind) -> bool {
         match self {
-            Self::BlockChance => slot == SlotKind::OffHand,
+            Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent => {
+                slot == SlotKind::OffHand
+            }
             Self::FlatDamage | Self::AttackSpeed | Self::LifeLeech => slot.weapon(),
             Self::Luck => matches!(slot, SlotKind::Ring | SlotKind::Neck),
             Self::Proc => slot == SlotKind::Trinket,
@@ -369,6 +377,8 @@ pub(super) struct Bonuses {
     pub resistances: super::resistances::Resistances,
     pub block: f32,
     pub life_on_kill: f32,
+    pub life_on_block: f32,
+    pub life_on_block_percent: f32,
     pub regeneration: f32,
     pub movement: f32,
     pub reduction: f32,
@@ -391,6 +401,8 @@ impl Bonuses {
             Effect::AllResistance => self.resistances.add_all(value),
             Effect::BlockChance => self.block += value,
             Effect::LifeOnKill => self.life_on_kill += value,
+            Effect::LifeOnBlock => self.life_on_block += value,
+            Effect::LifeOnBlockPercent => self.life_on_block_percent += value,
             Effect::Regeneration => self.regeneration += value,
             Effect::MovementSpeed => self.movement += value,
             Effect::DamageReduction => self.reduction += value,
@@ -449,6 +461,8 @@ pub(super) struct Item {
 #[serde(deny_unknown_fields)]
 struct Save {
     #[serde(default)]
+    copper: u64,
+    #[serde(default)]
     trade_identity: String,
     #[serde(default)]
     trade_sequence: u64,
@@ -472,6 +486,7 @@ struct Save {
 impl Default for Save {
     fn default() -> Self {
         Self {
+            copper: 0,
             version: 1,
             trade_identity: String::new(),
             trade_sequence: 0,
@@ -548,6 +563,25 @@ impl Default for Inventory {
     }
 }
 impl Inventory {
+    pub(in crate::survivors) fn money(&self) -> u64 {
+        self.save.copper
+    }
+    pub(in crate::survivors) fn money_owner(&self) -> Option<u64> {
+        self.character
+    }
+    pub(in crate::survivors) fn add_money(&mut self, amount: u64) -> Result<(), String> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let mut save = self.save.clone();
+        save.copper = save
+            .copper
+            .saturating_add(amount)
+            .min(super::currency::MAX_BALANCE);
+        self.persist(&save)?;
+        self.save = save;
+        Ok(())
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::survivors) fn shared_save(&self) -> Result<String, String> {
         toml::to_string(&self.save).map_err(|e| e.to_string())
@@ -759,6 +793,12 @@ impl Inventory {
             let primary = item.affixes.iter().filter(|a| a.effect.primary()).count();
             if item.affix_rules == 1 {
                 let (minimum, cap) = item.rarity.affix_limits();
+                // White items saved before the guaranteed-affix rule remain loadable.
+                let minimum = if item.rarity == Rarity::Normal {
+                    0
+                } else {
+                    minimum
+                };
                 if !(minimum..=cap * 2).contains(&item.affixes.len())
                     || kinds.iter().any(|&count| count > cap)
                     || item.affixes.iter().any(|a| a.kind != a.effect.affix_kind())
@@ -819,6 +859,33 @@ impl Inventory {
             .ok_or("Item identity exhausted")?;
         save.items.push(item);
         self.commit(save)
+    }
+    pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind) -> bool {
+        self.config.gamble_available(slot, self.class)
+    }
+    pub(in crate::survivors) fn gamble(
+        &mut self,
+        slot: SlotKind,
+        level: u32,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let price = super::gambling::price(slot, level);
+        let copper = self
+            .money()
+            .checked_sub(price)
+            .ok_or("Pas assez de monnaie.")?;
+        let mut item = self.config.generate_gamble(level, self.class, slot, rng)?;
+        let mut save = self.save.clone();
+        item.id = save.next_id;
+        save.next_id = save
+            .next_id
+            .checked_add(1)
+            .ok_or("Item identity exhausted")?;
+        save.copper = copper;
+        save.items.push(item.clone());
+        self.commit(save)?;
+        Ok(item)
     }
     pub fn equip(&mut self, id: u64, slot: &str) -> Result<(), String> {
         let item = self.item(id).ok_or("Item missing")?;
@@ -1092,6 +1159,7 @@ impl Inventory {
 }
 
 pub(super) fn plugin(app: &mut App) {
+    super::currency::plugin(app);
     visuals::plugin(app);
     combat::plugin(app);
     // Also registered by the sound plugin; registering here keeps headless apps working.
@@ -1417,23 +1485,18 @@ mod tests {
         );
     }
     #[test]
-    fn spell_damage_affix_adds_flat_spell_hits_only_and_roundtrips() {
+    fn spell_damage_affix_adds_flat_spell_hits_and_shields_and_roundtrips() {
         let spell_damage = affix(Effect::SpellDamage, 6.0, AffixKind::Prefix, vec![]);
         assert_eq!(spell_damage.description(), "+6 Spell damage");
         let mut inventory = Inventory::fixture(vec![item(SlotKind::Ring, vec![spell_damage])]);
         let mut run = Run::default();
         let fire = super::super::data::ability("fireball");
         let before = run.resolve_spell(fire, 1).dmg;
+        let added_damage = 6.0 * run.balance.multiplier(run.class, fire.key);
         inventory.equip(1, "Ring 1").unwrap();
         inventory.apply(&mut run);
-        assert_eq!(run.resolve_spell(fire, 1).dmg, before + 6.0);
-        for key in [
-            "heroic_strike",
-            "arcane_shot",
-            "rejuvenation",
-            "power_word_shield",
-            "corruption",
-        ] {
+        assert!((run.resolve_spell(fire, 1).dmg - before - added_damage).abs() < 1e-4);
+        for key in ["heroic_strike", "arcane_shot", "rejuvenation", "corruption"] {
             let def = super::super::data::ability(key);
             assert_eq!(
                 run.resolve_spell(def, 1),
@@ -1449,7 +1512,7 @@ mod tests {
                 change: Change::IncreasedDamage(0.5),
             }],
         );
-        assert_eq!(run.resolve_spell(fire, 1).dmg, (before + 6.0) * 1.5);
+        assert!((run.resolve_spell(fire, 1).dmg - (before + added_damage) * 1.5).abs() < 1e-4);
         let saved = toml::to_string(&inventory.save).unwrap();
         assert_eq!(
             Inventory::decode(&saved).unwrap().items[0].affixes[0].effect,
@@ -1466,6 +1529,34 @@ mod tests {
             .affixes
             .iter()
             .any(|a| a.effect == Effect::SpellDamage)));
+    }
+    #[test]
+    fn power_word_shield_scales_with_intelligence_spell_damage_and_holy_equipment() {
+        let mut inventory = Inventory::fixture(vec![item(
+            SlotKind::Ring,
+            vec![
+                affix(Effect::Intelligence, 20.0, AffixKind::Suffix, vec![]),
+                affix(Effect::SpellDamage, 10.0, AffixKind::Prefix, vec![]),
+                affix(
+                    Effect::Damage,
+                    0.5,
+                    AffixKind::Prefix,
+                    vec![config::Tag::Holy],
+                ),
+            ],
+        )]);
+        let mut run = Run {
+            class: &super::super::data::CLASSES[4],
+            ..default()
+        };
+        inventory.equip(1, "Ring 1").unwrap();
+        inventory.apply(&mut run);
+        let shield = super::super::data::ability("power_word_shield");
+        let p = run.resolve_spell(shield, 1);
+        let multiplier = run.balance.multiplier(run.class, shield.key);
+        assert!((p.dmg - (30.0 + 10.0) * 1.7 * multiplier).abs() < 1e-4);
+        assert!(p.tags.contains(Tags::SPELL | Tags::HOLY | Tags::GUARD));
+        assert!(!p.tags.contains(Tags::DAMAGE));
     }
     #[test]
     fn primary_stats_scale_only_the_requested_classes_and_spell_types() {
@@ -1493,7 +1584,6 @@ mod tests {
                 let shield = super::super::data::ability("power_word_shield");
                 let shield_before = run.resolve_spell(shield, 1);
                 inv.apply(&mut run);
-                assert_eq!(run.resolve_spell(shield, 1), shield_before);
                 assert_eq!(
                     run.stats().max_hp,
                     hp + if effect == Effect::Stamina { 20.0 } else { 0.0 }
@@ -1502,6 +1592,12 @@ mod tests {
                     || (effect == Effect::Agility && matches!(class.id, 3 | 4 | 7 | 11));
                 let spells =
                     effect == Effect::Intelligence && matches!(class.id, 2 | 5 | 7 | 8 | 9 | 11);
+                assert!(
+                    (run.resolve_spell(shield, 1).dmg
+                        - shield_before.dmg * if spells { 1.2 } else { 1.0 })
+                    .abs()
+                        < 0.001
+                );
                 for (index, def) in [attack, spell, heal].into_iter().enumerate() {
                     let scale = if (index == 0 && attacks) || (index > 0 && spells) {
                         1.2
@@ -1940,5 +2036,52 @@ mod tests {
         assert_eq!(drop.0.level, 35);
         assert_eq!(transform.translation, Vec3::X * 12.0);
         assert_eq!(model.display_id, Some(BOSS_CHEST_DISPLAY));
+    }
+}
+#[cfg(test)]
+mod money_tests {
+    use super::*;
+    #[test]
+    fn gambling_charges_and_delivers_together_and_never_spends_on_failure() {
+        let mut inventory = Inventory::fixture(vec![]);
+        let mut rng = Rng(123);
+        assert!(inventory.gamble(SlotKind::Head, 1, &mut rng).is_err());
+        assert!(inventory.all().is_empty());
+        inventory.add_money(10000).unwrap();
+        inventory.blocked = true;
+        assert!(inventory.gamble(SlotKind::Head, 1, &mut rng).is_err());
+        assert_eq!(inventory.money(), 10000);
+        assert!(inventory.all().is_empty());
+        inventory.blocked = false;
+        let item = inventory.gamble(SlotKind::Head, 1, &mut rng).unwrap();
+        assert_eq!(
+            inventory.money(),
+            10000 - super::super::gambling::price(SlotKind::Head, 1)
+        );
+        assert_eq!(inventory.all().len(), 1);
+        assert_eq!(inventory.all()[0].id, item.id);
+        let encoded = toml::to_string(&inventory.save).unwrap();
+        let saved = Inventory::decode(&encoded).unwrap();
+        assert_eq!(saved.copper, inventory.money());
+        assert_eq!(saved.items.len(), 1);
+    }
+    #[test]
+    fn money_survives_saving_supports_legacy_saves_and_failed_writes_are_atomic() {
+        let mut inventory = Inventory::fixture(vec![]);
+        let old = toml::to_string(&inventory.save)
+            .unwrap()
+            .replace("copper = 0\n", "");
+        assert_eq!(Inventory::decode(&old).unwrap().copper, 0);
+        inventory.add_money(12345).unwrap();
+        assert_eq!(inventory.money(), 12345);
+        let encoded = toml::to_string(&inventory.save).unwrap();
+        assert_eq!(Inventory::decode(&encoded).unwrap().copper, 12345);
+        inventory.blocked = true;
+        assert!(inventory.add_money(10).is_err());
+        assert_eq!(inventory.money(), 12345);
+        inventory.blocked = false;
+        inventory.add_money(u64::MAX).unwrap();
+        assert_eq!(inventory.money(), super::super::currency::MAX_BALANCE);
+        assert!(toml::to_string(&inventory.save).is_ok());
     }
 }

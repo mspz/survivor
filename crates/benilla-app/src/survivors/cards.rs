@@ -100,8 +100,7 @@ fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
     }
 }
 
-/// What a choice is worth, by what it brings: a top rank is Legendary, a rank that adds a target
-/// Epic, a new spell by its power among the class's ([`spell_tier`]), a plain rank Uncommon.
+/// A top rank is Legendary, a new spell uses its class power tier, a plain rank is Uncommon.
 pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
     match choice {
         Choice::NumericPassive(_, strength) => match strength {
@@ -114,15 +113,8 @@ pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
         Choice::Upgrade(k) => {
             let o = &run.abilities[k];
             let next = o.level + 1;
-            let targets = [3, 5, 7].contains(&next)
-                && matches!(
-                    o.def.kind,
-                    Kind::Bolt | Kind::Strike | Kind::Melee | Kind::Dot | Kind::Chain | Kind::Orbit
-                );
             if next == data::MAX_ABILITY_LEVEL {
                 Rarity::Legendary
-            } else if targets {
-                Rarity::Epic
             } else {
                 Rarity::Uncommon
             }
@@ -360,6 +352,13 @@ pub(super) fn deal_cards(
                                 BackgroundColor(color),
                             ));
                         }
+                    });
+                } else {
+                    // Keep the separator aligned with spell cards without implying a passive cap.
+                    c.spawn(Node {
+                        height: Val::Px(10.0),
+                        flex_shrink: 0.0,
+                        ..default()
                     });
                 }
                 c.spawn((

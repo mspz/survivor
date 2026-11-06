@@ -97,6 +97,22 @@ impl Runtime {
     }
 }
 
+pub(in crate::survivors) fn visible_buffs(run: &Run) -> Vec<crate::survivors::player_auras::Aura> {
+    run.legendary
+        .events
+        .active_buffs(run.elapsed)
+        .filter_map(|(id, left)| {
+            let def = definition(id)?;
+            Some(crate::survivors::player_auras::Aura::buff(
+                12880,
+                def.name,
+                def.description,
+                Some(left),
+            ))
+        })
+        .collect()
+}
+
 pub(super) fn validate_item(item: &Item) -> bool {
     match &item.legendary {
         Some(roll) => item.rarity == Rarity::Legendary && roll.valid(item),

@@ -104,7 +104,7 @@ pub(in crate::survivors) fn sync_status(
         };
         let mut status = if let Some(enemy) = enemy {
             Status {
-                name: enemy.def.name.into(),
+                name: label.map_or_else(|| enemy.def.name.into(), |l| l.0.clone()),
                 health: enemy.hp.max(0.0),
                 maximum: enemy.max_hp,
                 level: enemy.def.level,

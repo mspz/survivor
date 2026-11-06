@@ -130,7 +130,9 @@ pub(super) fn dual_wield(class: u8) -> bool {
 impl Effect {
     pub(super) fn valid_equipment_type(self, kind: EquipmentType) -> bool {
         match self {
-            Self::BlockChance => kind == EquipmentType::Shield,
+            Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent => {
+                kind == EquipmentType::Shield
+            }
             Self::FlatDamage | Self::AttackSpeed | Self::LifeLeech => {
                 !matches!(kind, EquipmentType::Shield | EquipmentType::Staff)
             }
@@ -448,6 +450,43 @@ mod tests {
         assert!(super::super::super::hero::hurt_hero_with_block(&mut run, 10.0, 0.75) > 0.0);
         run.equipment.block = 1.0;
         assert!(super::super::super::hero::hurt_hero_with_block(&mut run, 10.0, 0.8) > 0.0);
+    }
+    #[test]
+    fn life_on_block_affixes_heal_only_successful_blocks_and_stop_when_unequipped() {
+        use super::super::super::hero::hurt_hero_with_block;
+        use super::super::tests::{affix, item};
+        let mut shield = item(
+            SlotKind::OffHand,
+            vec![
+                affix(Effect::LifeOnBlock, 3.0, AffixKind::Prefix, vec![]),
+                affix(Effect::LifeOnBlockPercent, 0.01, AffixKind::Suffix, vec![]),
+            ],
+        );
+        shield.equipment_type = EquipmentType::Shield;
+        shield.base_block = 0.4;
+        let mut inv = Inventory::fixture(vec![shield]);
+        inv.equip(1, "Off hand").unwrap();
+        let mut run = Run::default();
+        inv.apply(&mut run);
+        assert_eq!(run.equipment.life_on_block, 3.0);
+        assert_eq!(run.equipment.life_on_block_percent, 0.01);
+        run.hp = 10.0;
+        let expected = 10.0 + 3.0 + run.stats().max_hp * 0.01;
+        assert_eq!(hurt_hero_with_block(&mut run, 10.0, 0.0), 0.0);
+        assert!((run.hp - expected).abs() < 0.001);
+        run.hp = run.stats().max_hp - 1.0;
+        hurt_hero_with_block(&mut run, 10.0, 0.0);
+        assert_eq!(run.hp, run.stats().max_hp);
+        run.hp = 20.0;
+        hurt_hero_with_block(&mut run, 0.0, 0.0);
+        // Non-blocked hits retain the combat engine's minimum damage of one.
+        assert_eq!(run.hp, 19.0);
+        hurt_hero_with_block(&mut run, 1.0, 0.9);
+        assert!(run.hp < 19.0);
+        inv.unequip("Off hand").unwrap();
+        inv.apply(&mut run);
+        assert_eq!(run.equipment.life_on_block, 0.0);
+        assert_eq!(run.equipment.life_on_block_percent, 0.0);
     }
     #[test]
     fn saves_reject_block_on_weapons_and_preserve_legacy_items() {

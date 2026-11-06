@@ -6,6 +6,23 @@ pub(in crate::survivors::items) struct Definition {
     pub slot: SlotKind,
     pub description: &'static str,
 }
+impl Definition {
+    /// Drop progression follows effect power, independently of equip/save validation.
+    pub fn min_drop_level(&self) -> u32 {
+        match self.id {
+            // Conditional utility and recovery, without additional damage activations.
+            331 | 337 | 338 | 340 => 20,
+            // Positioning, constrained healing and temporary defensive support.
+            6 | 61 | 78 | 82 | 305 | 321 | 330 | 332 => 30,
+            // Narrow conversions and conditional offensive bonuses.
+            22 | 27 | 43 | 63 | 64 | 72 | 310 | 326 | 329 | 333 | 334 | 335 => 40,
+            // Broad duplication, propagation, milestone grants and major conversions.
+            1 | 3 | 11 | 18 | 24 | 36 | 42 | 46 | 47 | 50 | 55 | 65 | 70 | 75 | 81 | 265 | 273
+            | 276 | 277 | 279 | 280 | 281 | 283 | 286 | 301 => 60,
+            _ => 50,
+        }
+    }
+}
 pub(in crate::survivors::items) const DEFINITIONS: &[Definition] = &[
     Definition {
         id: 1,
