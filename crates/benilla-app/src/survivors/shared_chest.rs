@@ -91,13 +91,15 @@ pub(super) struct View {
     pub notice: String,
     pub revision: u64,
     stamp: Option<(u64, u64)>,
-    scroll: [f32; 2],
+    page: usize,
 }
 #[derive(Component)]
 struct Chest;
 
 pub(super) fn position() -> Vec3 {
-    hero::arena(&super::data::HUB) + Vec3::X * 4.0
+    // Beside the inn's horse trough (waterbasin.mdx at -9471.0625, 44.347656),
+    // on the crossroads side of the frontage, clear of the trough and fence.
+    units::wow_to_bevy([-9471.0, 49.0, 57.034_08])
 }
 pub(super) fn near(pos: Vec3) -> bool {
     units::flat(pos - position()).length() <= 5.0
@@ -197,7 +199,7 @@ impl Store {
                     return Ok(());
                 }
                 if !accessible {
-                    return Err("Approchez du coffre à Hurlevent pour déposer un objet.".into());
+                    return Err("Approchez du coffre dans le Hub pour déposer un objet.".into());
                 }
                 let transfer = pending
                     .iter()
@@ -218,7 +220,7 @@ impl Store {
             }
             Request::Withdraw { vault, entry } => {
                 if !accessible || vault != self.save.identity {
-                    return Err("Approchez du coffre à Hurlevent pour récupérer un objet.".into());
+                    return Err("Approchez du coffre dans le Hub pour récupérer un objet.".into());
                 }
                 if identity.is_empty() {
                     return Err("Identité de transfert manquante.".into());
@@ -366,7 +368,9 @@ pub(super) fn plugin(app: &mut App) {
                 .before(super::client::input)
                 .before(hud::keys),
         )
-        .add_systems(Update, ui::render.after(ui::input));
+        .add_systems(Update, ui::gestures.after(ui::input).before(local_sync))
+        .add_systems(Update, ui::render.after(ui::gestures))
+        .add_systems(Update, ui::tooltip.after(ui::render));
 }
 
 #[cfg(test)]
