@@ -202,7 +202,7 @@ pub(super) fn threshold(level: u32) -> u64 {
     50 * n * (n + 1)
 }
 pub(super) fn budget(xp: u64) -> u32 {
-    level(xp).saturating_sub(9)
+    level(xp).saturating_sub(1)
 }
 pub(super) fn max_rank(node: usize) -> u8 {
     if matches!(node, 8 | 12 | 18) {
@@ -558,11 +558,19 @@ mod tests {
         }
     }
     #[test]
-    fn levels_and_budget_have_classic_limits() {
+    fn talents_start_at_level_two_and_reach_fifty_nine_points() {
         assert_eq!(level(0), 1);
-        assert_eq!(budget(threshold(9)), 0);
-        assert_eq!(budget(threshold(10)), 1);
-        assert_eq!(budget(u64::MAX), 51);
+        assert_eq!(budget(0), 0);
+        assert_eq!(budget(threshold(2)), 1);
+        assert_eq!(budget(threshold(9)), 8);
+        assert_eq!(budget(threshold(10)), 9);
+        assert_eq!(budget(u64::MAX), 59);
+        let mut a = Account::fresh();
+        assert!(!a.buy(0, 0, 0));
+        a.xp = threshold(2);
+        assert!(a.buy(0, 0, 0));
+        assert_eq!(a.available(0), 0);
+        assert!(!a.buy(0, 0, 1));
     }
     #[test]
     fn meta_kill_xp_penalty_uses_monster_gap_in_both_directions() {
@@ -607,10 +615,10 @@ mod tests {
         }
         assert!(!a.buy(0, 0, 0));
         assert!(a.buy(0, 0, 3));
-        assert_eq!(a.available(0), 45);
-        assert_eq!(a.available(1), 51);
+        assert_eq!(a.available(0), 53);
+        assert_eq!(a.available(1), 59);
         a.reset(0);
-        assert_eq!(a.available(0), 51);
+        assert_eq!(a.available(0), 59);
     }
     #[test]
     fn every_capstone_is_an_existing_class_ability() {
@@ -759,7 +767,7 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(a.available(0), 20);
+        assert_eq!(a.available(0), 28);
     }
 
     #[test]
@@ -769,13 +777,13 @@ mod tests {
         let refunded = Account::from_save(&old);
         assert_eq!(refunded.xp, xp);
         for class in 0..CLASSES {
-            assert_eq!(refunded.available(class), 51);
+            assert_eq!(refunded.available(class), 59);
         }
         let old_v2 = Account::from_save(&format!("v2 {xp} 5 5"));
         assert_eq!(old_v2.xp, xp);
-        assert_eq!(old_v2.available(0), 51);
+        assert_eq!(old_v2.available(0), 59);
         let current = Account::from_save(&format!("v4 {xp} 5 5"));
-        assert_eq!(current.available(0), 41);
+        assert_eq!(current.available(0), 49);
         assert_eq!(current.rank(0, 0, 0), 5);
         assert_eq!(current.rank(0, 0, 1), 5);
     }

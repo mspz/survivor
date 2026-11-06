@@ -251,7 +251,7 @@ mod tests {
         let mut account = talents::Account::fresh();
         activate_selected(&mut roster, &mut selection, &mut account).unwrap();
         assert_eq!(talents::level(account.xp), 60);
-        assert_eq!(account.available(0), 51);
+        assert_eq!(account.available(0), 59);
         assert!(selection.allows_map(data::TRAINING_MAP));
         assert!(data::CAMPAIGN.iter().all(|&map| selection.allows_map(map)));
         assert!(!selection.allows_map(data::MAPS.len()));
