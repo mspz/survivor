@@ -91,6 +91,11 @@ pub(super) fn description(spec: &Spec, node: usize, rank: u8) -> String {
     let (stat, value) = minor.stat.expect("minor talent has an effect");
     let v = value * f32::from(rank.max(1));
     match stat {
+        Stat::AllResistance => format!("+{v:.1}% resistance to all elements (cap: 75%)."),
+        Stat::DamageReduction => format!(
+            "{:.1}% less damage taken from hits and damage over time.",
+            v * 100.0
+        ),
         Stat::Armor => format!("+{:.1}% armor.", v * 100.0),
         Stat::Regen => format!("Recover {v:.2} health per second."),
         Stat::MaxHp => format!("+{:.1}% maximum health.", v * 100.0),

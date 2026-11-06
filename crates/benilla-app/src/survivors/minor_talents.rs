@@ -172,11 +172,7 @@ static MINORS: [[Minor; 16]; 27] = [
     ],
     [
         // Warrior / Protection
-        m!(
-            "Focused Power",
-            Tags(T::PHYSICAL.0),
-            C::IncreasedDamage(0.04)
-        ),
+        s!("Elemental Bulwark", AllResistance, 2.0),
         s!("Shield Discipline", Armor, 0.1),
         s!("Stalwart Heart", MaxHp, 0.04),
         m!(
@@ -211,11 +207,7 @@ static MINORS: [[Minor; 16]; 27] = [
             Tags(T::PHYSICAL.0),
             C::DamageAgainstLowLife(0.04)
         ),
-        m!(
-            "Devastation",
-            Tags(T::PHYSICAL.0),
-            C::CriticalMultiplier(0.05)
-        ),
+        s!("Unyielding Guard", DamageReduction, 0.02),
         m!(
             "Lasting Imprint",
             Tags(T::PHYSICAL.0),
@@ -266,7 +258,7 @@ static MINORS: [[Minor; 16]; 27] = [
     ],
     [
         // Paladin / Protection
-        m!("Radiant Power", Tags(T::HOLY.0), C::IncreasedDamage(0.04)),
+        s!("Sacred Warding", AllResistance, 2.0),
         s!("Shield Discipline", Armor, 0.1),
         s!("Stalwart Heart", MaxHp, 0.04),
         m!(
@@ -289,7 +281,7 @@ static MINORS: [[Minor; 16]; 27] = [
         ),
         s!("Second Breath", Regen, 0.4),
         s!("Light Footwork", Speed, 0.02),
-        m!("Guiding Light", Tags(T::HOLY.0), C::CriticalChance(0.01)),
+        s!("Divine Bulwark", DamageReduction, 0.02),
         m!(
             "Brilliant Judgment",
             Tags(T::HOLY.0),
@@ -1455,6 +1447,64 @@ mod tests {
         };
         talents::Account::from_shared(class, 0, build).apply(class, &mut run);
         run
+    }
+    #[test]
+    fn protection_minors_reduce_real_hits_and_dots_and_respec_removes_their_defenses() {
+        use crate::survivors::{hero, spell_engine::Tags};
+        for (class, tree) in [(0, 2), (1, 1)] {
+            for rank in [1, 5] {
+                let mut trained = apply_tree(class, tree, &[(0, rank), (13, rank)]);
+                let mut baseline = Run {
+                    class: trained.class,
+                    ..Default::default()
+                };
+                trained.equipment_armour = 250.0;
+                baseline.equipment_armour = 250.0;
+                trained.equipment.reduction = 0.2;
+                baseline.equipment.reduction = 0.2;
+                let stats = trained.stats();
+                assert!(stats
+                    .resistances
+                    .entries()
+                    .iter()
+                    .all(|(_, _, v)| *v == 2.0 * f32::from(rank)));
+                assert!((stats.damage_reduction - 0.02 * f32::from(rank)).abs() < 0.0001);
+                for school in [
+                    Tags::PHYSICAL,
+                    Tags::FIRE,
+                    Tags::COLD,
+                    Tags::LIGHTNING,
+                    Tags::NATURE,
+                    Tags::ARCANE,
+                    Tags::HOLY,
+                    Tags::SHADOW,
+                ] {
+                    for periodic in [false, true] {
+                        let tags = if periodic { school | Tags::DOT } else { school };
+                        trained.hp = 1000.0;
+                        baseline.hp = 1000.0;
+                        let before = hero::hurt_hero_tagged(&mut baseline, 100.0, tags);
+                        let after = hero::hurt_hero_tagged(&mut trained, 100.0, tags);
+                        let less = 1.0 - 0.02 * f32::from(rank);
+                        let resistance = if school == Tags::PHYSICAL { 1.0 } else { less };
+                        assert!((after - before * less * resistance).abs() < 0.001);
+                    }
+                }
+                let empty = talents::Account::from_shared(class, 0, [[0; talents::NODES]; 3]);
+                empty.apply(class, &mut trained);
+                assert_eq!(trained.stats().damage_reduction, 0.0);
+                assert!(trained
+                    .stats()
+                    .resistances
+                    .entries()
+                    .iter()
+                    .all(|(_, _, v)| *v == 0.0));
+                let spec = &talents::TREES[class][tree];
+                assert!(talent_effects::description(spec, 0, rank)
+                    .contains("resistance to all elements"));
+                assert!(talent_effects::description(spec, 13, rank).contains("less damage taken"));
+            }
+        }
     }
     #[test]
     fn restoration_tree_empowers_damage_healing_and_support_totems_instead_of_direct_spells() {

@@ -1498,6 +1498,8 @@ pub(crate) const MAX_ABILITIES: usize = 6;
     reason = "Character stat vocabulary also supports optional passive definitions"
 )]
 pub(crate) enum Stat {
+    AllResistance,
+    DamageReduction,
     Might,
     MaxHp,
     Speed,

@@ -2797,6 +2797,8 @@ fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) 
 /// A stat's short name, for the card's before » after line.
 fn stat_label(stat: Stat) -> &'static str {
     match stat {
+        Stat::AllResistance => "All elemental resistances",
+        Stat::DamageReduction => "Damage taken reduction",
         Stat::Might => "All damage",
         Stat::MaxHp => "Maximum health",
         Stat::Speed => "Movement speed",
@@ -2812,6 +2814,11 @@ fn stat_label(stat: Stat) -> &'static str {
 
 fn passive_text(stat: Stat, v: f32) -> String {
     match stat {
+        Stat::AllResistance => format!(
+            "Adds {} percentage points to every elemental resistance.",
+            num(v)
+        ),
+        Stat::DamageReduction => format!("Reduces all damage taken by {}.", pct(v)),
         Stat::Might => format!("Increases all damage you deal by {}.", pct(v)),
         Stat::MaxHp => format!("Increases your maximum health by {}.", pct(v)),
         Stat::Speed => format!("Increases your movement speed by {}.", pct(v)),
@@ -2828,6 +2835,20 @@ fn passive_text(stat: Stat, v: f32) -> String {
 /// The hero's total for the stat a passive raises, every source counted.
 fn stat_total(stat: Stat, s: &Stats) -> String {
     match stat {
+        Stat::AllResistance => format!(
+            "Minimum elemental resistance: {}%",
+            num(s
+                .resistances
+                .entries()
+                .iter()
+                .map(|(_, _, v)| *v)
+                .fold(75.0, f32::min)
+                .clamp(0.0, 75.0))
+        ),
+        Stat::DamageReduction => format!(
+            "Damage taken reduction: {}",
+            pct(s.damage_reduction.clamp(0.0, 0.75))
+        ),
         Stat::Might => format!("Damage dealt: {}", pct(s.might)),
         Stat::MaxHp => format!("Maximum health: {}", num(s.max_hp)),
         Stat::Speed => format!("Movement speed: {} yd per second", num(s.speed)),

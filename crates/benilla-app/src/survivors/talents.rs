@@ -415,6 +415,8 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
             };
             let v = value * f32::from(rank);
             match stat {
+                Stat::AllResistance => stats.resistances.add_all(v),
+                Stat::DamageReduction => stats.damage_reduction += v,
                 Stat::Might => stats.might += v,
                 Stat::MaxHp => stats.max_hp *= 1.0 + v,
                 Stat::Speed => stats.speed *= 1.0 + v,

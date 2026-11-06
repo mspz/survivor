@@ -61,6 +61,7 @@ impl crate::survivors::Run {
             0.0
         };
         1.0 - (1.0 - armour)
+            * (1.0 - stats.damage_reduction.clamp(0.0, 0.75))
             * (1.0 - stats.resistances.reduction(tags))
             * (1.0 - self.equipment.reduction.clamp(0.0, 0.75))
             * (1.0 - super::legendary::events::reduction(self))

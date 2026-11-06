@@ -140,6 +140,7 @@ pub(super) struct Stats {
     pub growth: f32,
     pub armor: f32,
     pub resistances: resistances::Resistances,
+    pub damage_reduction: f32,
     pub crit: f32,
 }
 
@@ -314,6 +315,7 @@ impl Run {
             growth: 1.0,
             armor: self.equipment_armour,
             resistances: self.equipment.resistances,
+            damage_reduction: 0.0,
             crit: 0.05,
         };
         // Tanky classes start tougher, cloth starts quicker.
@@ -334,6 +336,8 @@ impl Run {
             };
             let v = per_level * level as f32;
             match stat {
+                Stat::AllResistance => s.resistances.add_all(v),
+                Stat::DamageReduction => s.damage_reduction += v,
                 Stat::Might => s.might += v,
                 Stat::MaxHp => s.max_hp *= 1.0 + v,
                 Stat::Speed => s.speed *= 1.0 + v,
