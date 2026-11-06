@@ -5,12 +5,12 @@ version = 1
 [tags]
 buff = 1.0
 attack = 1.0
-spell = 1.2
+spell = 1.4
 melee = 1.0
 projectile = 1.0
 area = 0.5
 chain = 1.0
-dot = 1.0
+dot = 2
 duration = 1.0
 totem = 1.0
 trap = 1.0

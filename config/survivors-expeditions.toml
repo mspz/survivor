@@ -1,6 +1,6 @@
 # Reloaded when starting a run. All multipliers are relative to the base values.
 version = 1
-end_multiplier = 20.0 # 300% health and damage at 15 minutes; capped thereafter.
+end_multiplier = 15.0 # 300% health and damage at 15 minutes; capped thereafter.
 # Solo x1; 2 players x2.5, 3 players x5, 4 players x7.5. Connected fallen players still count.
 multiplayer_health_per_extra_player = 2
 # Chance per ordinary monster spawn after the first zone; never replaces bosses.
@@ -10,7 +10,7 @@ ranged_monster_chance = 0.02
 # Armour uses the hero formula; physical penetration applies before mitigation.
 monster_armour_per_level = 50
 boss_armour_per_level = 10.0
-monster_health = 50
+monster_health = 40
 monster_damage = 10
 boss_health = 1000.0
 boss_damage = 100.0
@@ -23,7 +23,7 @@ max_monsters = 450
 damage_reduction = 0.0
 monster_quantity = 1.05
 monster_health = 0.5
-monster_damage = 0.8
+monster_damage = 0.7
 boss_quantity = 1
 boss_health = 1.0
 boss_damage = 1.0
@@ -33,7 +33,7 @@ boss_damage = 1.0
 damage_reduction = 0.2
 monster_quantity = 1.15
 monster_health = 1.4
-monster_damage = 1.65
+monster_damage = 1.1
 boss_quantity = 1
 boss_health = 2.0
 boss_damage = 1.7
