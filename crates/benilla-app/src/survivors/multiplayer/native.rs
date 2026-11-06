@@ -1241,6 +1241,9 @@ fn publish(world: &mut World) {
             chest.notice = notice.clone();
         }
         let snapshot = wire::Snapshot {
+            boss_warnings: world
+                .get_resource::<game::boss_spells::Warnings>()
+                .map_or_else(Vec::new, |w| w.0.clone()),
             money_earned: peer.money_earned,
             chest,
             party: party.clone(),
@@ -1320,6 +1323,7 @@ fn local_phase(current: Phase, remote: Phase, offer_changed: bool) -> Phase {
 }
 
 fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot) {
+    world.insert_resource(game::boss_spells::Warnings(snapshot.boss_warnings.clone()));
     if world.contains_resource::<game::items::Inventory>()
         && world.contains_resource::<game::shared_chest::View>()
     {
@@ -2402,6 +2406,15 @@ mod tests {
     #[test]
     fn two_tcp_guests_move_independently_and_receive_authoritative_avatars() {
         let mut host = world();
+        host.insert_resource(game::boss_spells::Warnings(vec![
+            game::boss_spells::Warning {
+                spell: game::boss_spells::Spell::Rings,
+                origin: [10.0, 2.0, 20.0],
+                direction: [1.0, 0.0, 0.0],
+                mortars: vec![],
+                elapsed: 1.2,
+            },
+        ]));
         host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
             let serial = run.guid();
             game::enemies::spawn_gem(
@@ -2492,6 +2505,8 @@ mod tests {
             assert!(Instant::now() < deadline);
         }
         let snapshot = snapshot.unwrap();
+        assert_eq!(snapshot.boss_warnings.len(), 1);
+        assert_eq!(snapshot.boss_warnings[0].progress(), 0.5);
         assert_eq!(snapshot.phase, 2, "the host's menu never pauses guests");
         assert!(ids
             .iter()
@@ -2513,6 +2528,9 @@ mod tests {
             receipts: default(),
         };
         apply_snapshot(&mut guest_world, &mut guest, snapshot);
+        let warnings = guest_world.resource::<game::boss_spells::Warnings>();
+        assert_eq!(warnings.0[0].origin, [10.0, 2.0, 20.0]);
+        assert_eq!(warnings.0[0].progress(), 0.5);
         let local_guest = guest_world
             .query_filtered::<Entity, With<hero::Hero>>()
             .single(&guest_world)

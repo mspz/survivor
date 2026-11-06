@@ -4,6 +4,7 @@ use super::*;
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(PostUpdate, forms::sync.run_if(multiplayer::authoritative));
     app.init_resource::<Run>()
+        .init_resource::<boss_spells::Warnings>()
         .init_resource::<support_spells::Debuffs>()
         .init_resource::<talents::Account>()
         .init_resource::<abilities::PendingHits>()
@@ -41,7 +42,7 @@ pub(super) fn plugin(app: &mut App) {
             (
                 enemies::spawn_enemies,
                 training::tick,
-                enemies::scale_enemies,
+                (enemies::scale_enemies, boss_spells::tick).chain(),
                 enemies::move_enemies,
                 talent_runtime::tick,
                 items::legendary::events::tick,

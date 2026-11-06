@@ -137,6 +137,7 @@ mod tests {
 }
 
 pub(super) fn plugin(app: &mut App) {
+    app.add_plugins(boss_spells::plugin);
     app.add_message::<units::CombatNumber>()
         .init_resource::<session::LocalSession>()
         .add_plugins(grade::plugin)

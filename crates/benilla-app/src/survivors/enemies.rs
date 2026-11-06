@@ -415,6 +415,7 @@ pub(super) fn move_enemies(
             &mut MovementState,
             Option<&super::talent_runtime::Taunted>,
             Option<&super::ranged_enemies::Caster>,
+            Option<&super::boss_spells::Skills>,
         ),
         Without<Hero>,
     >,
@@ -489,7 +490,7 @@ pub(super) fn move_enemies(
         push.insert(ent, acc);
     }
 
-    for (ent, mut tf, mut e, mut mv, taunt, caster) in &mut enemies {
+    for (ent, mut tf, mut e, mut mv, taunt, caster, skills) in &mut enemies {
         let e = &mut *e;
         if e.dead {
             if mv.speed != 0.0 || mv.flags != 0 {
@@ -518,6 +519,9 @@ pub(super) fn move_enemies(
             tf.translation = ground(&world, target.home, target.home.y);
             mv.speed = 0.0;
             mv.flags = 0;
+            continue;
+        }
+        if skills.is_some_and(|s| s.busy()) {
             continue;
         }
         let host_visible = targetable(&run, e.boss);

@@ -356,6 +356,7 @@ mod tests {
             ..default()
         };
         let snapshot = wire::Snapshot {
+            boss_warnings: vec![],
             money_earned: 12345,
             chest: default(),
             party: vec![],

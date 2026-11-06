@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 15;
+pub const VERSION: u32 = 16;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -165,6 +165,8 @@ pub enum Choice {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub boss_warnings: Vec<super::super::boss_spells::Warning>,
     /// Cumulative copper earned on this connection; duplicate snapshots cannot pay twice.
     pub money_earned: u64,
     #[serde(default)]
