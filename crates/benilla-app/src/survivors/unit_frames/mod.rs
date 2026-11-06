@@ -6,6 +6,7 @@ use super::{
 use crate::net::ObjectStore;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+mod debuff_tooltip;
 mod party;
 mod picking;
 mod portraits;
@@ -54,7 +55,8 @@ pub(super) fn plugin(app: &mut App) {
                 .after(sync_status)
                 .after(picking::click)
                 .after(hud::show_panels),
-        );
+        )
+        .add_systems(Update, debuff_tooltip::show.after(ui::refresh));
 }
 
 fn add_debuff(debuffs: &mut Vec<(u32, f32)>, spell: u32, seconds: f32) {

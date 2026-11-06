@@ -12,10 +12,13 @@ pub(super) struct Shield;
 pub(super) struct Caption(bool, u8);
 #[derive(Component)]
 pub(super) struct Debuffs;
+#[derive(Component)]
+pub(super) struct DebuffIcon(pub u32);
+#[derive(Component)]
+pub(super) struct DebuffTimer(u32);
 #[derive(Resource, Default)]
 pub(super) struct Cache {
     spells: Vec<u32>,
-    seconds: Vec<u32>,
 }
 const W: f32 = 240.0;
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Node {
@@ -186,6 +189,7 @@ pub(super) fn refresh(
     mut fills: Query<(&Fill, &mut Node, &mut BackgroundColor, &mut ImageNode), Without<Frame>>,
     mut shields: Query<&mut Node, (With<Shield>, Without<Fill>, Without<Frame>)>,
     mut captions: Query<(&Caption, &mut Text)>,
+    mut timers: Query<(&DebuffTimer, &mut Text), Without<Caption>>,
     debuffs: Query<Entity, With<Debuffs>>,
     mut cache: ResMut<Cache>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -279,10 +283,16 @@ pub(super) fn refresh(
         .copied()
         .collect();
     let spells: Vec<_> = effects.iter().map(|e| e.0).collect();
-    let seconds: Vec<_> = effects.iter().map(|e| e.1.ceil() as u32).collect();
-    if cache.spells != spells || cache.seconds != seconds {
+    for (timer, mut label) in &mut timers {
+        if let Some((_, left)) = effects.iter().find(|(spell, _)| *spell == timer.0) {
+            let value = format!("{:.0}s", left.ceil());
+            if label.0 != value {
+                label.0 = value;
+            }
+        }
+    }
+    if cache.spells != spells {
         cache.spells = spells;
-        cache.seconds = seconds;
         for parent in &debuffs {
             commands
                 .entity(parent)
@@ -290,6 +300,8 @@ pub(super) fn refresh(
                 .with_children(|ui| {
                     for &(spell, left) in &effects {
                         ui.spawn((
+                            DebuffIcon(spell),
+                            Interaction::default(),
                             Node {
                                 width: Val::Px(26.0),
                                 height: Val::Px(33.0),
@@ -308,6 +320,7 @@ pub(super) fn refresh(
                                 FocusPolicy::Pass,
                             ));
                             slot.spawn((
+                                DebuffTimer(spell),
                                 rect(0.0, 23.0, 26.0, 12.0),
                                 text(&font.0, &format!("{:.0}s", left.ceil()), 10.0),
                             ));
@@ -331,7 +344,10 @@ mod tests {
             .init_resource::<UiScale>()
             .insert_resource(hud::HudFont(Handle::default()))
             .add_systems(Startup, setup)
-            .add_systems(Update, refresh);
+            .add_systems(
+                Update,
+                (refresh, super::super::debuff_tooltip::show).chain(),
+            );
         let status = Status {
             name: "Hero".into(),
             health: 75.0,
@@ -377,12 +393,37 @@ mod tests {
                 .count(),
             1
         );
+        let icon = app
+            .world_mut()
+            .query_filtered::<Entity, With<DebuffIcon>>()
+            .single(app.world())
+            .unwrap();
+        *app.world_mut().get_mut::<Interaction>(icon).unwrap() = Interaction::Hovered;
+        app.update();
+        assert!(app
+            .world_mut()
+            .query::<&Text>()
+            .iter(app.world())
+            .any(|t| t.0 == "Temps restant : 4.0 s"));
+        app.world_mut().get_mut::<Status>(enemy).unwrap().debuffs[0].1 = 2.4;
+        app.update();
+        assert!(app.world().get::<DebuffIcon>(icon).is_some());
+        assert!(app
+            .world_mut()
+            .query::<&Text>()
+            .iter(app.world())
+            .any(|t| t.0 == "Temps restant : 2.4 s"));
         app.world_mut()
             .get_mut::<Status>(enemy)
             .unwrap()
             .debuffs
             .clear();
         app.update();
+        assert!(!app
+            .world_mut()
+            .query::<&Text>()
+            .iter(app.world())
+            .any(|t| t.0.starts_with("Temps restant :")));
         assert_eq!(
             app.world_mut()
                 .query::<&hud::SpellIcon>()
