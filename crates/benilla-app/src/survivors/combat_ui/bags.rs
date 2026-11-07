@@ -2,6 +2,7 @@
 use super::super::items::{Inventory, Item, SLOTS};
 use super::*;
 use bevy::ui::RelativeCursorPosition;
+mod auto_salvage;
 mod gestures;
 mod grid;
 #[derive(Component, Clone, Copy)]
@@ -17,7 +18,7 @@ enum Action {
     Equip(u64, &'static str),
     Unequip(&'static str),
     Page(i32),
-    /// The first press arms it, the second destroys the item.
+    /// The first press arms it, the second sells the item.
     Delete(u64),
 }
 #[derive(Component)]
@@ -30,11 +31,12 @@ const BAG_PAGE_SIZE: usize = BAG_COLUMNS * BAG_ROWS;
 const BAG_GRID_WIDTH: f32 = 474.0;
 const BAG_GRID_HEIGHT: f32 = 270.0;
 const BAG_WIDTH: f32 = 498.0;
-const BAG_HEIGHT: f32 = 364.0;
+const BAG_HEIGHT: f32 = 380.0;
 #[derive(Component)]
 struct BagRoot;
 pub(super) fn plugin(app: &mut App) {
     gestures::plugin(app);
+    auto_salvage::plugin(app);
     app.add_systems(
         Update,
         input
@@ -222,12 +224,13 @@ fn render(
             root.spawn(Node {
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
-                ..skin::rect(12.0, 30.0, BAG_GRID_WIDTH, 326.0)
+                ..skin::rect(12.0, 30.0, BAG_GRID_WIDTH, 342.0)
             })
             .with_children(|body| panel(body, &font.0, &view, inventory.as_deref()));
         });
 }
 fn tooltip(
+    vendor: Option<Res<super::super::gambling::View>>,
     mut commands: Commands,
     inventory: Option<Res<Inventory>>,
     selection: Res<Selection>,
@@ -278,6 +281,8 @@ fn tooltip(
         },
     );
     let mut lines = item.tooltip_lines(inventory.as_ref().unwrap());
+    // Keep the shared price footer below optional equipment comparisons.
+    let sale_price = lines.pop();
     let mut comparison_start = None;
     if compare {
         let comparison = item.comparison_lines(inventory.as_ref().unwrap());
@@ -285,6 +290,18 @@ fn tooltip(
             comparison_start = Some(lines.len());
             lines.extend(comparison);
         }
+    }
+    lines.push((
+        if vendor.as_ref().is_some_and(|v| v.open) {
+            "Clic droit : vendre"
+        } else {
+            "Alt-clic : vendre"
+        }
+        .to_owned(),
+        GREY,
+    ));
+    if let Some(sale_price) = sale_price {
+        lines.push(sale_price);
     }
     let estimated_height = lines
         .iter()
@@ -468,6 +485,7 @@ mod tests {
         press(&mut app, Action::Delete(2));
         assert_eq!(count(&app), 1);
         assert!(app.world().resource::<Inventory>().item(2).is_none());
+        assert!(app.world().resource::<Inventory>().money() > 0);
         assert_eq!(app.world().resource::<View>().selected_item, None);
     }
     #[test]

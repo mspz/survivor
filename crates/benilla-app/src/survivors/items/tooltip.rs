@@ -288,6 +288,11 @@ impl Item {
                 Color::srgb(1.0, 0.15, 0.15),
             ));
         }
+        let (gold, silver, copper) = super::super::currency::split(self.sale_price());
+        lines.push((
+            format!("Prix de vente : {gold} po {silver} pa {copper} pc"),
+            Color::srgb(1.0, 0.82, 0.0),
+        ));
         lines
     }
 }

@@ -120,6 +120,29 @@ pub(super) fn menu(
             .spawn((
                 Root,
                 GlobalZIndex(455),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(24.0),
+                    bottom: Val::Px(24.0),
+                    ..default()
+                },
+            ))
+            .with_children(|ui| {
+                skin::button_sized(
+                    ui,
+                    font,
+                    "Quitter le jeu",
+                    hud::UiAction::Quit,
+                    180.0,
+                    36.0,
+                    15.0,
+                    false,
+                );
+            });
+        commands
+            .spawn((
+                Root,
+                GlobalZIndex(455),
                 skin::rect(24.0, 12.0, 256.0, 158.0),
             ))
             .with_children(|ui| {

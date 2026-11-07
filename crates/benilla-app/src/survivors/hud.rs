@@ -1055,7 +1055,7 @@ pub(super) fn setup_hud(
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Percent(50.0),
-                    bottom: Val::Px(24.0),
+                    bottom: Val::Px(56.0),
                     margin: UiRect::left(Val::Px(-MOBILITY_SIZE / 2.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
@@ -1793,7 +1793,7 @@ pub(super) fn buttons(
                 }),
                 (UiAction::MainMenu, Phase::Paused | Phase::GameOver) => next.set(Phase::Hub),
                 (UiAction::Logout, Phase::Paused | Phase::GameOver) => next.set(Phase::Menu),
-                (UiAction::Quit, Phase::Paused | Phase::GameOver) => {
+                (UiAction::Quit, Phase::Menu | Phase::Paused | Phase::GameOver) => {
                     exit.write(AppExit::Success);
                 }
                 _ => {}

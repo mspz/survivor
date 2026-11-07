@@ -8,6 +8,7 @@ mod abilities;
 mod arcane_repeats;
 mod auto;
 mod balance;
+mod bank;
 mod boss_spells;
 mod cards;
 mod characters;

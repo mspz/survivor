@@ -50,9 +50,9 @@ fn near(pos: Vec3) -> bool {
     units::flat(pos - position()).length() <= 4.5
 }
 #[derive(Resource)]
-struct View {
+pub(super) struct View {
     page: usize,
-    open: bool,
+    pub open: bool,
     slot: SlotKind,
     result: Option<Item>,
     notice: String,
@@ -77,7 +77,7 @@ struct Root;
 #[derive(Component)]
 struct Tooltip;
 #[derive(Component, Clone, Copy)]
-enum Click {
+pub(super) enum Click {
     Open,
     Close,
     Slot(SlotKind),
@@ -162,7 +162,7 @@ fn spawn(
         }
     });
 }
-fn input(
+pub(super) fn input(
     phase: Res<State<Phase>>,
     mut selection: ResMut<Selection>,
     heroes: Query<&Transform, With<hero::Hero>>,
@@ -173,6 +173,7 @@ fn input(
     mut keys: ResMut<ButtonInput<KeyCode>>,
     clicks: Query<(&Interaction, &Click), Changed<Interaction>>,
 ) {
+    let was_open = view.open;
     let accessible = selection.in_hub
         && *phase.get() == Phase::Hub
         && heroes.single().is_ok_and(|t| near(t.translation));
@@ -202,7 +203,12 @@ fn input(
                     view.notice = "Sélectionnez un personnage avant de parier.".into();
                 } else {
                     match inventory.gamble(view.slot, talents::level(account.xp), &mut rng) {
-                        Ok(item) => view.result = Some(item),
+                        Ok(item) => {
+                            if inventory.item(item.id).is_none() {
+                                view.notice = "Objet vendu automatiquement (auto-salvage).".into();
+                            }
+                            view.result = Some(item);
+                        }
                         Err(error) => view.notice = error,
                     }
                 }
@@ -224,6 +230,9 @@ fn input(
         }
     }
     if view.open {
+        if !was_open {
+            selection.bags_open = true;
+        }
         selection.ui_captured = true;
     }
 }
@@ -657,6 +666,7 @@ mod tests {
         };
         press(&mut app, false);
         assert!(app.world().resource::<View>().open);
+        assert!(app.world().resource::<Selection>().bags_open);
         let world = app.world_mut();
         let head = world
             .query::<(Entity, &Click)>()

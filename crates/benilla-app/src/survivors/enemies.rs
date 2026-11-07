@@ -643,13 +643,6 @@ pub(super) fn move_enemies(
         let to_hero = flat(hpos - pos);
         let dist = to_hero.length();
 
-        // Strays far behind are brought back in front, as the reference genre does.
-        if dist > 75.0 {
-            let back = hpos + to_hero.normalize_or_zero() * 38.0;
-            tf.translation = ground(&world, back, hpos.y);
-            continue;
-        }
-
         // Under Fade the horde has lost the hero: it mills where it stands.
         let lost = target_run.mobile.vanish_t > 0.0 && !e.boss;
         let held = e.stun_t > 0.0 || e.root_t > 0.0 || lost;
@@ -825,7 +818,7 @@ pub(super) fn mark_dying(commands: &mut Commands, e: Entity) {
 
 /// Most gems on the ground at once; past it, a kill's worth joins an existing gem.
 const MAX_GEMS: usize = 350;
-const MEAT_DROP_CHANCE: f32 = 0.015;
+const MEAT_DROP_CHANCE: f32 = 0.0075;
 const VACUUM_DROP_CHANCE: f32 = MEAT_DROP_CHANCE / 5.0;
 
 pub(super) fn drop_loot(
@@ -1435,8 +1428,8 @@ mod pickup_tests {
                 _ => {}
             }
         }
-        assert!((1300..1700).contains(&meats), "{meats}");
-        assert!((220..380).contains(&vacuums), "{vacuums}");
+        assert!((650..850).contains(&meats), "{meats}");
+        assert!((110..190).contains(&vacuums), "{vacuums}");
         assert!((4.0..6.0).contains(&(meats as f32 / vacuums as f32)));
     }
 }

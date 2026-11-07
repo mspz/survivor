@@ -2049,19 +2049,19 @@ mod tests {
             .resource::<Network>()
             .peers
             .values()
-            .all(|p| p.money_earned == 100003));
+            .all(|p| p.money_earned == 50001));
         publish(&mut host);
         assert!(host
             .resource::<Network>()
             .peers
             .values()
-            .all(|p| p.money_earned == 100003));
+            .all(|p| p.money_earned == 50001));
         let mut seen = [false; 2];
         while !seen.iter().all(|s| *s) {
             for (i, client) in clients.iter_mut().enumerate() {
                 for message in client.receive::<wire::ToClient>().unwrap() {
                     if let wire::ToClient::Snapshot(snapshot) = message {
-                        if snapshot.money_earned == 100003 {
+                        if snapshot.money_earned == 50001 {
                             seen[i] = true;
                         }
                     }

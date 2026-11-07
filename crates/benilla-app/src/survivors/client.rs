@@ -150,6 +150,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(unit_frames::plugin)
         .add_plugins(items::plugin)
         .add_plugins(shared_chest::plugin)
+        .add_plugins(super::bank::plugin)
         .add_plugins(super::gambling::plugin)
         .add_plugins(runes::plugin)
         .add_plugins(damage_colors::plugin)

@@ -54,6 +54,7 @@ pub(super) fn input(
     mut selection: ResMut<Selection>,
     hero: Query<&Transform, With<hero::Hero>>,
     mut view: ResMut<View>,
+    mut other: Option<ResMut<super::OtherView>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     clicks: Query<(&Interaction, &Click), Changed<Interaction>>,
 ) {
@@ -74,6 +75,9 @@ pub(super) fn input(
         }
         match *c {
             Click::Open => {
+                if let Some(other) = other.as_deref_mut() {
+                    other.open = false;
+                }
                 view.open = true;
                 selection.bags_open = true;
                 selection.talents_open = false;
@@ -270,13 +274,11 @@ pub(super) fn render(
                     position_type: PositionType::Absolute,
                     left: Val::Percent(50.0),
                     bottom: Val::Px(58.0),
-                    margin: UiRect::left(Val::Px(-115.0)),
+                    margin: UiRect::left(Val::Px(PROMPT_OFFSET)),
                     ..default()
                 },
             ))
-            .with_children(|ui| {
-                skin::button(ui, &font.0, "Ouvrir le coffre partagé", Click::Open, 230.0)
-            });
+            .with_children(|ui| skin::button(ui, &font.0, OPEN_LABEL, Click::Open, 230.0));
         return;
     }
     let pages = view.replica.entries.len().max(1).div_ceil(PAGE_SIZE);
@@ -298,7 +300,7 @@ pub(super) fn render(
         .with_children(|ui| {
             skin::frame(ui, 498.0, 364.0);
             ui.spawn((
-                text(&font.0, "Coffre partagé", 13.0, hud::GOLD_TONE),
+                text(&font.0, TITLE, 13.0, hud::GOLD_TONE),
                 skin::rect(14.0, 6.0, 420.0, 20.0),
             ));
             skin::close(ui, Click::Close, 464.0, 1.0);

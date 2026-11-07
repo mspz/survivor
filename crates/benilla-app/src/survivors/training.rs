@@ -199,7 +199,7 @@ mod tests {
         }
         assert!(dummy(world.get::<Enemy>(ids[0]).unwrap()));
         assert!(world.get::<Enemy>(ids[1]).unwrap().boss);
-        // Ordinary enemies teleport toward distant players; practice actors must not.
+        // Practice actors remain anchored even when players move far away.
         use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
         world.init_resource::<super::super::Rng>();
         world.init_resource::<Time>();

@@ -11,10 +11,12 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) mod armour;
+mod auto_salvage;
 pub(super) mod combat;
 mod config;
 mod equipment;
 mod item_level;
+pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
 pub(super) mod legendary;
 mod starter;
 mod tooltip;
@@ -457,9 +459,23 @@ pub(super) struct Item {
     pub level: u32,
     pub affixes: Vec<Affix>,
 }
+impl Item {
+    pub(in crate::survivors) fn sale_price(&self) -> u64 {
+        let multiplier = match self.rarity {
+            Rarity::Normal => 1,
+            Rarity::Magic => 2,
+            Rarity::Epic => 3,
+            Rarity::Legendary => 4,
+        };
+        super::currency::reward(self.level, false) * multiplier
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Save {
+    #[serde(default)]
+    auto_salvage: [AutoSalvageRule; 4],
     #[serde(default)]
     copper: u64,
     #[serde(default)]
@@ -487,6 +503,7 @@ impl Default for Save {
     fn default() -> Self {
         Self {
             copper: 0,
+            auto_salvage: Default::default(),
             version: 1,
             trade_identity: String::new(),
             trade_sequence: 0,
@@ -629,6 +646,12 @@ impl Inventory {
         })
     }
     #[cfg(test)]
+    pub(super) fn fixture_for_character(character: u64, items: Vec<Item>) -> Self {
+        let mut inventory = Self::fixture(items);
+        inventory.character = Some(character);
+        inventory
+    }
+    #[cfg(test)]
     pub(super) fn fixture(mut items: Vec<Item>) -> Self {
         for (index, item) in items.iter_mut().enumerate() {
             item.id = index as u64 + 1;
@@ -708,6 +731,7 @@ impl Inventory {
                 save.equipped.remove("Off hand");
             }
         }
+        auto_salvage::apply(&mut save);
         save.bag_cells = bag_layout(&save);
         self.validate_loadout(&save)?;
         self.persist(&save)?;
@@ -778,7 +802,13 @@ impl Inventory {
                 item.name = definition.name.into();
             }
         }
-        if save.version != 1 || save.next_id == 0 {
+        if save.version != 1
+            || save.next_id == 0
+            || save
+                .auto_salvage
+                .iter()
+                .any(|r| r.below_ilvl > MAX_ITEM_LEVEL + 1)
+        {
             return Err("unsupported inventory".into());
         }
         let mut ids = BTreeSet::new();
@@ -939,11 +969,15 @@ impl Inventory {
         save.equipped.remove(slot);
         self.commit(save)
     }
+    /// Removing an object sells it; removal and payment are persisted together.
     pub fn delete(&mut self, id: u64) -> Result<(), String> {
-        if self.item(id).is_none() {
-            return Err("Item missing".into());
-        }
+        let price = self.item(id).ok_or("Item missing")?.sale_price();
         let mut save = self.save.clone();
+        save.copper = save
+            .copper
+            .checked_add(price)
+            .filter(|&total| total <= super::currency::MAX_BALANCE)
+            .ok_or("Money limit reached")?;
         save.equipped.retain(|_, equipped| *equipped != id);
         save.items.retain(|item| item.id != id);
         self.commit(save)
@@ -1458,6 +1492,40 @@ mod tests {
         }
     }
     #[test]
+    fn item_sales_pay_by_item_level_and_rarity_once_and_preserve_items_when_balance_is_full() {
+        for (level, prices) in [(1, [1, 2, 3, 4]), (60, [436, 872, 1308, 1744])] {
+            for (rarity, price) in [
+                Rarity::Normal,
+                Rarity::Magic,
+                Rarity::Epic,
+                Rarity::Legendary,
+            ]
+            .into_iter()
+            .zip(prices)
+            {
+                let mut source = item(SlotKind::Ring, vec![]);
+                source.level = level;
+                source.rarity = rarity;
+                assert_eq!(source.sale_price(), price);
+                let mut inventory = Inventory::fixture(vec![source]);
+                inventory.delete(1).unwrap();
+                assert_eq!(inventory.money(), price);
+                assert!(inventory.item(1).is_none());
+                assert!(inventory.delete(1).is_err());
+                assert_eq!(inventory.money(), price);
+                let restored =
+                    Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+                assert_eq!(restored.copper, price);
+            }
+        }
+        let mut inventory = Inventory::fixture(vec![item(SlotKind::Ring, vec![])]);
+        inventory.equip(1, "Ring 1").unwrap();
+        inventory.save.copper = super::super::currency::MAX_BALANCE;
+        let before = toml::to_string(&inventory.save).unwrap();
+        assert!(inventory.delete(1).is_err());
+        assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
+    }
+    #[test]
     fn deletion_is_persisted_and_failed_writes_leave_items_and_equipment_intact() {
         let mut inventory = Inventory::fixture(vec![item(
             SlotKind::Ring,
@@ -1474,7 +1542,10 @@ mod tests {
         assert!(saved.items.is_empty());
         assert!(saved.equipped.is_empty());
         assert_eq!(saved.next_id, 2);
+        assert!(saved.copper > 0);
+        let money = inventory.money();
         assert!(inventory.delete(1).is_err());
+        assert_eq!(inventory.money(), money);
     }
     #[test]
     fn equipping_from_bags_replaces_the_incoming_cell_and_persists_its_order() {

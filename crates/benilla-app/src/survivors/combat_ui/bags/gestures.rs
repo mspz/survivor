@@ -29,6 +29,7 @@ pub(super) fn plugin(app: &mut App) {
             Update,
             input
                 .after(super::super::input)
+                .after(crate::survivors::gambling::input)
                 .after(super::super::super::talent_ui::input)
                 .before(benilla_world::schedule::WorldStage::Input),
         )
@@ -38,6 +39,9 @@ pub(super) fn plugin(app: &mut App) {
 pub(super) fn input(
     mut state: ResMut<DragState>,
     chest: Option<Res<crate::survivors::shared_chest::View>>,
+    bank: Option<Res<crate::survivors::bank::View>>,
+    auto_salvage: Option<Res<super::auto_salvage::Editor>>,
+    vendor: Option<Res<crate::survivors::gambling::View>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     scale: Option<Res<UiScale>>,
@@ -50,7 +54,10 @@ pub(super) fn input(
     targets: Query<(&Interaction, &DropTarget, &RelativeCursorPosition)>,
 ) {
     state.suppress_click = false;
-    if chest.as_ref().is_some_and(|v| v.open) {
+    if chest.as_ref().is_some_and(|v| v.open)
+        || bank.as_ref().is_some_and(|v| v.open)
+        || auto_salvage.as_ref().is_some_and(|v| v.open)
+    {
         state.press = None;
         return;
     }
@@ -99,9 +106,24 @@ pub(super) fn input(
     if mouse.just_pressed(MouseButton::Right) {
         if state.press.take().is_none() {
             if let Some(id) = hovered {
-                let result = inventory.quick_equip(id);
+                let selling = vendor.as_ref().is_some_and(|v| v.open);
+                let result = if selling {
+                    inventory.delete(id)
+                } else {
+                    inventory.quick_equip(id)
+                };
+                let sold = selling && result.is_ok();
                 inventory.notice = result.err().unwrap_or_default();
-                view.selected_item = Some(id);
+                if selling {
+                    state.suppress_click = true;
+                    selection.ui_captured = true;
+                    if sold && view.selected_item == Some(id) {
+                        view.selected_item = None;
+                    }
+                    view.delete_armed = None;
+                } else {
+                    view.selected_item = Some(id);
+                }
                 inventory.apply(&mut run);
             }
         }
@@ -291,7 +313,42 @@ mod tests {
         );
     }
     #[test]
-    fn alt_click_deletes_bag_and_equipped_items_without_dragging_or_reselecting() {
+    fn right_click_sells_only_while_gambling_vendor_is_open() {
+        let (mut app, _, source, _) = app();
+        let mut vendor = crate::survivors::gambling::View::default();
+        vendor.open = true;
+        app.insert_resource(vendor);
+        let price = app
+            .world()
+            .resource::<Inventory>()
+            .item(1)
+            .unwrap()
+            .sale_price();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        let inventory = app.world().resource::<Inventory>();
+        assert!(inventory.item(1).is_none());
+        assert_eq!(inventory.money(), price);
+        assert!(inventory.equipped("Ring 1").is_none());
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<crate::survivors::gambling::View>()
+            .open = false;
+        app.world_mut().entity_mut(source).insert(ItemTip(2));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        let inventory = app.world().resource::<Inventory>();
+        assert_eq!(inventory.equipped("Ring 1").unwrap().id, 2);
+        assert_eq!(inventory.money(), price);
+    }
+    #[test]
+    fn alt_click_sells_bag_and_equipped_items_without_dragging_or_reselecting() {
         for alt in [KeyCode::AltLeft, KeyCode::AltRight] {
             for equipped in [false, true] {
                 let (mut app, _, source, _) = app();
@@ -317,6 +374,7 @@ mod tests {
                 app.update();
                 let inventory = app.world().resource::<Inventory>();
                 assert!(inventory.item(1).is_none());
+                assert!(inventory.money() > 0);
                 assert!(inventory.item(2).is_some());
                 assert!(inventory.equipped("Ring 1").is_none());
                 assert_eq!(app.world().resource::<View>().selected_item, None);

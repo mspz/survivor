@@ -182,6 +182,52 @@ mod tests {
         (world, hero, enemy)
     }
     #[test]
+    fn distant_monsters_walk_towards_host_or_guest_at_their_speed_and_respect_stuns() {
+        use super::super::multiplayer::{Companion, Companions, RemoteOwner};
+        for guest_target in [false, true] {
+            for ranged in [false, true] {
+                for stunned in [false, true] {
+                    for distance in [60.0, 1000.0] {
+                        let (mut world, host, enemy) = combat();
+                        if !ranged {
+                            world.entity_mut(enemy).remove::<Caster>();
+                        }
+                        world.get_mut::<Transform>(enemy).unwrap().translation = Vec3::X * distance;
+                        if guest_target {
+                            world.get_mut::<Transform>(host).unwrap().translation =
+                                -Vec3::X * distance;
+                            let entity = world.spawn((RemoteOwner(42), Transform::default())).id();
+                            let mut companions = Companions::default();
+                            companions.0.insert(
+                                42,
+                                Companion {
+                                    entity,
+                                    run: Run {
+                                        owner: Some(42),
+                                        ..default()
+                                    },
+                                    physics: hero::Hero { vy: 0.0, air: 0.0 },
+                                    offer: default(),
+                                    offer_id: 0,
+                                },
+                            );
+                            world.insert_resource(companions);
+                        }
+                        if stunned {
+                            world.get_mut::<enemies::Enemy>(enemy).unwrap().stun_t = 2.0;
+                        }
+                        let speed = world.get::<enemies::Enemy>(enemy).unwrap().speed;
+                        world.run_system_once(enemies::move_enemies).unwrap();
+                        let position = world.get::<Transform>(enemy).unwrap().translation;
+                        let expected = distance - if stunned { 0.0 } else { speed * 0.05 };
+                        assert!((position.x - expected).abs() < 0.001, "guest={guest_target}, ranged={ranged}, stunned={stunned}, distance={distance}: {position:?}");
+                        assert_eq!(position.z, 0.0);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn reward_selection_hides_host_and_guests_from_melee_casters_bosses_and_taunts() {
         use super::super::{
             multiplayer::{Companion, Companions, RemoteOwner},
