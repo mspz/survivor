@@ -87,7 +87,8 @@ la validation du dernier choix. Cette protection est individuelle, gérée par
 l'hôte pour chaque joueur, et ne consomme ni bouclier ni charge de blocage.
 Les monstres, boss compris, ignorent également ce personnage et ses provocations
 pendant ce choix. Ils ciblent un autre joueur disponible ou restent sur place.
-Pendant ce temps, ce personnage ne lance plus de sorts et ses dégâts sont neutralisés,
+Pendant ce temps, ce personnage ne lance plus de sorts, ne peut pas réanimer un allié
+et ses dégâts sont neutralisés,
 y compris ceux des effets périodiques déjà posés. Les autres joueurs restent actifs.
 
 L'XP ramassée est partagée avec tous les joueurs connectés, sans division et sans

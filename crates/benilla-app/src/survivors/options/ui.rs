@@ -147,6 +147,8 @@ pub(super) fn input(
                     3 => settings.critical_only = !settings.critical_only,
                     5 => settings.invert_x = !settings.invert_x,
                     6 => settings.invert_y = !settings.invert_y,
+                    7 => settings.show_fps = !settings.show_fps,
+                    8 => settings.perf_diag = !settings.perf_diag,
                     _ => settings.grade = !settings.grade,
                 };
                 settings.save();
@@ -189,6 +191,8 @@ pub(super) fn input(
                         settings.incoming = true;
                         settings.critical_only = false;
                         settings.grade = true;
+                        settings.show_fps = false;
+                        settings.perf_diag = false;
                     }
                     Tab::Video => {
                         if let Some(c) = cvars.as_deref_mut() {
@@ -351,8 +355,9 @@ pub(super) fn render(
                         body.spawn(text(f,"Glisser avec un bouton de souris fait pivoter la caméra. La molette règle le zoom. Maintenir les deux boutons fait avancer.\nLa distance actuelle peut ensuite être modifiée à la molette.",13.0,Color::WHITE));
                     }
                     Tab::Display => {
-                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        body.spawn(text(f,"Les filtres concernent les nouveaux nombres flottants. Les calculs de combat restent identiques.\nLes fenêtres Personnage et Dégâts peuvent être déplacées par leur titre.",13.0,GOLD));
+                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade),(7,"Compteur de FPS",settings.show_fps),(8,"Diagnostic de performance",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
+                        body.spawn(text(f,"Les filtres concernent les nouveaux nombres flottants. Les calculs de combat restent identiques.\nLes fenêtres Personnage et Dégâts peuvent être déplacées par leur titre.\nLe diagnostic affiche ce qui coûte le plus et écrit un rapport dans benilla-config/Diagnostics. Il se coupe au prochain lancement.
+Le détail par système demande warcraft-survivors-perf.exe.",13.0,GOLD));
                     }
                     Tab::Video => {
                         for(name,label)in[("gxWindow","Mode fenêtré"),("gxMaximize","Fenêtre maximisée"),("gxVSync","Synchronisation verticale")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));}

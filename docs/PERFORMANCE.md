@@ -42,3 +42,15 @@ Most changes belong to wenilla's own files. The shared client changes use cfg-ga
 The WebGPU WASM and native client compile checks pass. The realm suite, host suite, Node startup/journal tests, UI event-order/mutation tests, and rig differential/allocation tests pass. Browser construction-budget policy tests pass natively. Additional standalone tests exercise the bridge selection, PCM-cache accounting/Arc ownership, and Windows CPU clocks. Real-MPQ and live-MariaDB tests are environment-gated; their early returns are not live coverage.
 
 For actual gains, compare the same build/device/resolution on cold and warm boot, a dense city viewpoint, zone/tile crossings, and long same-continent travel. Record frame p50/p95/p99 and long tasks, bridge duration, memory, and navigation-to-ready. For the realm, compare simultaneous logins/cold boots and unrelated-request/relay latency. No game data or live realm was used for performance measurements here.
+
+## Survivors in-game diagnostics
+
+Options > Interface has a persistent FPS counter and a session-only performance diagnostic. The diagnostic shows a live panel and rewrites `benilla-config/Diagnostics/perf-<time>.txt` every 10 seconds and when it stops: frame-time percentiles, schedules, GPU passes, every system, then one timeline row per second. `WOW_PERF_DIAG=1` starts it at launch.
+
+System-level timing needs bevy's `trace` feature, which measured about 2 ms more process CPU per frame even with the diagnostic off, so it stays out of the normal build:
+
+```bash
+cargo build --profile play -p warcraft-survivors --features system_spans
+```
+
+Copy that binary to `wow-data/warcraft-survivors-perf.exe`. System times are CPU time summed across threads, so they can exceed the frame time. Compare runs with the same build, window size and VSync setting.

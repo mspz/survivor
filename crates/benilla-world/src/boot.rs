@@ -37,7 +37,12 @@ pub fn tuned_default_plugins(mut primary_window: Window) -> PluginGroupBuilder {
                     Some(Box::new(crate::log_ring::LogRing.and_then(NoSpans)))
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                Some(Box::new(crate::log_ring::LogRing))
+                {
+                    use bevy::log::tracing_subscriber::Layer as _;
+                    Some(Box::new(
+                        crate::log_ring::LogRing.and_then(crate::system_spans::SpanTimer),
+                    ))
+                }
             },
             ..default()
         })

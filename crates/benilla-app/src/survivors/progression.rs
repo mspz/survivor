@@ -74,7 +74,7 @@ impl Progress {
                 .map(usize::to_string)
                 .collect::<Vec<_>>()
                 .join(" ");
-            if let Err(error) = crate::local_state::write_atomic(&home.join(file), &text) {
+            if let Err(error) = crate::local_state::write_queued(&home.join(file), &text) {
                 warn!("Could not save zone progression: {error}");
             }
         }

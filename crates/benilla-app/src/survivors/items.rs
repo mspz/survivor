@@ -547,6 +547,7 @@ pub(super) struct Inventory {
     pub notice: String,
     blocked: bool,
     native_titan_grip: bool,
+    money_unsaved: bool,
 }
 impl Default for Inventory {
     fn default() -> Self {
@@ -559,6 +560,7 @@ impl Default for Inventory {
             notice: String::new(),
             blocked: false,
             native_titan_grip: false,
+            money_unsaved: false,
         }
     }
 }
@@ -569,6 +571,30 @@ impl Inventory {
     pub(in crate::survivors) fn money_owner(&self) -> Option<u64> {
         self.character
     }
+    /// [`Self::add_money`] kept in memory until [`Self::save_money`], for gains too frequent to
+    /// serialize the whole inventory each time.
+    pub(in crate::survivors) fn gain_money(&mut self, amount: u64) -> Result<(), String> {
+        self.writable()?;
+        self.save.copper = self
+            .save
+            .copper
+            .saturating_add(amount)
+            .min(super::currency::MAX_BALANCE);
+        self.money_unsaved |= amount > 0;
+        Ok(())
+    }
+    pub(in crate::survivors) fn money_unsaved(&self) -> bool {
+        self.money_unsaved
+    }
+    pub(in crate::survivors) fn save_money(&mut self) {
+        if !std::mem::take(&mut self.money_unsaved) {
+            return;
+        }
+        if let Err(error) = self.persist(&self.save) {
+            self.notice = format!("Money could not be saved: {error}");
+        }
+    }
+    #[cfg(test)]
     pub(in crate::survivors) fn add_money(&mut self, amount: u64) -> Result<(), String> {
         if amount == 0 {
             return Ok(());
@@ -620,6 +646,7 @@ impl Inventory {
             notice: String::new(),
             blocked: false,
             native_titan_grip: false,
+            money_unsaved: false,
         }
     }
     #[cfg(test)]
@@ -648,18 +675,20 @@ impl Inventory {
             .map(|id| self.item(id))
             .collect()
     }
-    fn persist(&self, save: &Save) -> Result<(), String> {
+    fn writable(&self) -> Result<u64, String> {
         if self.blocked {
             return Err("Inventory save is unreadable; fix it before changing items.".into());
         }
-        let Some(id) = self.character else {
-            return Err("Enter the world on a character first.".into());
-        };
+        self.character
+            .ok_or_else(|| "Enter the world on a character first.".into())
+    }
+    fn persist(&self, save: &Save) -> Result<(), String> {
+        let id = self.writable()?;
         let Some(home) = crate::local_state::home() else {
             return Ok(());
         };
         let text = toml::to_string_pretty(save).map_err(|e| e.to_string())?;
-        crate::local_state::write_atomic(&home.join(format!("characters/{id}-items.toml")), &text)
+        crate::local_state::write_queued(&home.join(format!("characters/{id}-items.toml")), &text)
             .map_err(|e| e.to_string())
     }
     fn commit(&mut self, mut save: Save) -> Result<(), String> {
@@ -687,6 +716,7 @@ impl Inventory {
         Ok(())
     }
     fn bind(&mut self, character: Option<u64>) {
+        self.save_money();
         self.character = character;
         self.save = Save::default();
         self.blocked = false;
@@ -1383,6 +1413,7 @@ mod tests {
             notice: String::new(),
             blocked: false,
             native_titan_grip: false,
+            money_unsaved: false,
         }
     }
     pub(super) fn affix(
@@ -2064,6 +2095,19 @@ mod money_tests {
         let saved = Inventory::decode(&encoded).unwrap();
         assert_eq!(saved.copper, inventory.money());
         assert_eq!(saved.items.len(), 1);
+    }
+    #[test]
+    fn gained_money_shows_at_once_and_waits_for_its_save() {
+        let mut inventory = Inventory::fixture(vec![]);
+        inventory.gain_money(5).unwrap();
+        assert_eq!(inventory.money(), 5);
+        assert!(inventory.money_unsaved());
+        inventory.save_money();
+        assert!(!inventory.money_unsaved());
+        inventory.blocked = true;
+        assert!(inventory.gain_money(5).is_err());
+        assert_eq!(inventory.money(), 5);
+        assert!(!inventory.money_unsaved());
     }
     #[test]
     fn money_survives_saving_supports_legacy_saves_and_failed_writes_are_atomic() {

@@ -23,6 +23,8 @@ webgl2 = ["bevy/webgl2"]
 webgpu = ["bevy/webgpu"]
 
 [dependencies]
+# The span types of the per-system timer, the same crate behind `bevy::log`.
+tracing-core = "0.1"
 avian3d = "0.6"
 benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }
@@ -55,3 +57,6 @@ objc2 = "0.5"
 # already carries it transitively (`default_platform` bundles it for every target), but named
 # explicitly on the wasm32 target table per the plan's feature-unification note — this crate and
 # `benilla-app` must resolve `bevy` to the SAME feature set or cargo builds two copies.
+
+[dev-dependencies]
+tracing = "0.1"

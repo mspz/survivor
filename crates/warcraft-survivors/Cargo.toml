@@ -11,6 +11,8 @@ workspace = true
 [features]
 default = ["dev"]
 dev = ["benilla-app/dev"]
+# Per-system timing, for `warcraft-survivors-perf.exe`: costs about 2 ms of CPU per frame even idle.
+system_spans = ["benilla-app/system_spans"]
 
 [dependencies]
 benilla-app = { path = "../benilla-app", default-features = false }

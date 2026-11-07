@@ -266,7 +266,7 @@ pub(super) fn persist(
     let money = snapshot.money_earned.saturating_sub(receipts.money);
     if money > 0 {
         if let Some(mut inventory) = world.get_resource_mut::<game::items::Inventory>() {
-            match inventory.add_money(money) {
+            match inventory.gain_money(money) {
                 Ok(()) => receipts.money = snapshot.money_earned,
                 Err(error) => inventory.notice = format!("Co-op money could not be saved: {error}"),
             }

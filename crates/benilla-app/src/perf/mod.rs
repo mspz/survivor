@@ -49,11 +49,12 @@ use bevy::prelude::*;
 #[cfg(feature = "dev")]
 pub(crate) use blend_check::BlendMismatchShared;
 #[cfg(feature = "dev")]
-pub(crate) use clock::{process_cpu_secs, process_faults, system_cpu_ticks, thread_cpu_table};
+pub(crate) use clock::{process_faults, system_cpu_ticks, thread_cpu_table};
 #[cfg(feature = "dev")]
 pub(crate) use gpu::{GpuMsShared, WgpuCensusShared};
 #[cfg(feature = "dev")]
 pub(crate) use hud::PerfHud;
+pub(crate) use clock::process_cpu_secs;
 pub(crate) use journal::FpsJournalPlugin;
 #[cfg(test)]
 pub(crate) use journal::{on_cvar, FpsJournalSetting};

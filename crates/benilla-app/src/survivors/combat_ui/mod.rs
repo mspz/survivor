@@ -97,7 +97,7 @@ impl View {
                 self.meter, self.position.x, self.position.y, self.sheet.x, self.sheet.y
             );
             if let Err(error) =
-                crate::local_state::write_atomic(&home.join("survivors-panels.txt"), &text)
+                crate::local_state::write_queued(&home.join("survivors-panels.txt"), &text)
             {
                 warn!("Could not save panel positions: {error}");
             }

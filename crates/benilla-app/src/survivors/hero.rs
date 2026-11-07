@@ -75,7 +75,7 @@ impl CamRig {
     pub(super) fn adjust_sensitivity(&mut self, delta: f32) {
         self.sensitivity = ((self.sensitivity + delta) * 10.0).round().clamp(1.0, 30.0) / 10.0;
         if let Some(home) = crate::local_state::home() {
-            let _ = crate::local_state::write_atomic(
+            let _ = crate::local_state::write_queued(
                 &home.join("survivors-mouse.txt"),
                 &self.sensitivity.to_string(),
             );

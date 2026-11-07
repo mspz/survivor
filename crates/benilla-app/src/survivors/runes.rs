@@ -489,7 +489,7 @@ impl Runes {
         if !cfg!(test) {
             if let Some(home) = crate::local_state::home() {
                 let text = toml::to_string_pretty(&save).map_err(|e| e.to_string())?;
-                crate::local_state::write_atomic(&home.join(SAVE_FILE), &text)
+                crate::local_state::write_queued(&home.join(SAVE_FILE), &text)
                     .map_err(|e| e.to_string())?;
             }
         }

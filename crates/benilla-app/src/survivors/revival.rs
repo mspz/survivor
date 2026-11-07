@@ -23,6 +23,7 @@ struct Player {
     entity: Entity,
     pos: Vec3,
     alive: bool,
+    can_rescue: bool,
 }
 impl State {
     fn advance(&mut self, corpse: Player, players: &[Player], dt: f32) -> bool {
@@ -33,7 +34,7 @@ impl State {
         }
         let eligible = |p: &&Player| {
             p.entity != corpse.entity
-                && p.alive
+                && p.can_rescue
                 && units::flat(p.pos - corpse.pos).length_squared() <= RADIUS * RADIUS
         };
         let rescuer = players
@@ -53,6 +54,11 @@ impl State {
         self.seconds = (self.seconds + dt).min(SECONDS);
         self.seconds >= SECONDS - 0.0001
     }
+}
+
+/// Reward choices make a player untargetable, so they must not double as a safe revive.
+fn can_rescue(run: &Run) -> bool {
+    run.dead_t.is_none() && run.hp > 0.0 && run.pending_levels == 0
 }
 
 fn revive(run: &mut Run) {
@@ -101,6 +107,7 @@ pub(super) fn tick(
         entity: host,
         pos: transform.translation,
         alive: run.dead_t.is_none() && run.hp > 0.0,
+        can_rescue: can_rescue(&run),
     }];
     for (entity, transform, owner) in &remotes {
         if let Some(player) = companions.0.get(&owner.0) {
@@ -108,6 +115,7 @@ pub(super) fn tick(
                 entity,
                 pos: transform.translation,
                 alive: player.run.dead_t.is_none() && player.run.hp > 0.0,
+                can_rescue: can_rescue(&player.run),
             });
         }
     }
@@ -225,6 +233,7 @@ mod tests {
             entity: Entity::from_raw_u32(id).unwrap(),
             pos: Vec3::X * x,
             alive,
+            can_rescue: alive,
         }
     }
     #[test]
@@ -368,6 +377,56 @@ mod tests {
                 .resource::<Messages<crate::creature_anim::SpellGoTargets>>()
                 .is_empty());
         }
+    }
+    #[test]
+    fn players_choosing_rewards_cannot_revive_but_can_be_revived() {
+        for host_rescues in [true, false] {
+            let (mut world, _, _) = world(!host_rescues, host_rescues);
+            let choosing = |world: &mut World, levels| {
+                if host_rescues {
+                    world.resource_mut::<Run>().pending_levels = levels;
+                } else {
+                    world
+                        .resource_mut::<Companions>()
+                        .0
+                        .get_mut(&42)
+                        .unwrap()
+                        .run
+                        .pending_levels = levels;
+                }
+            };
+            let fallen = |world: &World| {
+                let run = if host_rescues {
+                    &world.resource::<Companions>().0[&42].run
+                } else {
+                    world.resource::<Run>()
+                };
+                (run.dead_t.is_some(), run.revival.seconds)
+            };
+            choosing(&mut world, 1);
+            for _ in 0..6 {
+                world.run_system_once(tick).unwrap();
+            }
+            assert_eq!(fallen(&world), (true, 0.0));
+            choosing(&mut world, 0);
+            for _ in 0..3 {
+                world.run_system_once(tick).unwrap();
+            }
+            assert_eq!(fallen(&world), (true, 3.0));
+            choosing(&mut world, 1);
+            world.run_system_once(tick).unwrap();
+            assert_eq!(
+                fallen(&world),
+                (true, 0.0),
+                "choosing interrupts the channel"
+            );
+        }
+        let (mut world, _, _) = world(true, false);
+        world.resource_mut::<Run>().pending_levels = 1;
+        for _ in 0..5 {
+            world.run_system_once(tick).unwrap();
+        }
+        assert!(world.resource::<Run>().dead_t.is_none());
     }
     #[test]
     fn full_party_wipes_cannot_resurrect_and_solo_remains_disabled() {
