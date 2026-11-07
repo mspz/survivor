@@ -1450,6 +1450,36 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn druids_drop_intelligence_and_agility_gear_and_can_drop_and_equip_bows() {
+        let mut config = Config::builtin();
+        let mut rng = Rng(11011);
+        let (mut intelligence, mut agility) = (false, false);
+        for _ in 0..1000 {
+            let item = config.generate_for_target(60, 11, &mut rng).unwrap();
+            intelligence |= item
+                .affixes
+                .iter()
+                .any(|a| a.effect == Effect::Intelligence);
+            agility |= item.affixes.iter().any(|a| a.effect == Effect::Agility);
+        }
+        assert!(intelligence && agility);
+        for base in &mut config.bases {
+            base.weight = if base.equipment_type == EquipmentType::Bow {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let bow = config.generate_for_target(60, 11, &mut rng).unwrap();
+        assert_eq!(bow.equipment_type, EquipmentType::Bow);
+        assert!(bow.valid_equipment());
+        let mut inventory = Inventory::fixture(vec![bow]);
+        let id = inventory.all()[0].id;
+        inventory.class = 11;
+        inventory.equip(id, "Ranged").unwrap();
+        assert_eq!(inventory.equipped("Ranged").unwrap().id, id);
+    }
+    #[test]
     fn targeted_loot_obeys_material_stat_rules_and_the_eighty_twenty_split() {
         let config = Config::builtin();
         let mut rng = Rng(89123);
@@ -1468,7 +1498,7 @@ mod tests {
                     EquipmentType::Cloth => &[5, 8, 9, 11],
                     EquipmentType::Shield => &[1, 2, 7],
                     EquipmentType::Wand => &[2, 5, 7, 8, 9, 11],
-                    EquipmentType::Bow => &[1, 2, 3, 4, 7],
+                    EquipmentType::Bow => &[1, 2, 3, 4, 7, 11],
                     EquipmentType::MeleeOneHand | EquipmentType::HybridOneHand => {
                         &[1, 2, 3, 4, 7, 11]
                     }

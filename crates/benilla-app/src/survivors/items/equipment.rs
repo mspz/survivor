@@ -33,7 +33,7 @@ impl EquipmentType {
             Self::Leather => matches!(class, 1 | 2 | 3 | 4 | 7 | 11),
             Self::Shield => matches!(class, 1 | 2 | 7),
             Self::Wand => matches!(class, 2 | 5 | 7 | 8 | 9 | 11),
-            Self::Bow => matches!(class, 1 | 2 | 3 | 4 | 7),
+            Self::Bow => matches!(class, 1 | 2 | 3 | 4 | 7 | 11),
             _ => true,
         }
     }
@@ -207,7 +207,7 @@ mod tests {
             (EquipmentType::Cloth, &[1, 2, 3, 4, 5, 7, 8, 9, 11][..]),
             (EquipmentType::Shield, &[1, 2, 7][..]),
             (EquipmentType::Wand, &[2, 5, 7, 8, 9, 11][..]),
-            (EquipmentType::Bow, &[1, 2, 3, 4, 7][..]),
+            (EquipmentType::Bow, &[1, 2, 3, 4, 7, 11][..]),
             (EquipmentType::MeleeOneHand, &[1, 2, 3, 4, 7, 11][..]),
             (EquipmentType::HybridOneHand, &[1, 2, 3, 4, 7, 11][..]),
             (EquipmentType::TwoHand, &[1, 2, 3, 7, 11][..]),
