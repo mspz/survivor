@@ -70,7 +70,7 @@ divine_shield = 1.0
 judgement = 1.0
 
 [classes.hunter]
-multiplier = 1.0
+multiplier = 1.2
 
 [classes.hunter.spells]
 hunters_mark = 1.0
