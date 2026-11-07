@@ -149,6 +149,8 @@ pub(super) fn input(
                     6 => settings.invert_y = !settings.invert_y,
                     7 => settings.show_fps = !settings.show_fps,
                     8 => settings.perf_diag = !settings.perf_diag,
+                    9 => settings.ally_plates = !settings.ally_plates,
+                    10 => settings.enemy_plates = !settings.enemy_plates,
                     _ => settings.grade = !settings.grade,
                 };
                 settings.save();
@@ -192,6 +194,8 @@ pub(super) fn input(
                         settings.critical_only = false;
                         settings.grade = true;
                         settings.show_fps = false;
+                        settings.ally_plates = false;
+                        settings.enemy_plates = false;
                         settings.perf_diag = false;
                     }
                     Tab::Video => {
@@ -355,7 +359,7 @@ pub(super) fn render(
                         body.spawn(text(f,"Glisser avec un bouton de souris fait pivoter la caméra. La molette règle le zoom. Maintenir les deux boutons fait avancer.\nLa distance actuelle peut ensuite être modifiée à la molette.",13.0,Color::WHITE));
                     }
                     Tab::Display => {
-                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade),(7,"Compteur de FPS",settings.show_fps),(8,"Diagnostic de performance",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
+                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade),(9,"Barres de vie des alliés",settings.ally_plates),(10,"Barres de vie des ennemis",settings.enemy_plates),(7,"Compteur de FPS",settings.show_fps),(8,"Diagnostic de performance",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
                         body.spawn(text(f,"Les filtres concernent les nouveaux nombres flottants. Les calculs de combat restent identiques.\nLes fenêtres Personnage et Dégâts peuvent être déplacées par leur titre.\nLe diagnostic affiche ce qui coûte le plus et écrit un rapport dans benilla-config/Diagnostics. Il se coupe au prochain lancement.
 Le détail par système demande warcraft-survivors-perf.exe.",13.0,GOLD));
                     }

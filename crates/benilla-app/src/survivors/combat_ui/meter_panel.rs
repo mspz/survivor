@@ -143,10 +143,11 @@ mod tests {
         let first = world.get::<Children>(list).unwrap()[0];
         assert_eq!(world.get::<MeterSkill>(first).unwrap().0, "fireball");
         for (bar, node) in world.query::<(&MeterBar, &Node)>().iter(world) {
-            assert_eq!(
-                node.width,
-                Val::Percent(if bar.0 == "fireball" { 100.0 } else { 50.0 })
-            );
+            let Val::Percent(width) = node.width else {
+                panic!("the bar width is a percentage");
+            };
+            let share = if bar.0 == "fireball" { 200.0 } else { 100.0 } / 3.0;
+            assert!((width - share).abs() < 0.01, "{width} is not {share}");
         }
         assert!(world.query::<(&MeterValue, &Text)>().iter(world).any(
             |(value, text)| matches!(value, MeterValue::Dps(k) if k == "fireball")
@@ -156,10 +157,11 @@ mod tests {
         app.update();
         let world = app.world_mut();
         for (bar, node) in world.query::<(&MeterBar, &Node)>().iter(world) {
-            assert_eq!(
-                node.width,
-                Val::Percent(if bar.0 == "fireball" { 100.0 } else { 50.0 })
-            );
+            let Val::Percent(width) = node.width else {
+                panic!("the bar width is a percentage");
+            };
+            let share = if bar.0 == "fireball" { 200.0 } else { 100.0 } / 3.0;
+            assert!((width - share).abs() < 0.01, "{width} is not {share}");
         }
         let reset = world
             .query_filtered::<Entity, With<ResetButton>>()
@@ -482,7 +484,7 @@ pub(super) fn render_meter(
     rows.sort_by(|a, b| b.total.total_cmp(&a.total).then(a.key.cmp(&b.key)));
     let total_dps: f64 = rows.iter().map(|r| r.dps).sum();
     let total_damage: f64 = rows.iter().map(|r| r.total).sum();
-    let maximum = rows.first().map_or(1.0, |r| r.total.max(1.0));
+    let maximum = total_damage.max(1.0);
     let mut sources: Vec<_> = rows.iter().map(|row| row.key.as_str()).collect();
     sources.sort_unstable();
     let key = format!(

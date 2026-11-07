@@ -29,6 +29,7 @@ mod player_auras;
 mod grade;
 mod healer_buffs;
 mod healing;
+mod health_plates;
 mod hero;
 mod hub_ground;
 mod hud;

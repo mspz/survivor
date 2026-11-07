@@ -2090,6 +2090,10 @@ pub(crate) static BOSSES: &[EnemyDef] = &[
 
 /// Survive this long to win.
 pub(crate) const VICTORY_SECS: f32 = 900.0;
+/// From here mobs stop arriving: the run ends once every boss and most of the horde are dead.
+pub(crate) const CLEAR_SECS: f32 = 960.0;
+/// The share of the horde alive at [`CLEAR_SECS`] that must die.
+pub(crate) const CLEAR_MOB_SHARE: f32 = 0.9;
 /// A boss every two and a quarter minutes, the last of six at 13:30, a fight before the bell.
 pub(crate) const BOSS_EVERY_SECS: f32 = 135.0;
 /// Experience per gem: every level of the curve comes at the run's pace.

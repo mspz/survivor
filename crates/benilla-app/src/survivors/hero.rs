@@ -559,11 +559,15 @@ pub(super) fn hero_vitals(
     mut fields: MessageWriter<FieldChanged>,
     mut fx: Fx,
     players: Option<Res<super::multiplayer::Companions>>,
+    clear: Option<Res<super::enemies::ExpeditionClear>>,
     selection: Option<Res<super::Selection>>,
 ) {
     let dt = time.delta_secs();
     let stats = run.stats();
     let practice = selection.as_deref().is_some_and(super::training::active);
+    let cleared = !practice
+        && run.elapsed >= data::CLEAR_SECS
+        && clear.as_deref().is_some_and(|clear| clear.done);
     let Ok((entity, guid, mut store, mut marks)) = hero.single_mut() else {
         return;
     };
@@ -574,7 +578,7 @@ pub(super) fn hero_vitals(
         let others_alive = players
             .as_ref()
             .is_some_and(|players| players.0.values().any(|p| p.run.dead_t.is_none()));
-        if !practice && run.elapsed >= data::VICTORY_SECS {
+        if cleared {
             run.won = true;
             next.set(Phase::GameOver);
         } else if finished && (run.owner.is_some() || !others_alive) {
@@ -677,7 +681,7 @@ pub(super) fn hero_vitals(
         units::kill_unit(&mut store);
         marks.clear();
         marks.flush(entity, guid.0, &mut store, &mut fields);
-    } else if !practice && run.elapsed >= data::VICTORY_SECS {
+    } else if cleared {
         run.won = true;
         // A last flourish before the results.
         fx.cast(entity, 642, &[entity], None);
@@ -773,6 +777,8 @@ mod tests {
                 hud::pick(0, &mut run, &mut offer, &mut rng, &mut next);
             }
             assert_eq!(run.pending_levels, 0);
+            assert!(run.immune_t > 0.0, "the last reward grants a short grace");
+            run.immune_t = 0.0;
             assert!(hurt_hero_tagged(&mut run, 30.0, Tags::FIRE) > 0.0);
         }
     }

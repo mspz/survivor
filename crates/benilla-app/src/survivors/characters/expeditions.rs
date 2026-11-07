@@ -244,9 +244,9 @@ fn detail(
                 "60 yd triangle / 40 mobs / Boss: 3 sec / Mobs: 1 sec".into()
             } else {
                 format!(
-                    "{}  |  Survive {} minutes",
+                    "{}  |  Survive {} minutes, then clear",
                     levels(index),
-                    data::VICTORY_SECS as u32 / 60
+                    data::CLEAR_SECS as u32 / 60
                 )
             },
             12.0,
@@ -294,7 +294,11 @@ fn detail(
         ui.spawn(label(font, "OBJECTIVE", 11.0, MUTED));
         ui.spawn(label(
             font,
-            format!("Survive {} minutes", data::VICTORY_SECS as u32 / 60),
+            format!(
+                "Survive {} minutes, then kill every boss and {:.0}% of the horde",
+                data::CLEAR_SECS as u32 / 60,
+                data::CLEAR_MOB_SHARE * 100.0
+            ),
             19.0,
             Color::WHITE,
         ));

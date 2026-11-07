@@ -1,5 +1,5 @@
 //! One screen-anchored health bar per living boss, independent of distance and camera.
-use super::super::enemies::Enemy;
+use super::super::{enemies::Rank, unit_frames::Status};
 use super::*;
 
 #[derive(Component)]
@@ -25,7 +25,7 @@ fn sync(
     phase: Res<State<Phase>>,
     selection: Res<Selection>,
     font: Option<Res<hud::HudFont>>,
-    enemies: Query<(Entity, &Enemy)>,
+    units: Query<(Entity, &Rank, &Status)>,
     roots: Query<Entity, With<Root>>,
     rows: Query<(Entity, &Row)>,
 ) {
@@ -34,9 +34,10 @@ fn sync(
             *phase.get(),
             Phase::Playing | Phase::Paused | Phase::LevelUp | Phase::CharacterSheet
         );
-    let mut bosses: Vec<_> = enemies
+    let mut bosses: Vec<_> = units
         .iter()
-        .filter(|(_, enemy)| enemy.boss && !enemy.dead && enemy.hp > 0.0)
+        .filter(|(_, rank, status)| **rank == Rank::Boss && status.health > 0.0)
+        .map(|(entity, _, status)| (entity, status))
         .collect();
     if !visible || bosses.is_empty() {
         for root in &roots {
@@ -70,7 +71,7 @@ fn sync(
         }
     }
     bosses.sort_by_key(|(entity, _)| entity.to_bits());
-    for (boss, enemy) in bosses {
+    for (boss, status) in bosses {
         if rows.iter().any(|(_, row)| row.0 == boss) {
             continue;
         }
@@ -87,7 +88,7 @@ fn sync(
                 },
             ))
             .with_children(|ui| {
-                ui.spawn(text(&font.0, enemy.def.name, 16.0, GOLD));
+                ui.spawn(text(&font.0, status.name.clone(), 16.0, GOLD));
                 ui.spawn((
                     BackgroundColor(Color::srgb(0.055, 0.015, 0.025)),
                     BorderColor::all(Color::srgb(0.6, 0.48, 0.25)),
@@ -127,14 +128,14 @@ fn sync(
 }
 
 fn refresh(
-    enemies: Query<&Enemy>,
+    units: Query<&Status>,
     mut fills: Query<(&Fill, &mut Node)>,
     mut labels: Query<(&Health, &mut Text)>,
 ) {
     for (fill, mut node) in &mut fills {
-        if let Ok(enemy) = enemies.get(fill.0) {
-            let ratio = if enemy.max_hp > 0.0 {
-                (enemy.hp / enemy.max_hp).clamp(0.0, 1.0)
+        if let Ok(status) = units.get(fill.0) {
+            let ratio = if status.maximum > 0.0 {
+                (status.health / status.maximum).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -145,16 +146,16 @@ fn refresh(
         }
     }
     for (label, mut text) in &mut labels {
-        if let Ok(enemy) = enemies.get(label.0) {
-            let hp = enemy.hp.clamp(0.0, enemy.max_hp.max(0.0));
-            let ratio = if enemy.max_hp > 0.0 {
-                hp / enemy.max_hp
+        if let Ok(status) = units.get(label.0) {
+            let hp = status.health.clamp(0.0, status.maximum.max(0.0));
+            let ratio = if status.maximum > 0.0 {
+                hp / status.maximum
             } else {
                 0.0
             };
             let value = format!(
                 "{hp:.0} / {:.0}  ({:.0}%)",
-                enemy.max_hp.max(0.0),
+                status.maximum.max(0.0),
                 ratio * 100.0
             );
             if text.0 != value {
@@ -167,38 +168,18 @@ fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    static DEF: super::super::super::data::EnemyDef = super::super::super::data::EnemyDef {
-        name: "Test boss",
-        display: 1,
-        hp: 100.0,
-        speed: 1.0,
-        damage: 1.0,
-        scale: 1.0,
-        xp: 1,
-        level: 1,
-        big: true,
-    };
-    fn enemy(boss: bool, hp: f32) -> Enemy {
-        Enemy {
-            def: &DEF,
-            hp,
-            max_hp: 100.0,
-            speed: 1.0,
-            damage: 1.0,
-            radius: 1.0,
-            xp: 1,
-            boss,
-            attack_cd: 0.0,
-            slow: 1.0,
-            slow_t: 0.0,
-            root_t: 0.0,
-            stun_t: 0.0,
-            fear_t: 0.0,
-            weaken: 1.0,
-            weaken_t: 0.0,
-            dots: Vec::new(),
-            dead: false,
-        }
+    fn enemy(boss: bool, hp: f32) -> (Rank, Status) {
+        (
+            if boss { Rank::Boss } else { Rank::Normal },
+            Status {
+                name: "Test boss".into(),
+                health: hp,
+                maximum: 100.0,
+                level: 1,
+                friendly: false,
+                debuffs: vec![],
+            },
+        )
     }
     #[test]
     fn multiple_bosses_stack_update_independently_and_disappear_on_death_or_leaving() {
@@ -225,7 +206,7 @@ mod tests {
             .single(app.world())
             .unwrap();
         assert_eq!(root.flex_direction, FlexDirection::Column);
-        app.world_mut().get_mut::<Enemy>(first).unwrap().hp = 25.0;
+        app.world_mut().get_mut::<Status>(first).unwrap().health = 25.0;
         app.update();
         for (fill, node) in app.world_mut().query::<(&Fill, &Node)>().iter(app.world()) {
             assert_eq!(
@@ -233,7 +214,7 @@ mod tests {
                 Val::Percent(if fill.0 == first { 25.0 } else { 50.0 })
             );
         }
-        app.world_mut().get_mut::<Enemy>(second).unwrap().dead = true;
+        app.world_mut().get_mut::<Status>(second).unwrap().health = 0.0;
         app.update();
         assert_eq!(app.world_mut().query::<&Row>().iter(app.world()).count(), 1);
         app.world_mut()

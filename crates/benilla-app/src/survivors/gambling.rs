@@ -174,7 +174,7 @@ fn input(
     clicks: Query<(&Interaction, &Click), Changed<Interaction>>,
 ) {
     let accessible = selection.in_hub
-        && *phase.get() == Phase::Hub
+        && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
         && heroes.single().is_ok_and(|t| near(t.translation));
     if !accessible {
         view.open = false;
@@ -252,7 +252,7 @@ fn render(
 ) {
     let Some(font) = font else { return };
     let accessible = selection.in_hub
-        && *phase.get() == Phase::Hub
+        && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
         && heroes.single().is_ok_and(|t| near(t.translation));
     let level = talents::level(account.xp);
     let stamp = format!(

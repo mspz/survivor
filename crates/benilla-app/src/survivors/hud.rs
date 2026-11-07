@@ -1671,6 +1671,9 @@ pub(super) fn roll_offer(run: Res<Run>, mut rng: ResMut<Rng>, mut offer: ResMut<
     offer.choices = choices_for(&run, &mut rng, &offer.config);
 }
 
+/// Invulnerability after the last reward, to look around before the fight resumes.
+const REWARD_GRACE_SECS: f32 = 1.0;
+
 pub(super) fn pick(
     i: usize,
     run: &mut Run,
@@ -1710,6 +1713,7 @@ pub(super) fn pick(
             offer.choices = choices_for(run, rng, &offer.config);
         } else {
             offer.choices.clear();
+            run.immune_t = run.immune_t.max(REWARD_GRACE_SECS);
             next.set(Phase::Playing);
         }
         return;
@@ -1753,6 +1757,7 @@ pub(super) fn pick(
         offer.choices = choices_for(run, rng, &offer.config);
     } else {
         offer.choices.clear();
+        run.immune_t = run.immune_t.max(REWARD_GRACE_SECS);
         next.set(Phase::Playing);
     }
 }

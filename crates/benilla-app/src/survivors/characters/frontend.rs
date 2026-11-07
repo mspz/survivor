@@ -284,6 +284,7 @@ pub(super) fn menu(
                         if !roster.blocked && roster.save.characters.len() < 10 {
                             button(ui, font, Click::Create, "Create New Character", false);
                         }
+                        button(ui, font, Click::Quit, "Quitter", false);
                     }
                 });
         });

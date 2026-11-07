@@ -9,6 +9,7 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<talents::Account>()
         .init_resource::<abilities::PendingHits>()
         .init_resource::<enemies::Spawner>()
+        .init_resource::<enemies::ExpeditionClear>()
         .init_resource::<training::Arena>()
         .add_systems(
             OnEnter(Phase::Playing),
@@ -42,7 +43,12 @@ pub(super) fn plugin(app: &mut App) {
             (
                 enemies::spawn_enemies,
                 training::tick,
-                (enemies::scale_enemies, boss_spells::tick, special_mobs::tick).chain(),
+                (
+                    enemies::scale_enemies,
+                    boss_spells::tick,
+                    special_mobs::tick,
+                )
+                    .chain(),
                 enemies::move_enemies,
                 talent_runtime::tick,
                 items::legendary::events::tick,

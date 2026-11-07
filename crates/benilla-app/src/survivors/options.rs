@@ -150,6 +150,8 @@ pub(super) struct Settings {
     pub invert_y: bool,
     pub zoom_speed: f32,
     pub show_fps: bool,
+    pub ally_plates: bool,
+    pub enemy_plates: bool,
     /// Session only: measuring has a cost and should never come back on its own.
     pub perf_diag: bool,
 }
@@ -194,6 +196,8 @@ impl Settings {
             invert_y: false,
             zoom_speed: 1.0,
             show_fps: false,
+            ally_plates: false,
+            enemy_plates: false,
             perf_diag: false,
         }
     }
@@ -245,8 +249,13 @@ impl Settings {
             }
         }
         out.push_str(&format!(
-            "invert_x {}\ninvert_y {}\nzoom_speed {}\nshow_fps {}\n",
-            self.invert_x, self.invert_y, self.zoom_speed, self.show_fps
+            "invert_x {}\ninvert_y {}\nzoom_speed {}\nshow_fps {}\nally_plates {}\nenemy_plates {}\n",
+            self.invert_x,
+            self.invert_y,
+            self.zoom_speed,
+            self.show_fps,
+            self.ally_plates,
+            self.enemy_plates
         ));
         out
     }
@@ -264,6 +273,16 @@ impl Settings {
                 "invert_x" => {
                     if let Some(v) = flag {
                         out.invert_x = v;
+                    }
+                }
+                "ally_plates" => {
+                    if let Some(v) = flag {
+                        out.ally_plates = v;
+                    }
+                }
+                "enemy_plates" => {
+                    if let Some(v) = flag {
+                        out.enemy_plates = v;
                     }
                 }
                 "show_fps" => {

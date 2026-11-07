@@ -159,7 +159,11 @@ mod tests {
             ObjectStore(benilla_protocol::messages::ObjectFields::from_pairs(&[])),
             super::super::units::Marks::buffs(),
         ));
-        world.resource_mut::<Run>().elapsed = data::VICTORY_SECS + 1.0;
+        world.resource_mut::<Run>().elapsed = data::CLEAR_SECS + 1.0;
+        world.insert_resource(super::super::enemies::ExpeditionClear {
+            done: true,
+            ..default()
+        });
         world.run_system_once(hero::hero_vitals).unwrap();
         assert!(!world.resource::<Run>().won);
         world.resource_mut::<Selection>().stage = 0;

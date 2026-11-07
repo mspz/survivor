@@ -703,6 +703,7 @@ fn scroll(
 pub(super) struct Root;
 #[derive(Component, Clone, Copy)]
 pub(super) enum Click {
+    Quit,
     Delete,
     ConfirmDelete,
     Select(u64),
@@ -734,6 +735,7 @@ pub(super) fn input(
     mut run: ResMut<Run>,
     mut rig: Option<ResMut<hero::CamRig>>,
     mut lobby: Option<ResMut<super::multiplayer::lobby::Lobby>>,
+    mut exit: Option<ResMut<Messages<AppExit>>>,
     mut runes: Option<ResMut<super::runes::Runes>>,
 ) {
     if lobby.as_ref().is_some_and(|l| l.joining) {
@@ -865,6 +867,11 @@ pub(super) fn input(
                     select(c, &mut selection);
                     roster.selected = Some(id);
                     roster.error.clear();
+                }
+            }
+            Click::Quit if *phase.get() == Phase::Menu => {
+                if let Some(mut exit) = exit.take() {
+                    exit.write(AppExit::Success);
                 }
             }
             Click::Create if *phase.get() == Phase::Menu => {

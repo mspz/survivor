@@ -348,6 +348,23 @@ pub(super) fn ground(world: &WorldPoint, mut p: Vec3, fallback: f32) -> Vec3 {
     p
 }
 
+/// The final clear, which ends the run; see [`data::CLEAR_SECS`].
+#[derive(Resource, Default)]
+pub(super) struct ExpeditionClear {
+    /// The mobs alive when the clear began.
+    pub horde: Option<usize>,
+    pub done: bool,
+}
+
+impl ExpeditionClear {
+    /// Fold in this frame's living enemies once the clear has begun.
+    fn update(&mut self, bosses_pending: bool, bosses_alive: usize, mobs_alive: usize) {
+        let horde = *self.horde.get_or_insert(mobs_alive);
+        let allowed = (horde as f32 * (1.0 - data::CLEAR_MOB_SHARE)).floor() as usize;
+        self.done = !bosses_pending && bosses_alive == 0 && mobs_alive <= allowed;
+    }
+}
+
 /// Keep the horde topped up on a ring outside the view, with the bosses and the encircling waves
 /// on the clock.
 pub(super) fn spawn_enemies(
@@ -361,6 +378,7 @@ pub(super) fn spawn_enemies(
     enemies: Query<&Enemy>,
     world: WorldPoint,
     players: Option<Res<super::multiplayer::Companions>>,
+    clear: Option<ResMut<ExpeditionClear>>,
     remotes: Query<(&Transform, &super::multiplayer::RemoteOwner), Without<Hero>>,
 ) {
     if super::training::active(&selection) {
@@ -393,7 +411,12 @@ pub(super) fn spawn_enemies(
     let roster = data::roster(selection.map);
     let pool = data::wave_pool(elapsed, roster.enemies.len());
 
-    let due_bosses = ((elapsed / data::BOSS_EVERY_SECS) as u32).min(roster.bosses.len() as u32);
+    let clearing = elapsed >= data::CLEAR_SECS;
+    let due_bosses = if clearing {
+        roster.bosses.len() as u32
+    } else {
+        ((elapsed / data::BOSS_EVERY_SECS) as u32).min(roster.bosses.len() as u32)
+    };
     while run.bosses < due_bosses {
         let hpos = spawner.next_center(&centers);
         let def = &roster.bosses[run.bosses as usize];
@@ -412,6 +435,14 @@ pub(super) fn spawn_enemies(
         run.banner = Some((format!("{} approaches!", def.name), 4.0));
     }
 
+    if let Some(mut clear) = clear {
+        if clearing {
+            let alive = |boss: bool| enemies.iter().filter(|e| !e.dead && e.boss == boss).count();
+            clear.update(run.bosses < due_bosses, alive(true), alive(false));
+            return;
+        }
+        *clear = ExpeditionClear::default();
+    }
     // Half way between bosses, a closing ring of the moment's weakest.
     let mut ring_spawned = 0;
     let due_rings = ((elapsed + data::BOSS_EVERY_SECS / 2.0) / data::BOSS_EVERY_SECS) as u32;
@@ -1165,6 +1196,21 @@ mod elite_tests {
         assert_eq!(roll_rank(0.05, &config, data::CAMPAIGN[5]), Rank::Explosive);
         assert_eq!(roll_rank(0.15, &config, data::CAMPAIGN[5]), Rank::Normal);
     }
+    #[test]
+    fn the_clear_needs_every_boss_and_nine_mobs_in_ten() {
+        let mut clear = ExpeditionClear::default();
+        clear.update(false, 1, 100);
+        assert!(!clear.done);
+        clear.update(false, 1, 5);
+        assert!(!clear.done, "a boss is alive");
+        clear.update(false, 0, 11);
+        assert!(!clear.done, "too many mobs are left");
+        clear.update(true, 0, 10);
+        assert!(!clear.done, "a boss has yet to arrive");
+        clear.update(false, 0, 10);
+        assert!(clear.done);
+    }
+
     #[test]
     fn elites_have_ten_times_health_and_triple_xp_without_boss_damage_or_rewards() {
         let mut world = World::new();

@@ -1,4 +1,5 @@
-//! wasm32: the one-shot SFX cache's misses, taken off the frame.
+//! The one-shot SFX cache's misses, taken off the frame: the browser loads them on wasm32, a thread
+//! does natively, where a miss waited on the patch chain's lock behind terrain and texture reads.
 //!
 //! ## The stutter this closes
 //!
@@ -40,14 +41,18 @@ use std::time::Duration;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
 
-use benilla_assets::{LockRecover, WorldAssets};
+#[cfg(target_arch = "wasm32")]
+use benilla_assets::LockRecover;
+use benilla_assets::WorldAssets;
 use benilla_protocol::events::EntityKind;
 
 use super::{
     play_file, play_kit_ext, KitRef, PlayExtras, SoundCategory, SoundKits, StaticSoundData,
 };
 use crate::sound::creature::CreatureVoices;
-use crate::sound::{web_load, AudioListener, SoundConfig, SoundOutput};
+#[cfg(target_arch = "wasm32")]
+use crate::sound::web_load;
+use crate::sound::{AudioListener, SoundConfig, SoundOutput};
 
 /// How long after its event a one-shot may still sound. Loopback lands a small WAV in one or two
 /// frames; a real network in a few more. Past this the shot is dropped and only the cache fills.
@@ -158,8 +163,50 @@ mod cache_tests {
 
 /// One SFX file in flight, and every play that asked for it while it was.
 pub(super) struct PendingSfx {
+    #[cfg(target_arch = "wasm32")]
     load: web_load::Pending,
+    #[cfg(not(target_arch = "wasm32"))]
+    load: native::Load,
     shots: Vec<(Instant, Deferred)>,
+}
+
+/// The native load: one short-lived thread reads and decodes the file.
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+    use super::StaticSoundData;
+    use std::sync::{Arc, Mutex};
+
+    type Slot = Arc<Mutex<Option<Result<StaticSoundData, String>>>>;
+
+    pub(in super::super) struct Load(Slot);
+
+    impl Load {
+        pub(in super::super) fn begin(
+            assets: &benilla_assets::WorldAssets,
+            path: String,
+        ) -> std::io::Result<Self> {
+            let slot = Slot::default();
+            let write = slot.clone();
+            let chain = assets.chain.clone();
+            let loose = assets.loose_root().map(std::path::Path::to_path_buf);
+            std::thread::Builder::new()
+                .name("sfx-load".into())
+                .spawn(move || {
+                    let out = benilla_assets::read_chain_or_loose(&chain, loose.as_deref(), &path)
+                        .ok_or_else(|| format!("reading {path}"))
+                        .and_then(|bytes| {
+                            crate::sound::mixer::sfx_from_bytes(bytes).map_err(|e| format!("{e:#}"))
+                        });
+                    *write.lock().unwrap_or_else(|p| p.into_inner()) = Some(out);
+                })?;
+            Ok(Self(slot))
+        }
+
+        /// The decoded file once the thread is done; `None` while it is still working.
+        pub(in super::super) fn take(&mut self) -> Option<Result<StaticSoundData, String>> {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).take()
+        }
+    }
 }
 
 /// A play recorded against a load — everything [`play_kit_ext`] or [`play_file`] needs to be
@@ -192,15 +239,21 @@ impl SoundKits {
         if self.pending.contains_key(key) || self.pending.len() >= MAX_SFX_LOADS {
             return Ok(None);
         }
-        // The lock is held to build the URL and dropped before the request starts.
-        let url = assets.chain.lock_recover().url_for_name(path);
-        let Some(url) = url else {
-            anyhow::bail!("file not in patch chain: {path}");
+        #[cfg(target_arch = "wasm32")]
+        let load = {
+            // The lock is held to build the URL and dropped before the request starts.
+            let url = assets.chain.lock_recover().url_for_name(path);
+            let Some(url) = url else {
+                anyhow::bail!("file not in patch chain: {path}");
+            };
+            web_load::begin_sfx(url, path.to_string())
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let load = native::Load::begin(assets, path.to_string())?;
         self.pending.insert(
             key.to_string(),
             PendingSfx {
-                load: web_load::begin_sfx(url, path.to_string()),
+                load,
                 shots: Vec::new(),
             },
         );

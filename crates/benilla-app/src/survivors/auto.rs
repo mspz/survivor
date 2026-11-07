@@ -3,7 +3,8 @@
 //! gem away from the crowd and logs the run every ten seconds; `WOW_SURVIVORS_SHOTS=<dir>` also
 //! saves a screenshot every few seconds, which needs no window focus. A `:idle`, `:all` or `:late`
 //! suffix on the class name changes the run, as the fields below say. `WOW_SURVIVORS_MAP=<index or
-//! name>` picks the battleground.
+//! name>` picks the battleground, the training ground included. `WOW_SURVIVORS_TEST` pushes the run
+//! further, as a comma list: `god` (no damage taken), `max` (top ability levels), `area=<percent>`.
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -11,8 +12,37 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use super::enemies::{Enemy, Gem};
 use super::hero::Hero;
 use super::hud::{self, Offer};
+use super::spell_engine::{Change, Filter, Modifier, Tags};
 use super::units::flat;
 use super::{data, Phase, Rng, Run, Selection};
+
+const TEST_SOURCE: u64 = 0x5100_0000;
+const TOP_LEVEL: u8 = 6;
+
+/// `WOW_SURVIVORS_TEST`, for performance runs that must not end early.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TestOptions {
+    god: bool,
+    max: bool,
+    area: f32,
+}
+
+impl TestOptions {
+    fn parse(text: &str) -> Self {
+        let mut options = Self::default();
+        for item in text.split(',').map(str::trim) {
+            match item.split_once('=') {
+                Some(("area", percent)) => {
+                    options.area = percent.parse::<f32>().unwrap_or(0.0) / 100.0;
+                }
+                _ if item == "god" => options.god = true,
+                _ if item == "max" => options.max = true,
+                _ => {}
+            }
+        }
+        options
+    }
+}
 
 #[derive(Resource)]
 pub(super) struct Auto {
@@ -26,6 +56,7 @@ pub(super) struct Auto {
     /// `<class>:late`: the whole pool at its top level, two thirds of the way in, for the crowd at
     /// its thickest.
     late: bool,
+    test: TestOptions,
     frames: u32,
     wait: f32,
     shots: Option<std::path::PathBuf>,
@@ -90,6 +121,8 @@ pub(super) fn from_env() -> Option<Auto> {
         idle,
         all,
         late,
+        test: crate::webenv::var("WOW_SURVIVORS_TEST")
+            .map_or_else(TestOptions::default, |text| TestOptions::parse(&text)),
         frames: 0,
         wait: 0.0,
         shots,
@@ -169,8 +202,12 @@ pub(super) fn drive(
     let dt = time.delta_secs();
     auto.wait += dt;
     auto.frames += 1;
+    if auto.test.god {
+        run.immune_t = run.immune_t.max(1.0);
+    }
     match phase.get() {
         Phase::Menu => {
+            selection.test_character |= auto.map == data::TRAINING_MAP;
             if selection.map != auto.map {
                 selection.map = auto.map;
                 selection.version += 1;
@@ -214,6 +251,21 @@ pub(super) fn drive(
                     run.bosses = 3;
                     run.rings = 4;
                 }
+                if auto.test.max {
+                    for owned in &mut run.abilities {
+                        owned.level = TOP_LEVEL;
+                    }
+                }
+                if auto.test.area > 0.0 {
+                    run.replace_spell_modifiers(
+                        TEST_SOURCE,
+                        [Modifier {
+                            source: TEST_SOURCE,
+                            filter: Filter::requiring(Tags(0)),
+                            change: Change::IncreasedArea(auto.test.area),
+                        }],
+                    );
+                }
                 next.set(Phase::Playing);
                 auto.wait = 0.0;
             }
@@ -223,7 +275,13 @@ pub(super) fn drive(
             if auto.wait > 1.2 && (run.level <= 3 || run.level == 10) {
                 auto.capture_once(&mut commands, format!("levelup-{}", run.level));
             }
-            if auto.wait > 1.6 {
+            // A test run picks at once: it measures combat, not the card screen.
+            let pick_after = if auto.test == TestOptions::default() {
+                1.6
+            } else {
+                0.1
+            };
+            if auto.wait > pick_after {
                 let n = offer.len().max(1);
                 let i = (rng.range(0.0, n as f32) as usize).min(n - 1);
                 hud::pick(i, &mut run, &mut offer, &mut rng, &mut next);
@@ -276,5 +334,23 @@ pub(super) fn drive(
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(path));
         }
+    }
+}
+
+#[cfg(test)]
+mod test_options {
+    use super::*;
+
+    #[test]
+    fn test_options_read_a_comma_list_and_ignore_the_rest() {
+        assert_eq!(
+            TestOptions::parse("god, max,area=150,nope"),
+            TestOptions {
+                god: true,
+                max: true,
+                area: 1.5,
+            }
+        );
+        assert_eq!(TestOptions::parse(""), TestOptions::default());
     }
 }

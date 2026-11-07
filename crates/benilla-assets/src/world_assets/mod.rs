@@ -274,6 +274,11 @@ impl WorldAssets {
         }
     }
 
+    /// The loose AddOns folder, if one is installed: for a read made off this store.
+    pub fn loose_root(&self) -> Option<&Path> {
+        self.loose_root.as_deref()
+    }
+
     /// [`read_chain_or_loose`] over this store, for an asset class with no decoder here (audio:
     /// `PlayMusic`, `PlaySoundFile`).
     pub fn read_file_or_loose(&self, path: &str) -> Option<Vec<u8>> {
