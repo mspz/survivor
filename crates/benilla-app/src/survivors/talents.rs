@@ -356,7 +356,7 @@ impl Account {
             for rank in self.builds.iter().flatten().flatten() {
                 text.push_str(&format!(" {rank}"));
             }
-            if let Err(err) = crate::local_state::write_atomic(
+            if let Err(err) = crate::local_state::write_queued(
                 &home.join(self.character.map_or_else(
                     || "survivors-talents-v4.txt".to_owned(),
                     |id| format!("characters/{id}-talents.txt"),

@@ -111,7 +111,7 @@ impl Store {
             return Ok(());
         };
         let text = toml::to_string_pretty(save).map_err(|e| e.to_string())?;
-        crate::local_state::write_atomic(&home.join("shared-chest.toml"), &text)
+        crate::local_state::write_queued(&home.join("shared-chest.toml"), &text)
             .map_err(|e| e.to_string())
     }
     fn commit(&mut self, save: Save) -> Result<(), String> {

@@ -149,6 +149,9 @@ pub(super) struct Settings {
     pub invert_x: bool,
     pub invert_y: bool,
     pub zoom_speed: f32,
+    pub show_fps: bool,
+    /// Session only: measuring has a cost and should never come back on its own.
+    pub perf_diag: bool,
 }
 impl Settings {
     pub fn defaults() -> Self {
@@ -190,6 +193,8 @@ impl Settings {
             invert_x: false,
             invert_y: false,
             zoom_speed: 1.0,
+            show_fps: false,
+            perf_diag: false,
         }
     }
     pub fn pressed(&self, action: Action, keys: &ButtonInput<KeyCode>) -> bool {
@@ -240,8 +245,8 @@ impl Settings {
             }
         }
         out.push_str(&format!(
-            "invert_x {}\ninvert_y {}\nzoom_speed {}\n",
-            self.invert_x, self.invert_y, self.zoom_speed
+            "invert_x {}\ninvert_y {}\nzoom_speed {}\nshow_fps {}\n",
+            self.invert_x, self.invert_y, self.zoom_speed, self.show_fps
         ));
         out
     }
@@ -259,6 +264,11 @@ impl Settings {
                 "invert_x" => {
                     if let Some(v) = flag {
                         out.invert_x = v;
+                    }
+                }
+                "show_fps" => {
+                    if let Some(v) = flag {
+                        out.show_fps = v;
                     }
                 }
                 "invert_y" => {
@@ -338,7 +348,7 @@ impl Settings {
     }
     pub fn save(&self) {
         if let Some(home) = crate::local_state::home() {
-            if let Err(error) = crate::local_state::write_atomic(
+            if let Err(error) = crate::local_state::write_queued(
                 &home.join("survivors-options.txt"),
                 &self.encode(),
             ) {
@@ -356,6 +366,7 @@ impl Default for Settings {
             .as_deref()
             .map(Self::decode)
             .unwrap_or_else(Self::defaults);
+        settings.perf_diag = crate::webenv::var("WOW_PERF_DIAG").as_deref() == Some("1");
         if crate::webenv::var("WOW_GRADE").as_deref() == Some("0") {
             settings.grade = false;
         }

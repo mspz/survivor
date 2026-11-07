@@ -15,6 +15,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod queue;
+
+#[cfg(not(target_arch = "wasm32"))]
+static QUEUE: queue::Queue = queue::Queue::new(write_atomic_fs);
+
 /// The folder's name: not `benilla`, which beside the binary is the executable itself, and not
 /// `WTF`, which a real install already uses.
 const STATE_DIR: &str = "benilla-config";
@@ -243,13 +249,51 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     write_atomic_bytes(path, contents.as_bytes())
 }
 
+/// [`write_atomic`] without waiting for the disk, for saves made during play. A failure is logged.
+/// A crash loses what [`hold_queued`] still keeps in memory, never the previous file.
+pub(crate) fn write_queued(path: &Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(any(test, target_arch = "wasm32"))]
+    return write_atomic(path, contents);
+    #[cfg(not(any(test, target_arch = "wasm32")))]
+    QUEUE.push(path, contents.as_bytes())
+}
+
+/// While held, [`write_queued`] files stay in memory: a disk flush delays any read on the same
+/// drive, which the main thread feels during combat.
+pub(crate) fn hold_queued(held: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    QUEUE.hold(held);
+    #[cfg(target_arch = "wasm32")]
+    let _ = held;
+}
+
+/// Whether a queued file was being written within the last `window`, for the performance report.
+pub(crate) fn wrote_within(window: std::time::Duration) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return QUEUE.wrote_within(window);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = window;
+        false
+    }
+}
+
+/// Wait for every [`write_queued`] file to reach the disk, before the process exits.
+pub(crate) fn flush_queued() {
+    #[cfg(not(target_arch = "wasm32"))]
+    QUEUE.flush();
+}
+
 /// [`write_atomic`] for bytes: the saved-variables files carry Lua byte strings as they are.
 /// On the page the store holds text, so bytes that are not UTF-8 are stored lossily there.
 pub(crate) fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(target_arch = "wasm32")]
     return web_store::set(path, &String::from_utf8_lossy(contents));
     #[cfg(not(target_arch = "wasm32"))]
-    write_atomic_fs(path, contents)
+    {
+        QUEUE.flush();
+        write_atomic_fs(path, contents)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -273,7 +317,11 @@ pub(crate) fn read_to_string(path: &Path) -> std::io::Result<String> {
     #[cfg(target_arch = "wasm32")]
     return web_store::get(path);
     #[cfg(not(target_arch = "wasm32"))]
-    std::fs::read_to_string(path)
+    match QUEUE.get(path) {
+        Some(contents) => String::from_utf8(contents)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        None => std::fs::read_to_string(path),
+    }
 }
 
 /// [`read_to_string`] for the residents read as bytes (the addon enable state decodes its own
@@ -282,13 +330,15 @@ pub(crate) fn read(path: &Path) -> std::io::Result<Vec<u8>> {
     #[cfg(target_arch = "wasm32")]
     return web_store::get(path).map(String::into_bytes);
     #[cfg(not(target_arch = "wasm32"))]
-    std::fs::read(path)
+    QUEUE.get(path).map_or_else(|| std::fs::read(path), Ok)
 }
 
 /// Remove a state file (a cleared saved account name). Absent is not an error.
 pub(crate) fn remove_file(path: &Path) -> std::io::Result<()> {
     #[cfg(target_arch = "wasm32")]
     return web_store::remove(path);
+    #[cfg(not(target_arch = "wasm32"))]
+    QUEUE.flush();
     #[cfg(not(target_arch = "wasm32"))]
     match std::fs::remove_file(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

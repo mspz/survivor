@@ -1,0 +1,33 @@
+# Colours of the damage numbers you deal. Hexadecimal RRGGBB.
+#
+# The game copies this file to benilla-config/survivors-damage-colors.toml on first launch.
+# Edit that copy: it is reloaded about once a second, so no restart or rebuild is needed.
+# Delete the copy to come back to these defaults.
+#
+# Every table takes `default` plus any of these schools:
+#   physical, fire, cold, lightning, nature, arcane, holy, shadow
+# A school left out uses the table's `default`.
+#
+# In co-op the host's colours apply to everyone. Healing and damage taken keep their own colours.
+
+# Critical hits. Remove this line to let crits keep the colour of their type.
+critical = "FFDE00"
+
+# Direct hits.
+[direct]
+default = "FFFFFF"
+# To colour direct hits by school as well, uncomment:
+# fire = "FF8C2A"
+# cold = "6FC8FF"
+# lightning = "8FA8FF"
+# nature = "7CDB4E"
+# arcane = "E08CFF"
+# holy = "FFF2A8"
+# shadow = "B46CFF"
+
+# Damage over time. Nature covers poisons, physical covers bleeds.
+[dot]
+default = "7CDB4E"
+physical = "E0473C"
+fire = "FF8C2A"
+shadow = "B46CFF"

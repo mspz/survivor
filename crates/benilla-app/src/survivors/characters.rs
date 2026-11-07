@@ -114,7 +114,7 @@ impl Roster {
             return Ok(());
         };
         let text = toml::to_string_pretty(save).map_err(|e| e.to_string())?;
-        crate::local_state::write_atomic(&home.join("survivors-characters.toml"), &text)
+        crate::local_state::write_queued(&home.join("survivors-characters.toml"), &text)
             .map_err(|e| e.to_string())
     }
     pub fn current(&self) -> Option<&Character> {

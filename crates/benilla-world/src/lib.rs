@@ -153,6 +153,7 @@ pub mod straddle;
 pub mod sun;
 pub mod surface;
 pub mod terrain_stream;
+pub mod system_spans;
 pub mod thread_qos;
 pub mod view;
 pub mod vis_chain;

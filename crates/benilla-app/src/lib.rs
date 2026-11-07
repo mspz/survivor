@@ -485,5 +485,7 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
 
     // Returns the app's exit status: a failed capture sets `AppExit::error()`
     // (`capture::drive_capture`), which must not exit 0 with no PNG on disk.
-    app.run()
+    let exit = app.run();
+    local_state::flush_queued();
+    exit
 }

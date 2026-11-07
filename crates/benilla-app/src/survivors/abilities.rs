@@ -9,7 +9,7 @@ use super::hero::{self, Hero};
 use super::items::legendary::events::{self as legendary_events, Origin};
 use super::spell_engine::targeting::{around, densest, links, nearest, weakest, Target as Foe};
 use super::spell_engine::{self as engine, Resolved as Params};
-use super::units::{self, flat, Fx, Marks, UnitSpec, COLOR_HEAL, COLOR_MELEE, COLOR_SPELL};
+use super::units::{self, flat, Fx, Marks, UnitSpec, COLOR_HEAL};
 use super::{Rng, Run, RunEntity};
 use crate::net::{FieldChanged, Guid, ObjectStore};
 
@@ -45,7 +45,6 @@ pub(super) struct Hit {
     /// Also hits everything this close to the target, for less.
     pub splash: f32,
     pub crit: bool,
-    pub color: u32,
 }
 impl Hit {
     pub(super) fn can_proc(&self) -> bool {
@@ -2450,7 +2449,6 @@ impl Hit {
             mark_dur: 0.0,
             splash: 0.0,
             crit,
-            color: COLOR_MELEE,
         }
     }
 }
@@ -2599,11 +2597,6 @@ pub(super) fn hit_for(
             0.0
         },
         crit,
-        color: if def.kind == Kind::Melee {
-            COLOR_MELEE
-        } else {
-            COLOR_SPELL
-        },
     }
 }
 
@@ -3619,7 +3612,6 @@ pub(super) fn tick_areas(
                     mark_dur: 1.5,
                     splash: 0.0,
                     crit,
-                    color: COLOR_SPELL,
                 });
             }
             if !area.triggered {
@@ -3714,7 +3706,6 @@ pub(super) fn tick_areas(
                     },
                     cast_id: if totem.triggered { totem.cast_id } else { 0 },
                     primary: false,
-                    color: COLOR_SPELL,
                     ..Hit::direct(totem.skill, f.e, dmg, crit)
                 });
             }
@@ -3778,7 +3769,6 @@ pub(super) fn tick_areas(
                         },
                         cast_id: if totem.triggered { totem.cast_id } else { 0 },
                         tags: Some(totem.tags),
-                        color: COLOR_SPELL,
                         ..Hit::direct(totem.skill, link.target.e, dmg, crit)
                     },
                 );
@@ -4219,7 +4209,7 @@ pub(super) fn apply_hits(
                 en.hp -= dmg;
             }
             run.damage_done += f64::from(effective);
-            fx.number(h.owner, e, dmg, h.crit, h.color);
+            fx.hit_number(h.owner, e, dmg, h.crit, tags);
             if h.can_proc() {
                 if let Effect::Drain(frac) = h.effect {
                     if !(run.legendary.has(310) && h.skill == "death_coil") || h.primary {
@@ -4444,7 +4434,7 @@ pub(super) fn apply_hits(
         let mut dealt = 0.0;
         let immortal = super::training::dummy(&en);
         let mut remaining_hp = en.hp.max(0.0);
-        let mut periodic_numbers = std::collections::BTreeMap::<Option<u64>, f32>::new();
+        let mut periodic_numbers = std::collections::BTreeMap::<(Option<u64>, u32), f32>::new();
         let mut last_owner = None;
         let mut last_origin = Origin::Skill;
         let mut last_parent = 0;
@@ -4518,7 +4508,9 @@ pub(super) fn apply_hits(
                         * elite_multiplier
                         * protection_multiplier;
                 dealt += amount;
-                *periodic_numbers.entry(d.owner).or_default() += amount;
+                *periodic_numbers
+                    .entry((d.owner, fx.periodic_color(tags)))
+                    .or_default() += amount;
                 let effective = if immortal {
                     amount.max(0.0)
                 } else {
@@ -4580,9 +4572,9 @@ pub(super) fn apply_hits(
             } else {
                 en.hp -= dealt;
             }
-            for (owner, damage) in periodic_numbers {
+            for ((owner, color), damage) in periodic_numbers {
                 if damage > 0.0 {
-                    fx.number(owner, e, damage, false, COLOR_SPELL);
+                    fx.number(owner, e, damage, false, color);
                 }
             }
             if en.hp <= 0.0 {

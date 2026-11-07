@@ -1,5 +1,5 @@
 //! Character-owned copper, granted directly on kills; no pickup entities or animations.
-use super::{enemies::Loot, items::Inventory};
+use super::{enemies::Loot, items::Inventory, Phase, Run};
 use bevy::prelude::*;
 pub(super) const SILVER: u64 = 100;
 pub(super) const GOLD: u64 = 100 * SILVER;
@@ -15,16 +15,40 @@ pub(super) fn reward(level: u32, boss: bool) -> u64 {
         3 + steps.pow(2) / 4
     }
 }
+/// Saves reach the disk only at moments where a short stall goes unnoticed: anywhere but live
+/// combat, on death, and when the game closes.
+fn checkpoint(
+    phase: Res<State<Phase>>,
+    run: Option<Res<Run>>,
+    mut exit: MessageReader<AppExit>,
+    inventory: Option<ResMut<Inventory>>,
+    mut held: Local<bool>,
+) {
+    let closing = exit.read().count() > 0;
+    let dead = run.is_some_and(|run| run.dead_t.is_some());
+    let key_moment = *phase.get() != Phase::Playing || dead || closing;
+    if key_moment {
+        if let Some(mut inventory) = inventory.filter(|i| i.money_unsaved()) {
+            inventory.save_money();
+        }
+    }
+    if *held == key_moment {
+        *held = !key_moment;
+        crate::local_state::hold_queued(*held);
+    }
+}
 #[derive(Resource, Default)]
 struct Pending(std::collections::BTreeMap<u64, u64>);
 pub(super) fn plugin(app: &mut App) {
-    app.init_resource::<Pending>().add_systems(
-        Update,
-        credit
-            .after(super::abilities::apply_hits)
-            .before(super::enemies::drop_loot)
-            .run_if(super::multiplayer::authoritative),
-    );
+    app.init_resource::<Pending>()
+        .add_systems(
+            Update,
+            credit
+                .after(super::abilities::apply_hits)
+                .before(super::enemies::drop_loot)
+                .run_if(super::multiplayer::authoritative),
+        )
+        .add_systems(Last, checkpoint);
 }
 fn credit(
     mut drops: MessageReader<Loot>,
@@ -46,7 +70,7 @@ fn credit(
     if *amount == 0 {
         return;
     }
-    match inventory.add_money(*amount) {
+    match inventory.gain_money(*amount) {
         Ok(()) => *amount = 0,
         Err(error) => inventory.notice = format!("Money could not be saved: {error}"),
     }
@@ -96,6 +120,30 @@ mod tests {
         world.run_system(system).unwrap();
         assert_eq!(world.resource::<Inventory>().money(), 100003);
         assert_eq!(world.entities().len(), entities);
+    }
+    #[test]
+    fn money_waits_during_combat_and_saves_at_key_moments() {
+        let mut world = World::new();
+        world.init_resource::<Messages<AppExit>>();
+        world.insert_resource(State::new(Phase::Playing));
+        world.insert_resource(Run::default());
+        world.insert_resource(Inventory::fixture(vec![]));
+        let system = world.register_system(checkpoint);
+        let unsaved = |world: &mut World, run| {
+            world.resource_mut::<Inventory>().gain_money(1).unwrap();
+            world.run_system(run).unwrap();
+            world.resource::<Inventory>().money_unsaved()
+        };
+        assert!(unsaved(&mut world, system));
+        world.write_message(AppExit::Success);
+        assert!(!unsaved(&mut world, system));
+        assert!(unsaved(&mut world, system));
+        world.resource_mut::<Run>().dead_t = Some(0.0);
+        assert!(!unsaved(&mut world, system));
+        world.resource_mut::<Run>().dead_t = None;
+        assert!(unsaved(&mut world, system));
+        world.insert_resource(State::new(Phase::GameOver));
+        assert!(!unsaved(&mut world, system));
     }
     #[test]
     fn loot_starts_with_a_few_copper_and_bosses_cap_at_ten_gold() {

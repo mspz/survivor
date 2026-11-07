@@ -341,6 +341,7 @@ pub(super) struct Fx<'w> {
     area_scales: Option<ResMut<'w, crate::entities::dest_fx::AreaVisualScales>>,
     echoes: Option<ResMut<'w, crate::entities::dest_fx::EchoCasts>>,
     numbers: Option<ResMut<'w, Messages<CombatNumber>>>,
+    colors: Option<Res<'w, super::damage_colors::DamageColors>>,
 }
 
 /// More impacts than this per cast only cost frames.
@@ -428,6 +429,29 @@ impl Fx<'_> {
             displayed: false,
             seq,
         });
+    }
+
+    /// The number of a direct hit, coloured by its type.
+    pub fn hit_number(
+        &mut self,
+        owner: Option<u64>,
+        anchor: Entity,
+        amount: f32,
+        crit: bool,
+        tags: super::spell_engine::Tags,
+    ) {
+        let color = self
+            .colors
+            .as_deref()
+            .map_or(super::damage_colors::FALLBACK, |c| c.direct(tags, crit));
+        self.number(owner, anchor, amount, crit, color);
+    }
+
+    /// The colour of a damage-over-time tick.
+    pub fn periodic_color(&self, tags: super::spell_engine::Tags) -> u32 {
+        self.colors
+            .as_deref()
+            .map_or(COLOR_SPELL, |c| c.periodic(tags))
     }
 
     /// A floating number over `anchor`, 0xAARRGGBB.
