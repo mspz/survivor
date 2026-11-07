@@ -72,6 +72,55 @@ mod spell_engine_integration_tests {
         world.run_system_once(cast_abilities).unwrap();
         assert_eq!(world.resource::<Messages<Hit>>().len(), 3);
     }
+    #[test]
+    fn searing_totem_projectile_modifiers_apply_to_its_real_volley() {
+        let (mut world, _) = legendary_world("searing_totem", 0, &[1.0, 2.0, 3.0]);
+        let base = world
+            .resource::<Run>()
+            .resolve_spell(data::ability("searing_totem"), 1)
+            .dmg;
+        world.resource_mut::<Run>().replace_spell_modifiers(
+            125,
+            [
+                engine::Modifier {
+                    source: 125,
+                    filter: engine::Filter::requiring(engine::Tags::PROJECTILE),
+                    change: engine::Change::AdditionalProjectiles(2),
+                },
+                engine::Modifier {
+                    source: 125,
+                    filter: engine::Filter::requiring(engine::Tags::PROJECTILE),
+                    change: engine::Change::IncreasedDamage(1.0),
+                },
+            ],
+        );
+        let p = world
+            .resource::<Run>()
+            .resolve_spell(data::ability("searing_totem"), 1);
+        assert!(p
+            .tags
+            .contains(engine::Tags::PROJECTILE | engine::Tags::TOTEM | engine::Tags::FIRE));
+        assert_eq!(p.count, 3);
+        assert!(!engine::tags::for_spell(data::ability("magma_totem"))
+            .contains(engine::Tags::PROJECTILE));
+        world.run_system_once(cast_abilities).unwrap();
+        assert_eq!(world.query::<&Totem>().iter(&world).count(), 1);
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(0.4));
+        world.run_system_once(tick_areas).unwrap();
+        let hits: Vec<_> = world.resource_mut::<Messages<Hit>>().drain().collect();
+        assert_eq!(hits.len(), 3);
+        assert_eq!(
+            hits.iter()
+                .map(|h| h.target)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+        assert!(hits.iter().all(|h| (h.damage - base * 2.0).abs() < 0.001
+            && h.tags.unwrap().contains(engine::Tags::PROJECTILE)));
+    }
 
     #[test]
     fn support_all_new_skills_cast_and_buffs_never_emit_damage_hits() {
@@ -2348,6 +2397,7 @@ pub(super) struct GroundArea {
 
 #[derive(Component)]
 pub(super) struct Totem {
+    projectiles: Params,
     effect: Effect,
     triggered: bool,
     cast_id: u64,
@@ -3258,6 +3308,7 @@ pub(super) fn cast_abilities(
                             0.0,
                         );
                         commands.entity(totem).insert(Totem {
+                            projectiles: p,
                             effect: p.effect,
                             triggered: p.triggered,
                             cast_id: p.cast_id,
@@ -3578,42 +3629,69 @@ pub(super) fn tick_areas(
             }
         } else {
             totem.tick = 1.0;
-            let target = live
+            let mut foes: Vec<_> = live
                 .iter()
-                .map(|f| (flat(f.pos - pos).length(), f))
-                .filter(|(d, _)| *d <= totem.range)
-                .min_by(|a, b| a.0.total_cmp(&b.0));
-            let Some((dist, f)) = target else { continue };
-            fx.cast(e, totem.cast, &[f.e], None);
+                .copied()
+                .map(|mut f| {
+                    f.dist = flat(f.pos - pos).length();
+                    f
+                })
+                .collect();
+            foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+            let roots: Vec<_> = foes
+                .iter()
+                .filter(|f| f.dist <= totem.range)
+                .take(totem.projectiles.count)
+                .copied()
+                .collect();
+            if roots.is_empty() {
+                continue;
+            }
+            fx.cast(e, totem.cast, &entities(&roots), None);
             let speed = spells
                 .as_deref()
                 .and_then(|s| s.catalog.get(totem.cast))
                 .map_or(0.0, |d| d.speed);
-            let delay = if speed > 0.0 { dist / speed } else { 0.0 };
-            let (dmg, crit) = roll(&mut rng, totem.crit, totem.crit_multiplier, totem.damage);
-            schedule(
-                &mut pending,
-                &mut hits,
-                now,
-                delay,
-                Hit {
-                    owner: totem.owner,
-                    skill: totem.skill,
-                    effect: totem.effect,
-                    direct_dot: totem.direct_dot,
-                    triggered: totem.triggered,
-                    proc_admitted: totem.triggered,
-                    origin: if totem.triggered {
-                        Origin::Talent
-                    } else {
-                        Origin::Skill
+            for link in links(&roots, &foes, &totem.projectiles, speed, false) {
+                let (dmg, crit) = roll(
+                    &mut rng,
+                    totem.crit,
+                    totem.crit_multiplier,
+                    totem.damage * link.scale,
+                );
+                if let Some(from) = link.from {
+                    pending
+                        .1
+                        .push((now + link.launch, from, link.target.e, totem.cast));
+                }
+                let mut direct_dot = totem.direct_dot;
+                if let Some(dot) = direct_dot.as_mut() {
+                    dot.dps *= link.scale;
+                }
+                schedule(
+                    &mut pending,
+                    &mut hits,
+                    now,
+                    link.arrival,
+                    Hit {
+                        owner: totem.owner,
+                        skill: totem.skill,
+                        effect: totem.effect,
+                        direct_dot,
+                        triggered: totem.triggered,
+                        proc_admitted: totem.triggered,
+                        origin: if totem.triggered {
+                            Origin::Talent
+                        } else {
+                            Origin::Skill
+                        },
+                        cast_id: if totem.triggered { totem.cast_id } else { 0 },
+                        tags: Some(totem.tags),
+                        color: COLOR_SPELL,
+                        ..Hit::direct(totem.skill, link.target.e, dmg, crit)
                     },
-                    cast_id: if totem.triggered { totem.cast_id } else { 0 },
-                    tags: Some(totem.tags),
-                    color: COLOR_SPELL,
-                    ..Hit::direct(totem.skill, f.e, dmg, crit)
-                },
-            );
+                );
+            }
         }
     }
 }

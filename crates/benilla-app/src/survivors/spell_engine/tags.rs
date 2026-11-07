@@ -243,7 +243,7 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     {
         tags = tags | T::MELEE;
     }
-    if def.kind == Kind::Bolt {
+    if def.kind == Kind::Bolt || def.key == "searing_totem" {
         tags = tags | T::PROJECTILE;
     }
     if matches!(
