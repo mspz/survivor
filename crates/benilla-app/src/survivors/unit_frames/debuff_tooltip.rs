@@ -1,0 +1,114 @@
+use super::*;
+use bevy::{ui::FocusPolicy, window::PrimaryWindow};
+
+#[derive(Component)]
+pub(super) struct Tooltip;
+
+fn description(spell: u32) -> &'static str {
+    match spell {
+        116 => "Réduit la vitesse de déplacement.",
+        339 => "Immobilise la cible.",
+        408 => "Étourdit la cible et l'empêche d'agir.",
+        5782 => "La cible fuit sous l'effet de la peur.",
+        702 => "Réduit les dégâts infligés par la cible.",
+        355 => "Force la cible à attaquer le provocateur.",
+        _ => data::ABILITIES
+            .iter()
+            .find(|d| d.spell == spell)
+            .and_then(|d| {
+                super::super::support_spells::description(d.key)
+                    .or_else(|| super::super::extra_spells::description(d.key))
+                    .or(if d.kind == data::Kind::Dot {
+                        Some("Inflige des dégâts périodiques à la cible.")
+                    } else {
+                        None
+                    })
+            })
+            .unwrap_or("Effet néfaste actif sur la cible."),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn show(
+    mut commands: Commands,
+    phase: Res<State<Phase>>,
+    target: Res<Target>,
+    units: Query<&Status>,
+    icons: Query<(&Interaction, &ui::DebuffIcon)>,
+    roots: Query<Entity, With<Tooltip>>,
+    font: Res<hud::HudFont>,
+    spells: Option<Res<crate::ui_action::Spells>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    scale: Res<UiScale>,
+) {
+    for entity in &roots {
+        commands.entity(entity).despawn();
+    }
+    if !matches!(*phase.get(), Phase::Playing | Phase::Hub | Phase::Paused) {
+        return;
+    }
+    let Some(status) = target.entity.and_then(|e| units.get(e).ok()) else {
+        return;
+    };
+    let Some((spell, left)) = icons
+        .iter()
+        .filter(|(i, _)| **i != Interaction::None)
+        .find_map(|(_, icon)| {
+            status
+                .debuffs
+                .iter()
+                .find(|(spell, left)| *spell == icon.0 && *left > 0.0)
+        })
+    else {
+        return;
+    };
+    let def = data::ABILITIES.iter().find(|d| d.spell == *spell);
+    let name = hud::spell_name(spells.as_deref(), *spell, def.map_or("Debuff", |d| d.key));
+    let inv = scale.0.max(0.01);
+    let (viewport, cursor) =
+        windows
+            .single()
+            .map_or((Vec2::new(1280.0, 768.0), Vec2::new(800.0, 400.0)), |w| {
+                (
+                    Vec2::new(w.width(), w.height()) / inv,
+                    w.cursor_position().unwrap_or_default() / inv,
+                )
+            });
+    commands
+        .spawn((
+            Tooltip,
+            GlobalZIndex(850),
+            FocusPolicy::Pass,
+            BackgroundColor(Color::srgb(0.02, 0.025, 0.04)),
+            BorderColor::all(Color::srgb(0.9, 0.1, 0.1)),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px((cursor.x + 18.0).clamp(4.0, (viewport.x - 334.0).max(4.0))),
+                top: Val::Px((cursor.y + 22.0).clamp(4.0, (viewport.y - 200.0).max(4.0))),
+                width: Val::Px(330.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                ..default()
+            },
+        ))
+        .with_children(|body| {
+            for (value, size, color) in [
+                (name, 17.0, hud::GOLD_TONE),
+                (description(*spell).into(), 14.0, Color::WHITE),
+                (format!("Temps restant : {left:.1} s"), 12.0, hud::GOLD_TONE),
+            ] {
+                body.spawn((
+                    Text::new(value),
+                    TextFont {
+                        font: font.0.clone(),
+                        font_size: size,
+                        ..default()
+                    },
+                    TextColor(color),
+                    FocusPolicy::Pass,
+                ));
+            }
+        });
+}

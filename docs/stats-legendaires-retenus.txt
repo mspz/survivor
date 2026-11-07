@@ -1,0 +1,100 @@
+STATISTIQUES DES 160 PROPOSITIONS D'UNIQUES RETENUES
+
+ÉTAT DU CATALOGUE
+130 propositions précédentes : 37 descriptions corrigées et 93 conservées textuellement.
+30 nouveaux uniques à déclenchement, 311 à 340 : 15 procs de dégâts et 15 procs de buff.
+Les textes avant correction sont archivés dans idees-130-avant-corrections.txt.
+Les règles précises figurent dans regles-uniques-propositions.txt.
+Ces fichiers sont des spécifications, pas des mécaniques déjà implémentées.
+
+CLASSES
+L'orientation est celle de l'effet et des compétences actuelles, sans autres objets
+transférant un milestone. Elle n'est pas une restriction d'équipement déjà codée.
+« Sort nommé » vise une compétence active précise. « Mécanique native » vise une capacité
+actuellement liée à une classe, par exemple le familier ou le milestone Starfall.
+Les 30 nouveaux procs sont multiclasses ; leurs conditions peuvent exiger un style de build.
+Les objets interclasses, dont l'Archive des Neuf Voies, ne sont pas réservés à leur classe source.
+
+Bilan : 39 orientés, 121 génériques/multiclasses, 0 à préciser.
+
+Classe | Sort nommé | Mécanique native | Total | Identifiants
+Guerrier | 4 | 0 | 4 | 042, 043, 044, 176
+Paladin | 1 | 1 | 2 | 052, 217
+Chasseur | 0 | 4 | 4 | 181, 185, 191, 198
+Voleur | 1 | 5 | 6 | 061, 063, 066, 221, 226, 229
+Prêtre | 2 | 1 | 3 | 071, 072, 280
+Chaman | 3 | 2 | 5 | 011, 013, 082, 086, 194
+Mage | 3 | 1 | 4 | 001, 017, 022, 026
+Démoniste | 4 | 1 | 5 | 224, 307, 308, 309, 310
+Druide | 5 | 1 | 6 | 088, 302, 303, 304, 305, 306
+Générique / multiclasses | — | — | 121 | voir le CSV
+À préciser | — | — | 0 | —
+TOTAL | 23 | 16 | 160 | 39 orientés + 121 génériques
+
+POINTS CLARIFIÉS PAR LES CORRECTIONS
+- 088 cible désormais Starfall/proc_starfall du druide, pas un sort « Météores » inexistant.
+  Il modifie le milestone s'il est déjà disponible, sans l'accorder à lui seul.
+- 086 est limité à lightning_bolt : c'est maintenant un objet orienté chaman, pas un changement
+  arbitraire d'Ouragan, des chaînes ou du bouclier de foudre.
+- Poison signifie Deadly Poison : proc_poison/deadly_poison, pas Morsure de serpent.
+- 017 concerne les zones persistantes de froid, actuellement Blizzard du mage.
+- 181, 185, 191 et 198 restent orientés chasseur par leurs conditions de familier/morsure/mêlée.
+- 217 reste orienté paladin par la combinaison native immunité + soin.
+- 280 vise les DoTs sacrés comme holy_fire, pas les ticks de zone de Consécration.
+- Les familles de DoT et le sens de soin actif sont maintenant explicités dans les règles.
+
+UNIQUE 301
+Un seul objet possède 81 variantes de milestone : 9 par classe, avec un poids identique proposé.
+Il est compté une fois parmi les génériques et dans AUTRES tant que son roll n'est pas fixé.
+Après tirage, sa variante utilise les tags du milestone ; ne pas compter cet objet dans tous
+les tags à la fois. Voir legendaire-301-milestones.txt.
+
+TAGS
+Classification manuelle de conception : formes, écoles et mécanismes visés ou créés.
+Les entrées et sorties d'une transformation peuvent être comptées toutes les deux.
+Un objet est compté une fois par tag, mais peut concerner plusieurs tags : la somme dépasse 160.
+Foudre compte aussi Nature. Mouvement inclut des conditions de déplacement, pas seulement F.
+DAMAGE est omis car trop général. Durée représente les effets périodiques, les réserves et les
+buffs temporaires ; cela ne garantit pas l'éligibilité de tous leurs bonus de durée actuels.
+AUTRES est employé quand aucun tag déterminant ne décrit l'effet. Aucun faux tag « critique »
+ou « familier » n'est créé. Les tags exacts d'exécution resteront à attribuer au câblage des objets.
+
+Tag | Objets | Part des 160 | Identifiants
+Durée [DURATION] | 71 | 44,4 % | 017, 024, 036, 043, 052, 057, 058, 063, 064, 065, 066, 069, 070, 072, 075, 082, 087, 094, 095, 098, 111, 142, 143, 147, 152, 185, 194, 217, 221, 222, 224, 226, 229, 230, 233, 234, 235, 236, 237, 238, 239, 240, 265, 273, 280, 302, 303, 305, 306, 307, 308, 309, 310, 314, 321, 323, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340
+Zone [AREA] | 69 | 43,1 % | 003, 006, 013, 017, 022, 024, 026, 042, 047, 050, 052, 056, 057, 058, 069, 071, 077, 082, 087, 088, 095, 097, 098, 115, 124, 126, 134, 141, 146, 148, 155, 159, 167, 168, 169, 170, 172, 175, 194, 198, 203, 213, 222, 230, 238, 240, 257, 265, 277, 281, 288, 300, 302, 303, 304, 305, 306, 307, 309, 310, 311, 313, 314, 318, 319, 320, 322, 324, 332
+Dégâts sur la durée [DOT] | 45 | 28,1 % | 024, 036, 043, 063, 064, 065, 066, 069, 070, 072, 075, 094, 095, 111, 142, 143, 147, 152, 185, 221, 222, 224, 226, 229, 230, 233, 234, 236, 237, 238, 239, 240, 265, 273, 280, 302, 303, 307, 308, 310, 313, 314, 323, 327, 334
+Mêlée [MELEE] | 33 | 20,6 % | 013, 029, 036, 043, 044, 046, 050, 061, 069, 081, 155, 163, 167, 168, 169, 170, 171, 172, 175, 176, 181, 203, 213, 229, 262, 266, 279, 288, 300, 304, 305, 324, 329
+Projectile [PROJECTILE] | 32 | 20,0 % | 001, 018, 026, 029, 044, 078, 086, 088, 091, 111, 115, 143, 160, 188, 194, 233, 236, 237, 263, 266, 288, 300, 302, 308, 310, 312, 316, 317, 321, 325, 326, 339
+Sort [SPELL] | 32 | 20,0 % | 001, 011, 013, 022, 026, 029, 052, 055, 071, 072, 082, 086, 087, 088, 091, 171, 194, 261, 262, 269, 273, 276, 280, 302, 303, 305, 306, 307, 308, 309, 310, 332
+Physique [PHYSICAL] | 30 | 18,8 % | 036, 042, 043, 044, 047, 056, 061, 065, 069, 081, 096, 143, 146, 148, 152, 154, 170, 176, 185, 191, 213, 222, 236, 240, 273, 304, 305, 311, 318, 321
+Attaque [ATTACK] | 25 | 15,6 % | 013, 029, 036, 042, 043, 044, 046, 047, 061, 065, 081, 086, 146, 176, 261, 262, 269, 273, 277, 279, 304, 305, 326, 329, 332
+Nature [NATURE] | 22 | 13,8 % | 011, 013, 027, 063, 066, 086, 087, 147, 151, 155, 194, 221, 226, 229, 276, 302, 303, 305, 306, 315, 316, 323
+Feu [FIRE] | 15 | 9,4 % | 001, 022, 024, 027, 082, 091, 094, 141, 142, 143, 194, 307, 309, 313, 324
+Soin [HEAL] | 15 | 9,4 % | 071, 077, 078, 087, 152, 194, 203, 207, 217, 220, 237, 305, 310, 331, 340
+Ombre [SHADOW] | 13 | 8,1 % | 070, 072, 097, 141, 159, 224, 237, 307, 308, 310, 314, 322, 325
+Froid [COLD] | 12 | 7,5 % | 017, 018, 027, 063, 095, 142, 146, 148, 151, 191, 273, 312
+Sacré [HOLY] | 12 | 7,5 % | 052, 055, 056, 058, 071, 077, 078, 147, 152, 262, 280, 319
+Garde / bouclier [GUARD] | 11 | 6,9 % | 058, 212, 217, 220, 310, 321, 327, 330, 335, 336, 340
+Mouvement [MOVEMENT] | 10 | 6,3 % | 061, 064, 082, 175, 224, 257, 322, 324, 330, 338
+Foudre [LIGHTNING] | 9 | 5,6 % | 011, 013, 027, 086, 151, 194, 276, 306, 315
+Utilitaire / contrôle [UTILITY] | 9 | 5,6 % | 155, 159, 191, 235, 236, 303, 306, 318, 337
+Arcane [ARCANE] | 7 | 4,4 % | 022, 026, 088, 154, 302, 317, 320
+Chaîne [CHAIN] | 7 | 4,4 % | 011, 013, 151, 276, 306, 315, 339
+Autres [AUTRES] | 6 | 3,8 % | 099, 283, 285, 286, 293, 301
+Totem [TOTEM] | 4 | 2,5 % | 082, 147, 194, 264
+Aura [AURA] | 2 | 1,3 % | 057, 309
+Piège [TRAP] | 1 | 0,6 % | 263
+
+LECTURE POUR L'ÉQUILIBRAGE
+Le druide et le voleur ont chacun 6 propositions orientées ; chaman et démoniste en ont 5.
+Les 30 nouveaux procs diversifient les déclencheurs : impact, critique, kill, expiration de DoT,
+blocage, absorption, mobilité, déplacement, alternance d'écoles et activation de compétences.
+Ces chiffres n'indiquent ni puissance réelle, ni poids de drop, ni compatibilité avec tout build.
+
+SOURCES
+Catalogue : idees-100-legendaires.txt.
+Affectations : stats-legendaires-detail.csv.
+Corrections : corrections-37-uniques.txt et regles-uniques-propositions.txt.
+Nouveaux effets : uniques-procs-311-340.txt.
+Code de référence : data.rs, spell_engine/tags.rs, talent_design.rs, talent_runtime.rs et procs.rs
+sous crates/benilla-app/src/survivors/.

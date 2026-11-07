@@ -22,20 +22,18 @@ type Build = [[u8; NODES]; 3];
 
 pub(super) struct Spec {
     pub name: &'static str,
-    pub focus: Stat,
     pub spells: &'static [&'static str],
     pub cap: &'static str,
 }
 macro_rules! spec {
-    ($name:literal, $stat:ident, $cap:literal, $($spell:literal),+) => {
-        Spec { name: $name, focus: Stat::$stat, cap: $cap, spells: &[$($spell),+] }
+    ($name:literal, $cap:literal, $($spell:literal),+) => {
+        Spec { name: $name, cap: $cap, spells: &[$($spell),+] }
     };
 }
 pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Arms",
-            Might,
             "mortal_strike",
             "cleave",
             "heroic_strike",
@@ -43,7 +41,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Fury",
-            Haste,
             "whirlwind",
             "whirlwind",
             "execute",
@@ -51,7 +48,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Protection",
-            Armor,
             "retaliation",
             "thunder_clap",
             "retaliation",
@@ -59,41 +55,25 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
     ],
     [
-        spec!(
-            "Holy",
-            Regen,
-            "holy_shock",
-            "holy_shock",
-            "holy_wrath",
-            "exorcism"
-        ),
+        spec!("Holy", "holy_shock", "holy_shock", "holy_wrath", "exorcism"),
         spec!(
             "Protection",
-            Armor,
             "divine_shield",
             "consecration",
             "divine_shield",
             "hammer_of_justice"
         ),
-        spec!(
-            "Retribution",
-            Might,
-            "judgement",
-            "judgement",
-            "hammer_of_wrath"
-        ),
+        spec!("Retribution", "judgement", "judgement", "hammer_of_wrath"),
     ],
     [
         spec!(
             "Beast Mastery",
-            Speed,
             "concussive_shot",
             "arcane_shot",
             "concussive_shot"
         ),
         spec!(
             "Marksmanship",
-            Crit,
             "aimed_shot",
             "aimed_shot",
             "multi_shot",
@@ -101,35 +81,26 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Survival",
-            MaxHp,
             "explosive_trap",
             "serpent_sting",
             "explosive_trap"
         ),
     ],
     [
-        spec!("Assassination", Crit, "eviscerate", "eviscerate", "rupture"),
-        spec!(
-            "Combat",
-            Haste,
-            "blade_flurry",
-            "sinister_strike",
-            "blade_flurry"
-        ),
-        spec!("Subtlety", Speed, "kidney_shot", "gouge", "kidney_shot"),
+        spec!("Assassination", "eviscerate", "eviscerate", "rupture"),
+        spec!("Combat", "blade_flurry", "sinister_strike", "blade_flurry"),
+        spec!("Subtlety", "kidney_shot", "gouge", "kidney_shot"),
     ],
     [
         spec!(
             "Discipline",
-            Armor,
             "power_word_shield",
             "smite",
             "power_word_shield"
         ),
-        spec!("Holy", Regen, "holy_nova", "holy_fire", "holy_nova"),
+        spec!("Holy", "holy_nova", "holy_fire", "holy_nova"),
         spec!(
             "Shadow",
-            Might,
             "mind_blast",
             "shadow_word_pain",
             "mind_blast",
@@ -139,7 +110,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Elemental",
-            Crit,
             "chain_lightning",
             "lightning_bolt",
             "chain_lightning",
@@ -147,31 +117,22 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Enhancement",
-            Haste,
             "lightning_shield",
             "earth_shock",
             "frost_shock",
             "lightning_shield"
         ),
-        spec!(
-            "Restoration",
-            Regen,
-            "magma_totem",
-            "searing_totem",
-            "magma_totem"
-        ),
+        spec!("Restoration", "magma_totem", "searing_totem", "magma_totem"),
     ],
     [
         spec!(
             "Arcane",
-            Haste,
             "arcane_explosion",
             "arcane_missiles",
             "arcane_explosion"
         ),
         spec!(
             "Fire",
-            Crit,
             "pyroblast",
             "fireball",
             "fire_blast",
@@ -181,7 +142,6 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Frost",
-            Armor,
             "blizzard",
             "frostbolt",
             "frost_nova",
@@ -192,16 +152,14 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Affliction",
-            Regen,
             "death_coil",
             "corruption",
             "curse_of_agony",
             "death_coil"
         ),
-        spec!("Demonology", MaxHp, "hellfire", "shadow_bolt", "hellfire"),
+        spec!("Demonology", "hellfire", "shadow_bolt", "hellfire"),
         spec!(
             "Destruction",
-            Crit,
             "shadowburn",
             "immolate",
             "rain_of_fire",
@@ -212,23 +170,15 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Balance",
-            Might,
             "starfire",
             "wrath",
             "moonfire",
             "starfire",
             "hurricane"
         ),
-        spec!(
-            "Feral Combat",
-            Speed,
-            "thorns",
-            "thorns",
-            "entangling_roots"
-        ),
+        spec!("Feral Combat", "thorns", "thorns", "entangling_roots"),
         spec!(
             "Restoration",
-            Regen,
             "rejuvenation",
             "rejuvenation",
             "insect_swarm"
@@ -252,7 +202,7 @@ pub(super) fn threshold(level: u32) -> u64 {
     50 * n * (n + 1)
 }
 pub(super) fn budget(xp: u64) -> u32 {
-    level(xp).saturating_sub(9)
+    level(xp).saturating_sub(1)
 }
 pub(super) fn max_rank(node: usize) -> u8 {
     if matches!(node, 8 | 12 | 18) {
@@ -344,8 +294,7 @@ impl Account {
         out.xp = values
             .next()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0)
-            .min(threshold(60));
+            .unwrap_or(0);
         // Version 4 refunds earlier layouts while preserving character experience.
         if version != Some("v4") {
             return out;
@@ -367,6 +316,10 @@ impl Account {
         out
     }
 
+    /// Lifetime XP includes post-60 paragon progression; character level and talent budget stay capped.
+    pub fn gain_xp(&mut self, gained: u64) {
+        self.xp = self.xp.saturating_add(gained);
+    }
     pub fn rank(&self, class: usize, tree: usize, node: usize) -> u8 {
         self.builds[class][tree][node]
     }
@@ -415,6 +368,7 @@ impl Account {
         }
     }
     pub fn apply(&self, class: usize, run: &mut Run) {
+        run.set_global_level(level(self.xp));
         run.talent_build = self.builds[class];
         super::talent_runtime::configure(run);
         for (tree, spec) in TREES[class].iter().enumerate() {
@@ -427,21 +381,7 @@ impl Account {
                 for change in super::talent_effects::effects(spec, node, rank) {
                     modifiers.push(super::spell_engine::Modifier {
                         source: 0,
-                        filter: super::spell_engine::Filter::requiring(
-                            if matches!(change, super::spell_engine::Change::BleedChance(_)) {
-                                let school = super::spell_engine::Tags::PHYSICAL;
-                                if super::talent_design::design(spec)
-                                    .filter
-                                    .contains(super::spell_engine::Tags::MELEE)
-                                {
-                                    school | super::spell_engine::Tags::MELEE
-                                } else {
-                                    school
-                                }
-                            } else {
-                                super::talent_design::design(spec).filter
-                            },
-                        ),
+                        filter: super::talent_effects::filter(spec, node, change),
                         change,
                     });
                 }
@@ -460,8 +400,8 @@ impl Account {
     }
 }
 
-pub(super) fn stat_effect(spec: &Spec, node: usize) -> (Stat, f32) {
-    super::talent_design::passive(spec, node)
+pub(super) fn stat_effect(spec: &Spec, node: usize) -> Option<(Stat, f32)> {
+    super::minor_talents::minor(spec, node).stat
 }
 pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
     let Some(class) = data::CLASSES.iter().position(|c| c.id == run.class.id) else {
@@ -469,13 +409,17 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
     };
     for (tree, spec) in TREES[class].iter().enumerate() {
         for node in 0..NODES {
-            if !super::talent_effects::character_stat(spec, node) {
+            let rank = run.talent_build[tree][node];
+            if rank == 0 || !super::talent_effects::character_stat(spec, node) {
                 continue;
             }
-            let rank = f32::from(run.talent_build[tree][node]);
-            let (stat, value) = stat_effect(spec, node);
-            let v = value * rank;
+            let Some((stat, value)) = stat_effect(spec, node) else {
+                continue;
+            };
+            let v = value * f32::from(rank);
             match stat {
+                Stat::AllResistance => stats.resistances.add_all(v),
+                Stat::DamageReduction => stats.damage_reduction += v,
                 Stat::Might => stats.might += v,
                 Stat::MaxHp => stats.max_hp *= 1.0 + v,
                 Stat::Speed => stats.speed *= 1.0 + v,
@@ -493,9 +437,21 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
 
 pub(in crate::survivors) fn earned(run: &Run) -> u64 {
     (run.elapsed.max(0.0) as u64 / 5)
-        + u64::from(run.kills)
+        + (u64::from(run.kills) * 1000).saturating_sub(run.meta_kill_penalty) / 1000
         + u64::from(run.bosses) * 100
         + if run.won { 500 } else { 0 }
+}
+
+/// Keep full meta kill XP within nine levels; retain fractional rewards across kills.
+pub(super) fn penalize_kill(run: &mut Run, monster_level: u32) {
+    let retained = match run.meta_level.abs_diff(monster_level) {
+        0..=9 => 1000,
+        10 => 100,
+        11 => 50,
+        12 => 25,
+        _ => 10,
+    };
+    run.meta_kill_penalty += 1000 - retained;
 }
 pub(super) fn prepare(
     account: Res<Account>,
@@ -523,7 +479,8 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
         return;
     }
     run.account_credited = total;
-    account.xp = account.xp.saturating_add(gained).min(threshold(60));
+    account.gain_xp(gained);
+    run.set_global_level(level(account.xp));
     account.last_reward = total;
     account.save();
 }
@@ -531,6 +488,24 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn post_cap_xp_survives_save_loading_without_extra_talent_points_or_character_levels() {
+        let cap = threshold(60);
+        let mut account = Account::from_save(&format!("v4 {}", cap - 25));
+        account.gain_xp(150);
+        assert_eq!(account.xp, cap + 125);
+        assert_eq!(super::super::paragon::progress(account.xp).level, 1);
+        assert_eq!(super::super::paragon::progress(account.xp).xp, 25);
+        let restored = Account::from_save(&format!("v4 {}", account.xp));
+        assert_eq!(restored.xp, account.xp);
+        assert_eq!(restored.available(0), 59);
+        let mut run = Run::default();
+        restored.apply(0, &mut run);
+        assert_eq!(run.meta_level, 60);
+        account.gain_xp(u64::MAX);
+        assert_eq!(account.xp, u64::MAX);
+        assert_eq!(account.available(0), 59);
+    }
     #[test]
     fn ignite_accepts_every_fire_tagged_damage_spell_including_attacks_and_hidden_spells() {
         let mut account = Account::fresh();
@@ -604,11 +579,53 @@ mod tests {
         }
     }
     #[test]
-    fn levels_and_budget_have_classic_limits() {
+    fn talents_start_at_level_two_and_reach_fifty_nine_points() {
         assert_eq!(level(0), 1);
-        assert_eq!(budget(threshold(9)), 0);
-        assert_eq!(budget(threshold(10)), 1);
-        assert_eq!(budget(u64::MAX), 51);
+        assert_eq!(budget(0), 0);
+        assert_eq!(budget(threshold(2)), 1);
+        assert_eq!(budget(threshold(9)), 8);
+        assert_eq!(budget(threshold(10)), 9);
+        assert_eq!(budget(u64::MAX), 59);
+        let mut a = Account::fresh();
+        assert!(!a.buy(0, 0, 0));
+        a.xp = threshold(2);
+        assert!(a.buy(0, 0, 0));
+        assert_eq!(a.available(0), 0);
+        assert!(!a.buy(0, 0, 1));
+    }
+    #[test]
+    fn meta_kill_xp_penalty_uses_monster_gap_in_both_directions() {
+        for (gap, expected) in [(9, 1000), (10, 100), (11, 50), (12, 25), (13, 10), (25, 10)] {
+            for monster_level in [30 - gap, 30 + gap] {
+                let mut run = Run {
+                    meta_level: 30,
+                    level: 100,
+                    ..Run::default()
+                };
+                for _ in 0..1000 {
+                    run.kills += 1;
+                    penalize_kill(&mut run, monster_level);
+                }
+                assert_eq!(earned(&run), expected, "monster level {monster_level}");
+            }
+        }
+    }
+
+    #[test]
+    fn meta_kill_penalties_preserve_previous_rewards_when_the_level_changes() {
+        let mut run = Run {
+            meta_level: 20,
+            ..Run::default()
+        };
+        for _ in 0..10 {
+            run.kills += 1;
+            penalize_kill(&mut run, 10);
+        }
+        assert_eq!(earned(&run), 1);
+        run.meta_level = 19;
+        run.kills += 1;
+        penalize_kill(&mut run, 10);
+        assert_eq!(earned(&run), 2);
     }
     #[test]
     fn ranks_prerequisites_and_shared_tree_budget_are_enforced() {
@@ -619,10 +636,10 @@ mod tests {
         }
         assert!(!a.buy(0, 0, 0));
         assert!(a.buy(0, 0, 3));
-        assert_eq!(a.available(0), 45);
-        assert_eq!(a.available(1), 51);
+        assert_eq!(a.available(0), 53);
+        assert_eq!(a.available(1), 59);
         a.reset(0);
-        assert_eq!(a.available(0), 51);
+        assert_eq!(a.available(0), 59);
     }
     #[test]
     fn every_capstone_is_an_existing_class_ability() {
@@ -665,10 +682,20 @@ mod tests {
             class: &data::CLASSES[6],
             ..Run::default()
         };
+        run.set_global_level(level(a.xp));
         let baseline = run.stats();
+        let fire_before = run.resolve_spell(data::ability("fireball"), 1);
+        let cold_before = run.resolve_spell(data::ability("frostbolt"), 1);
         a.apply(6, &mut run);
-        assert!((run.stats().might - baseline.might - 0.25).abs() < 0.001);
-        assert!((run.stats().crit - baseline.crit - 0.10).abs() < 0.001);
+        assert_eq!(run.stats().might, baseline.might);
+        assert_eq!(run.stats().crit, baseline.crit);
+        let fire = run.resolve_spell(data::ability("fireball"), 1);
+        let cold = run.resolve_spell(data::ability("frostbolt"), 1);
+        let fire_increase = 0.2 / (1.0 + baseline.level_damage);
+        assert!((fire.dmg - fire_before.dmg * (1.0 + fire_increase)).abs() < 0.001);
+        assert!((fire.crit - fire_before.crit - 0.05).abs() < 0.001);
+        assert_eq!(cold.dmg, cold_before.dmg);
+        assert_eq!(cold.crit, cold_before.crit);
         assert!(a.buy(6, 1, 8));
         a.apply(6, &mut run);
         let entries = run.spell_modifiers.entries();
@@ -682,6 +709,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn applying_persistent_character_levels_grants_stats_once_and_preserves_missing_health() {
+        let mut account = Account::fresh();
+        account.xp = threshold(10);
+        let mut run = Run {
+            hp: 50.0,
+            ..Run::default()
+        };
+        let baseline = run.stats().max_hp;
+        account.apply(0, &mut run);
+        assert_eq!(run.meta_level, 10);
+        assert_eq!(run.stats().max_hp, baseline + 90.0);
+        assert_eq!(run.hp, 140.0);
+        assert!((run.stats().level_damage - 0.45).abs() < 0.0001);
+        account.apply(0, &mut run);
+        assert_eq!(run.hp, 140.0);
+        assert_eq!(run.stats().max_hp, baseline + 90.0);
+    }
     #[test]
     fn health_and_armour_talents_scale_with_equipment_and_reset_without_flat_bonuses() {
         let mut run = Run {
@@ -743,7 +788,7 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(a.available(0), 20);
+        assert_eq!(a.available(0), 28);
     }
 
     #[test]
@@ -753,13 +798,13 @@ mod tests {
         let refunded = Account::from_save(&old);
         assert_eq!(refunded.xp, xp);
         for class in 0..CLASSES {
-            assert_eq!(refunded.available(class), 51);
+            assert_eq!(refunded.available(class), 59);
         }
         let old_v2 = Account::from_save(&format!("v2 {xp} 5 5"));
         assert_eq!(old_v2.xp, xp);
-        assert_eq!(old_v2.available(0), 51);
+        assert_eq!(old_v2.available(0), 59);
         let current = Account::from_save(&format!("v4 {xp} 5 5"));
-        assert_eq!(current.available(0), 41);
+        assert_eq!(current.available(0), 49);
         assert_eq!(current.rank(0, 0, 0), 5);
         assert_eq!(current.rank(0, 0, 1), 5);
     }

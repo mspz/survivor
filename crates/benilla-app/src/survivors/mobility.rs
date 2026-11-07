@@ -197,6 +197,7 @@ impl Run {
 /// `F`: cast the mobility if it is learned and ready; ticks the cooldown and the running effect.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn cast_mobility(
+    mut commands: Commands,
     time: Res<Time>,
     input: Res<super::session::ServerInput>,
     session: Res<super::session::LocalSession>,
@@ -207,6 +208,7 @@ pub(super) fn cast_mobility(
     mut enemies: Query<(Entity, &Transform, &mut Enemy), Without<Hero>>,
     selection: Res<super::Selection>,
     mut fx: Fx,
+    role: Option<Res<super::multiplayer::Role>>,
 ) {
     let command = input.for_client(session.id());
     let dt = time.delta_secs();
@@ -214,7 +216,12 @@ pub(super) fn cast_mobility(
     m.cd = (m.cd - dt).max(0.0);
     m.haste_t = (m.haste_t - dt).max(0.0);
     m.vanish_t = (m.vanish_t - dt).max(0.0);
-    if *phase.get() != Phase::Playing || run.dead_t.is_some() || !command.mobility {
+    if !super::multiplayer::runs_in(*phase.get(), role.as_deref().copied().unwrap_or_default())
+        || selection.in_hub
+        || run.dead_t.is_some()
+        || run.pending_levels > 0
+        || !command.mobility
+    {
         return;
     }
     let Some(def) = run.mobility() else { return };
@@ -294,12 +301,33 @@ pub(super) fn cast_mobility(
         }
         Move::Scatter(_) => {
             fx.cast(me, def.spell, &[me], None);
-            for (_, t, mut en) in &mut enemies {
-                if !en.dead && !en.boss && hero::reach(pos, t.translation) <= p.radius {
-                    en.fear_t = en.fear_t.max(p.duration);
+            for (entity, t, mut en) in &mut enemies {
+                if !en.dead && hero::reach(pos, t.translation) <= p.radius {
+                    if run.legendary.has(159) {
+                        if en.boss {
+                            super::items::legendary::effects::fear_boss(
+                                &mut run,
+                                entity,
+                                t.translation,
+                            );
+                        } else if run.legendary.effects.allies.len() > 1 {
+                            commands
+                                .entity(entity)
+                                .insert(super::talent_runtime::Taunted {
+                                    owner: run.owner,
+                                    until: run.elapsed + p.duration,
+                                });
+                        } else {
+                            en.slow = en.slow.min(0.5);
+                            en.slow_t = en.slow_t.max(p.duration);
+                        }
+                    } else if !en.boss {
+                        en.fear_t = en.fear_t.max(p.duration);
+                    }
                 }
             }
         }
     }
     run.mobile.cd = p.cooldown;
+    super::items::legendary::events::mobility(&mut run, tf.translation);
 }

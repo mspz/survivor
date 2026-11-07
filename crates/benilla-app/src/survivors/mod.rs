@@ -5,36 +5,56 @@
 //! off ([`crate::run_mode::CaptureMode`]).
 
 mod abilities;
+mod arcane_repeats;
 mod auto;
 mod balance;
+mod boss_spells;
 mod cards;
 mod characters;
 mod client;
 mod combat_ui;
+mod currency;
 mod data;
 mod enemies;
+mod enemy_visuals;
 mod expedition_config;
+mod extra_spells;
 mod fill;
 mod forms;
+mod gambling;
+mod codex;
+mod player_auras;
 mod grade;
+mod healer_buffs;
+mod healing;
 mod hero;
 mod hub_ground;
 mod hud;
 mod items;
+mod level_stats;
 mod menu;
 mod minimap;
+mod minor_talents;
 mod mobility;
 mod multiplayer;
 mod options;
 mod passives;
+mod paragon;
 mod procs;
 mod progression;
+mod ranged_enemies;
+mod resistances;
+mod revival;
 mod reward_config;
 mod runes;
 mod server;
 mod session;
+mod shared_chest;
+mod specialization;
+mod special_mobs;
 mod spell_engine;
 mod starter_spells;
+mod support_spells;
 mod talent_design;
 mod talent_effects;
 mod talent_runtime;
@@ -112,6 +132,8 @@ pub(super) struct Selection {
     pub sheet_open: bool,
     pub bags_open: bool,
     pub ui_captured: bool,
+    /// Non-modal panels consume camera/mouse gestures while keyboard movement continues.
+    pub pointer_captured: bool,
     pub in_hub: bool,
     talents_open: bool,
     progress: progression::Progress,

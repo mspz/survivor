@@ -6,7 +6,7 @@ use benilla_protocol::messages::{ObjectFields, ObjectType};
 pub(super) const CAT_DISPLAY: u32 = 892;
 
 pub(super) fn cat(run: &Run) -> bool {
-    run.class.id == 11 && run.talent_build[1][8] > 0
+    run.class.id == 11 && run.talent_build[1][8] > 0 || run.legendary.grants.iter().any(|g|g.option==75)
 }
 
 #[cfg(test)]

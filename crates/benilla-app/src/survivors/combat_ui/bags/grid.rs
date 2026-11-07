@@ -115,6 +115,35 @@ pub(super) fn panel(
             action(footer, font, ">", Action::Page(1));
         }
     });
+    let (gold, silver, copper) = super::super::super::currency::split(inventory.money());
+    ui.spawn(Node {
+        width: Val::Percent(100.0),
+        height: Val::Px(18.0),
+        flex_shrink: 0.0,
+        justify_content: JustifyContent::FlexEnd,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(3.0),
+        ..default()
+    })
+    .with_children(|money| {
+        // MoneyFrame.xml: gold, silver and copper occupy successive quarters of this atlas.
+        for (amount, coords) in [
+            (gold, [0.0, 0.25, 0.0, 1.0]),
+            (silver, [0.25, 0.5, 0.0, 1.0]),
+            (copper, [0.5, 0.75, 0.0, 1.0]),
+        ] {
+            money.spawn(text(font, amount.to_string(), 12.0, Color::WHITE));
+            money.spawn((
+                ImageNode::default(),
+                hud::UiArt::crop("Interface\\MoneyFrame\\UI-MoneyIcons", coords),
+                Node {
+                    width: Val::Px(16.0),
+                    height: Val::Px(16.0),
+                    ..default()
+                },
+            ));
+        }
+    });
     if !inventory.notice.is_empty() {
         ui.spawn(text(
             font,

@@ -410,7 +410,7 @@ pub(super) struct Runes {
     pub revision: u64,
     /// The result of the last action, shown on the panel.
     pub message: String,
-    /// The panel is open in Stormwind (R).
+    /// The panel is open in the hub (R).
     pub open: bool,
     /// The save could not be read: changes are refused so it is not overwritten.
     pub blocked: bool,

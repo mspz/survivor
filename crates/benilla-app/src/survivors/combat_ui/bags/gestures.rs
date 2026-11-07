@@ -37,6 +37,7 @@ pub(super) fn plugin(app: &mut App) {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn input(
     mut state: ResMut<DragState>,
+    chest: Option<Res<crate::survivors::shared_chest::View>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     scale: Option<Res<UiScale>>,
@@ -49,6 +50,10 @@ pub(super) fn input(
     targets: Query<(&Interaction, &DropTarget, &RelativeCursorPosition)>,
 ) {
     state.suppress_click = false;
+    if chest.as_ref().is_some_and(|v| v.open) {
+        state.press = None;
+        return;
+    }
     let cursor = windows
         .single()
         .ok()
@@ -203,6 +208,8 @@ mod tests {
     use super::*;
     fn app() -> (App, Entity, Entity, Entity) {
         let item = Item {
+            affix_rules: 0,
+            legendary: None,
             base_damage: None,
             base_armour: None,
             appearance: None,

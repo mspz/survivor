@@ -1,4 +1,4 @@
-//! Offline character roster, character-scoped progression and the Stormwind sanctuary.
+//! Offline character roster, character-scoped progression and the hub sanctuary.
 use super::{data, hero, hud, progression, talents, Owned, Phase, Run, Selection};
 use bevy::{input::keyboard::KeyboardInput, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -96,7 +96,6 @@ impl Roster {
                 || !(1..=8).contains(&c.race)
                 || c.sex > 1
                 || c.display == 0
-                || c.xp > talents::threshold(60)
                 || ids.contains(&c.id)
                 || names.contains(&c.name.to_lowercase())
             {
@@ -105,7 +104,7 @@ impl Roster {
             ids.push(c.id);
             names.push(c.name.to_lowercase());
             if is_test_character(&c.name) {
-                c.xp = talents::threshold(60);
+                c.xp = c.xp.max(talents::threshold(60));
             }
         }
         Ok(save)
@@ -238,6 +237,19 @@ fn valid_name(name: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn roster_preserves_paragon_xp_for_normal_and_test_characters_independently() {
+        let mut roster = roster();
+        let xp = talents::threshold(60) + 125;
+        roster.save.characters[0].xp = xp;
+        roster.save.characters[0].name = "TEST_Paragon".into();
+        let loaded = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(loaded.characters[0].xp, xp);
+        assert_eq!(loaded.characters[1].xp, 0);
+        roster.save.characters[0].name = "Arthas".into();
+        let loaded = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(loaded.characters[0].xp, xp);
+    }
+    #[test]
     fn test_prefix_is_typable_and_grants_level_sixty_and_the_private_expedition() {
         let mut roster = roster();
         assert!(valid_name("TEST_Warrior"));
@@ -251,7 +263,7 @@ mod tests {
         let mut account = talents::Account::fresh();
         activate_selected(&mut roster, &mut selection, &mut account).unwrap();
         assert_eq!(talents::level(account.xp), 60);
-        assert_eq!(account.available(0), 51);
+        assert_eq!(account.available(0), 59);
         assert!(selection.allows_map(data::TRAINING_MAP));
         assert!(data::CAMPAIGN.iter().all(|&map| selection.allows_map(map)));
         assert!(!selection.allows_map(data::MAPS.len()));
@@ -377,7 +389,7 @@ mod tests {
         app.update();
     }
     #[test]
-    fn entering_world_starts_in_stormwind_then_expeditions_return_to_the_same_character() {
+    fn entering_world_starts_in_hub_then_expeditions_return_to_the_same_character() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
             .init_state::<Phase>()
@@ -408,10 +420,7 @@ mod tests {
             app.world().resource::<talents::Account>().character,
             Some(1)
         );
-        assert_eq!(
-            app.world().resource::<Selection>().stage_def().name,
-            "Stormwind City"
-        );
+        assert_eq!(app.world().resource::<Selection>().stage_def().name, "Hub");
         assert_eq!(app.world().resource::<Run>().elapsed, 0.0);
         let offset = hero::arena(&data::HUB) + Vec3::X * 10.0;
         {
@@ -475,7 +484,10 @@ mod tests {
                 ..default()
             })
             .init_resource::<talents::Account>()
-            .insert_resource(expeditions::View { scroll: 171.0 })
+            .insert_resource(expeditions::View {
+                scroll: 171.0,
+                ..default()
+            })
             .insert_resource(hud::HudFont(Handle::default()))
             .add_systems(Update, (render, expeditions::hover).chain());
         app.world_mut()
@@ -634,6 +646,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(Startup, boot)
         .add_systems(Update, scroll.before(input))
         .add_systems(Update, expeditions::hover.after(render))
+        .add_systems(Update, expeditions::toggle.before(render).after(input))
         .add_systems(Update, frontend::spell_hover.after(render))
         .add_systems(
             Update,
@@ -701,7 +714,6 @@ pub(super) enum Click {
     Expeditions,
     Map(usize),
     Launch,
-    Talents,
     Runes,
     Logout,
     Back,
@@ -914,8 +926,12 @@ pub(super) fn input(
                 }
                 next.set(Phase::Hub);
             }
-            Click::Expeditions if *phase.get() == Phase::Hub => {
+            Click::Expeditions
+                if selection.in_hub
+                    && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet) =>
+            {
                 selection.sheet_open = false;
+                selection.bags_open = false;
                 roster.expeditions = !roster.expeditions;
                 selection.talents_open = false;
             }
@@ -930,12 +946,12 @@ pub(super) fn input(
                     next.set(Phase::Playing);
                 }
             }
-            Click::Talents if *phase.get() == Phase::Hub => {
+            Click::Runes
+                if selection.in_hub
+                    && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet) =>
+            {
                 selection.sheet_open = false;
-                selection.talents_open = !selection.talents_open;
-                roster.expeditions = false;
-            }
-            Click::Runes if *phase.get() == Phase::Hub => {
+                selection.bags_open = false;
                 if let Some(runes) = runes.as_deref_mut() {
                     runes.open = !runes.open;
                     if !runes.open {
@@ -950,7 +966,10 @@ pub(super) fn input(
                     rig.orbit += delta;
                 }
             }
-            Click::Logout if *phase.get() == Phase::Hub => {
+            Click::Logout
+                if selection.in_hub
+                    && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet) =>
+            {
                 account.save();
                 roster.active = None;
                 roster.creating = false;
@@ -958,7 +977,12 @@ pub(super) fn input(
                 selection.talents_open = false;
                 next.set(Phase::Menu);
             }
-            Click::Options if *phase.get() == Phase::Hub => {
+            Click::Options
+                if matches!(
+                    *phase.get(),
+                    Phase::Hub | Phase::Playing | Phase::CharacterSheet
+                ) =>
+            {
                 next.set(Phase::Paused);
             }
             _ => {}
@@ -977,7 +1001,7 @@ pub(super) fn activate_selected(
         .ok_or("Choisissez ou créez un personnage.")?;
     *account = talents::Account::load_character(c.id);
     account.xp = account.xp.max(if is_test_character(&c.name) {
-        talents::threshold(60)
+        c.xp.max(talents::threshold(60))
     } else {
         c.xp
     });
@@ -1111,6 +1135,7 @@ pub(super) fn render(
         spells.is_some(),
         art.as_ref().is_some_and(|a| a.select_highlight.is_some())
     );
+    let stamp = format!("{stamp} {:?}", expeditions.as_ref().map(|view| view.open));
     if *cache == stamp {
         return;
     }
@@ -1150,52 +1175,6 @@ pub(super) fn render(
     if *phase.get() != Phase::Hub {
         return;
     }
-    let name = roster.current().map_or("Adventurer", |c| c.name.as_str());
-    commands
-        .spawn((
-            Root,
-            GlobalZIndex(435),
-            BackgroundColor(Color::srgba(0.025, 0.02, 0.02, 0.92)),
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(14.0),
-                left: Val::Percent(22.0),
-                padding: UiRect::all(Val::Px(10.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                ..default()
-            },
-        ))
-        .with_children(|ui| {
-            skin::backdrop(ui);
-            ui.spawn(label(
-                f,
-                format!(
-                    "Stormwind City | {name} | Level {} | {} talent points",
-                    talents::level(account.xp),
-                    selection.class.map_or(0, |c| account.available(c))
-                ),
-                19.0,
-                hud::GOLD_TONE,
-            ));
-            ui.spawn(Node {
-                column_gap: Val::Px(8.0),
-                ..default()
-            })
-            .with_children(|bar| {
-                button(
-                    bar,
-                    f,
-                    Click::Expeditions,
-                    "Expeditions",
-                    roster.expeditions,
-                );
-                button(bar, f, Click::Talents, "Talents", selection.talents_open);
-                button(bar, f, Click::Runes, "Runes [R]", false);
-                button(bar, f, Click::Options, "Game menu [Esc]", false);
-                button(bar, f, Click::Logout, "Log out", false);
-            });
-        });
     if !roster.expeditions {
         return;
     }
@@ -1205,5 +1184,8 @@ pub(super) fn render(
         &selection,
         viewport,
         expeditions.as_ref().map_or(0.0, |v| v.scroll),
+        expeditions
+            .as_ref()
+            .map_or([true, false, false], |v| v.open),
     );
 }

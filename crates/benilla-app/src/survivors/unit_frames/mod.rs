@@ -6,9 +6,14 @@ use super::{
 use crate::net::ObjectStore;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+mod debuff_tooltip;
+mod party;
 mod picking;
 mod portraits;
 mod ui;
+
+#[derive(Component)]
+pub(in crate::survivors) struct PartyPlayer;
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize)]
 pub(in crate::survivors) struct Status {
@@ -32,6 +37,10 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(Startup, ui::setup.after(hud::setup_hud))
         .add_systems(
             Update,
+            party::refresh.after(sync_status).after(hud::show_panels),
+        )
+        .add_systems(
+            Update,
             sync_status
                 .after(super::hero::hero_vitals)
                 .run_if(multiplayer::authoritative),
@@ -46,7 +55,8 @@ pub(super) fn plugin(app: &mut App) {
                 .after(sync_status)
                 .after(picking::click)
                 .after(hud::show_panels),
-        );
+        )
+        .add_systems(Update, debuff_tooltip::show.after(ui::refresh));
 }
 
 fn add_debuff(debuffs: &mut Vec<(u32, f32)>, spell: u32, seconds: f32) {
@@ -96,7 +106,7 @@ pub(in crate::survivors) fn sync_status(
         };
         let mut status = if let Some(enemy) = enemy {
             Status {
-                name: enemy.def.name.into(),
+                name: label.map_or_else(|| enemy.def.name.into(), |l| l.0.clone()),
                 health: enemy.hp.max(0.0),
                 maximum: enemy.max_hp,
                 level: enemy.def.level,
@@ -162,6 +172,9 @@ pub(in crate::survivors) fn sync_status(
             add_debuff(&mut status.debuffs, 355, taunt.until - run.elapsed);
         }
         commands.entity(entity).insert(status);
+        if hero.is_some() || owner.is_some() {
+            commands.entity(entity).insert(PartyPlayer);
+        }
     }
 }
 
@@ -195,7 +208,14 @@ mod tests {
         world.run_system_once(sync_status).unwrap();
         let status = world.get::<Status>(entity).unwrap();
         assert_eq!(status.health, 17.0);
-        assert_eq!(status.maximum, 48.0);
+        assert_eq!(
+            status.maximum,
+            world
+                .resource::<Run>()
+                .expeditions
+                .stats(data::CAMPAIGN[0], false)
+                .0
+        );
         assert!(!status.friendly);
         assert_eq!(status.debuffs, vec![(589, 4.0), (116, 2.0)]);
         world.get_mut::<Enemy>(entity).unwrap().slow_t = 0.0;

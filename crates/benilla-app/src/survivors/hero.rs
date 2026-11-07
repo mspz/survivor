@@ -202,93 +202,117 @@ pub(super) fn aim_cursor(
     }
 }
 
+/// Identical movement rules for authoritative simulation and guest prediction.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn step_motion(
+    tf: &mut Transform,
+    mv: &mut MovementState,
+    hm: &mut Hero,
+    command: super::session::Command,
+    dt: f32,
+    speed: f32,
+    map: &data::MapDef,
+    ground_at: impl Fn(Vec3) -> Option<f32>,
+) {
+    let interactive = command.active;
+    if let Some(facing) = command.facing {
+        tf.rotation = Quat::from_rotation_y(yaw_toward(facing));
+    } else {
+        tf.rotate_y(command.turn * 2.5 * dt);
+    }
+    let forward = tf.rotation * Vec3::NEG_Z;
+    let dir =
+        command.direction + forward * command.axes.y + forward.cross(Vec3::Y) * command.axes.x;
+    let mut pos = tf.translation;
+    let face = (!command.automatic).then_some(forward);
+    if let Some(look) = face {
+        let target = Quat::from_rotation_y(yaw_toward(look));
+        tf.rotation = target;
+    }
+    if dir != Vec3::ZERO && dt > 0.0 {
+        let dir = dir.normalize();
+        pos += dir * speed * dt;
+        mv.speed = speed;
+        mv.flags = match face {
+            Some(look) => gait(look, dir),
+            None => {
+                let target = Quat::from_rotation_y(yaw_toward(dir));
+                tf.rotation = tf.rotation.slerp(target, (dt * 20.0).min(1.0));
+                move_flags::FORWARD
+            }
+        };
+    } else if mv.speed != 0.0 || mv.flags != 0 {
+        mv.speed = 0.0;
+        mv.flags = 0;
+    }
+
+    let center = arena(map);
+    let off = flat(pos - center);
+    if off.length() > map.leash * 2.0 {
+        // Just entered another battleground: start at its centre.
+        pos = center;
+    } else if off.length() > map.leash {
+        let held = center + off.normalize() * map.leash;
+        pos.x = held.x;
+        pos.z = held.z;
+    }
+    let ground = ground_at(pos).unwrap_or(pos.y - hm.air);
+    let playing = interactive;
+    // Space hops: lift off the terrain, then gravity brings the hero back down.
+    if playing && command.jump && hm.vy == 0.0 && hm.air == 0.0 {
+        hm.vy = JUMP_SPEED;
+    }
+    if hm.vy != 0.0 || hm.air > 0.0 {
+        hm.vy -= GRAVITY * dt;
+        hm.air += hm.vy * dt;
+        if hm.air <= 0.0 {
+            hm.air = 0.0;
+            hm.vy = 0.0;
+        }
+    } else {
+        hm.air = 0.0;
+        hm.vy = 0.0;
+    }
+    pos.y = ground + hm.air;
+    // Feed the animation driver: `vertical_speed`'s sign and the `FALLING` flag are what
+    // select the Jump (37/38) / Fall (40) animation (`creature_anim::select`).
+    mv.vertical_speed = hm.vy;
+    if hm.vy != 0.0 {
+        mv.flags |= move_flags::FALLING;
+    }
+    tf.translation = pos;
+}
+
 /// WASD over the terrain within the battleground's leash, and the streaming focus on the hero.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drive_hero(
     time: Res<Time>,
     input: Res<super::session::ServerInput>,
     session: Res<super::session::LocalSession>,
-    run: Res<Run>,
+    mut run: ResMut<Run>,
     selection: Res<Selection>,
     world: WorldPoint,
     mut player: ResMut<crate::player::Player>,
     mut hero: Query<(&mut Transform, &mut MovementState, &mut Hero)>,
 ) {
     let command = input.for_client(session.id());
-    let interactive = command.active;
     let focus = match hero.single_mut() {
         Ok((mut tf, mut mv, mut hm)) => {
             let dt = time.delta_secs();
-            if let Some(facing) = command.facing {
-                tf.rotation = Quat::from_rotation_y(yaw_toward(facing));
-            } else {
-                tf.rotate_y(command.turn * 2.5 * dt);
-            }
-            let forward = tf.rotation * Vec3::NEG_Z;
-            let dir = command.direction
-                + forward * command.axes.y
-                + forward.cross(Vec3::Y) * command.axes.x;
-            let mut pos = tf.translation;
-            let face = (!command.automatic).then_some(forward);
-            if let Some(look) = face {
-                let target = Quat::from_rotation_y(yaw_toward(look));
-                tf.rotation = target;
-            }
-            if dir != Vec3::ZERO && dt > 0.0 {
-                let dir = dir.normalize();
-                let speed = run.stats().speed * run.haste_mult();
-                pos += dir * speed * dt;
-                mv.speed = speed;
-                mv.flags = match face {
-                    Some(look) => gait(look, dir),
-                    None => {
-                        let target = Quat::from_rotation_y(yaw_toward(dir));
-                        tf.rotation = tf.rotation.slerp(target, (dt * 20.0).min(1.0));
-                        move_flags::FORWARD
-                    }
-                };
-            } else if mv.speed != 0.0 || mv.flags != 0 {
-                mv.speed = 0.0;
-                mv.flags = 0;
-            }
-            let map = selection.stage_def();
-            let center = arena(map);
-            let off = flat(pos - center);
-            if off.length() > map.leash * 2.0 {
-                // Just entered another battleground: start at its centre.
-                pos = center;
-            } else if off.length() > map.leash {
-                let held = center + off.normalize() * map.leash;
-                pos.x = held.x;
-                pos.z = held.z;
-            }
-            let ground = world.terrain_height_under(pos).unwrap_or(pos.y);
-            let playing = interactive && run.dead_t.is_none();
-            // Space hops: lift off the terrain, then gravity brings the hero back down.
-            if playing && command.jump && hm.vy == 0.0 && hm.air == 0.0 {
-                hm.vy = JUMP_SPEED;
-            }
-            if playing && (hm.vy != 0.0 || hm.air > 0.0) {
-                hm.vy -= GRAVITY * dt;
-                hm.air += hm.vy * dt;
-                if hm.air <= 0.0 {
-                    hm.air = 0.0;
-                    hm.vy = 0.0;
-                }
-            } else {
-                hm.air = 0.0;
-                hm.vy = 0.0;
-            }
-            pos.y = ground + hm.air;
-            // Feed the animation driver: `vertical_speed`'s sign and the `FALLING` flag are what
-            // select the Jump (37/38) / Fall (40) animation (`creature_anim::select`).
-            mv.vertical_speed = hm.vy;
-            if hm.vy != 0.0 {
-                mv.flags |= move_flags::FALLING;
-            }
-            if tf.translation != pos {
-                tf.translation = pos;
-            }
+            let before = tf.translation;
+            let speed = run.stats().speed * run.haste_mult();
+            step_motion(
+                &mut tf,
+                &mut mv,
+                &mut hm,
+                command,
+                dt,
+                speed,
+                selection.stage_def(),
+                |p| world.terrain_height_under(p),
+            );
+            let pos = tf.translation;
+            super::items::legendary::events::walk(&mut run, before, pos, dt);
             pos
         }
         Err(_) => {
@@ -347,6 +371,7 @@ pub(super) fn place_camera(
         && !selection.sheet_open
         && !selection.bags_open
         && !selection.ui_captured
+        && !selection.pointer_captured
         && !roster.expeditions;
     // With no hero yet, the focus `drive_hero` grounded.
     let focus = hero.single().map_or(player.pos, |t| t.translation);
@@ -360,7 +385,8 @@ pub(super) fn place_camera(
             MouseScrollUnit::Line => w.y,
             MouseScrollUnit::Pixel => w.y * 0.02,
         };
-        rig.dist = (rig.dist * (1.0 - 0.12 * notches).clamp(0.5, 1.5)).clamp(ZOOM_MIN, ZOOM_MAX);
+        rig.dist = (rig.dist * (1.0 - 0.12 * notches * settings.zoom_speed).clamp(0.5, 1.5))
+            .clamp(ZOOM_MIN, ZOOM_MAX);
     }
     let (eye, look) = if *phase.get() == Phase::Menu {
         let angle = std::f32::consts::PI + rig.orbit;
@@ -372,9 +398,16 @@ pub(super) fn place_camera(
     } else {
         // Unlocked, either mouse button drags the camera around the hero, as in WoW.
         if interactive && mouse.any_pressed([MouseButton::Left, MouseButton::Right]) {
-            rig.yaw -= motion.delta.x * ORBIT_RATE * rig.sensitivity;
-            rig.pitch = (rig.pitch + motion.delta.y * ORBIT_RATE * rig.sensitivity)
-                .clamp(PITCH_MIN, PITCH_MAX);
+            rig.yaw -= motion.delta.x
+                * ORBIT_RATE
+                * rig.sensitivity
+                * if settings.invert_x { -1.0 } else { 1.0 };
+            rig.pitch = (rig.pitch
+                + motion.delta.y
+                    * ORBIT_RATE
+                    * rig.sensitivity
+                    * if settings.invert_y { -1.0 } else { 1.0 })
+            .clamp(PITCH_MIN, PITCH_MAX);
         } else if interactive
             && [
                 Action::Forward,
@@ -413,44 +446,100 @@ pub(super) fn place_camera(
 /// Damage the hero takes from one blow, after immunity, armour and the shield; returns what got
 /// through.
 pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
-    if run.immune_t > 0.0 || run.dead_t.is_some() {
+    hurt_hero_tagged(run, raw, super::spell_engine::Tags::PHYSICAL)
+}
+
+/// Both hits and periodic ticks retain their damage school's tags.
+pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engine::Tags) -> f32 {
+    if run.pending_levels > 0 || run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
     let shield = if run.shield_t > 0.0 { run.shield } else { 0.0 };
-    let raw = raw
-        * (1.0 - run.damage_reduction())
-        * if super::talent_runtime::active(run, super::talent_design::Mechanic::FeralGuard) {
+    let raw =
+        raw * if run.extra_spells.ice_until > run.elapsed {
             0.85
         } else {
             1.0
-        };
-    let (dmg, absorbed) = super::spell_engine::mitigate(raw, 0.0, shield, false);
+        } * (1.0 - run.damage_reduction_tagged(tags))
+            * (1.0 - run.support.power(run.elapsed, "barkskin"))
+            * if super::talent_runtime::active(run, super::talent_design::Mechanic::FeralGuard) {
+                0.85
+            } else {
+                1.0
+            };
+    // Apply the minimum hit before protection, so a fully absorbed hit cannot leak damage.
+    let raw = raw.max(1.0);
+    let after_support = super::support_spells::absorb(run, raw);
+    let support_absorbed = raw - after_support;
+    let absorbed = after_support.min(shield.max(0.0));
+    let dmg = after_support - absorbed;
     run.shield -= absorbed;
+    if shield > 0.0 && run.shield <= 0.0 {
+        super::items::legendary::effects::shield_expired(run, 0.0, true);
+    }
     if shield > 0.0
         && run.shield <= 0.0
         && super::talent_runtime::active(run, super::talent_design::Mechanic::Shieldburst)
+        && run.legendary.events.shield_origin == super::items::legendary::events::Origin::Skill
     {
         run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
+    run.taken_meter.record_hit(
+        run.taken_source,
+        run.elapsed,
+        dmg.min(run.hp.max(0.0)),
+        false,
+        tags.contains(super::spell_engine::Tags::DOT),
+    );
     run.hp -= dmg;
+    super::items::legendary::events::hurt(run, run.hp + dmg, absorbed + support_absorbed, dmg);
+    super::support_spells::hurt(run, dmg);
     dmg
 }
 
 /// Shields block an incoming melee blow before armour or absorption is consumed.
 pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
-    if raw > 0.0
-        && roll < (run.equipment.block + super::talent_runtime::block_chance(run)).clamp(0.0, 0.75)
-    {
+    // Reward selection protects each player's own run, including guests on the host.
+    if run.pending_levels > 0 {
+        return 0.0;
+    }
+    let block = (run.equipment.block
+        + super::talent_runtime::block_chance(run)
+        + super::extra_spells::block_bonus(run))
+    .clamp(0.0, 0.75);
+    if raw > 0.0 && roll >= block && roll < block + super::extra_spells::dodge_chance(run) {
+        super::extra_spells::reacted(run, true);
+        return 0.0;
+    }
+    if raw > 0.0 && roll < block {
+        let recovery =
+            run.equipment.life_on_block + run.stats().max_hp * run.equipment.life_on_block_percent;
+        if recovery > 0.0 {
+            run.heal(recovery);
+        }
+        super::extra_spells::reacted(run, false);
         run.talent_runtime.blocked = true;
+        super::items::legendary::effects::blocked(run, raw);
+        super::items::legendary::events::blocked(run);
         if super::talent_runtime::active(run, super::talent_design::Mechanic::Block) {
-            if run.class.id == 2 {
+            if super::items::legendary::milestones::sources(
+                run,
+                super::talent_design::Mechanic::Block,
+            )
+            .contains(&2)
+            {
                 let max = run.stats().max_hp;
                 let amount =
                     super::procs::resolve(run, "proc_holy_heal", max * 0.03, 0.0, 0.0, 0.0, 1).dmg;
                 run.heal(amount);
             }
+            let warrior_block = super::items::legendary::milestones::sources(
+                run,
+                super::talent_design::Mechanic::Block,
+            )
+            .contains(&1);
             for ability in &mut run.abilities {
-                if ability.def.key == "thunder_clap" {
+                if ability.def.key == "thunder_clap" && warrior_block {
                     ability.cd = (ability.cd - 1.0).max(0.0);
                 }
             }
@@ -463,6 +552,7 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
 /// The clock, regeneration, the timed buffs and their visuals, death and victory.
 pub(super) fn hero_vitals(
     time: Res<Time>,
+    mut credits: Option<ResMut<Messages<super::healing::Credit>>>,
     mut run: ResMut<Run>,
     mut next: ResMut<NextState<Phase>>,
     mut hero: Query<(Entity, &Guid, &mut ObjectStore, &mut Marks), With<Hero>>,
@@ -493,14 +583,42 @@ pub(super) fn hero_vitals(
         return;
     }
     run.elapsed += dt;
+    if run.shield_t > 0.0 && run.shield_t <= dt {
+        let remaining = run.shield;
+        super::items::legendary::events::shield_expired(&mut run, remaining);
+    }
     let r = &mut *run;
     for t in [&mut r.shield_t, &mut r.immune_t, &mut r.thorns_t] {
         *t = (*t - dt).max(0.0);
     }
-    let mut heal = stats.regen * dt;
+    let heal = (stats.regen + super::items::legendary::events::regeneration(&run)) * dt;
     if run.heal_t > 0.0 {
-        heal += run.heal_rate * dt.min(run.heal_t);
+        let amount = run.heal_rate * dt.min(run.heal_t);
+        if let Some((owner, skill)) = run.heal_credit {
+            let amount = if run.heal_triggered {
+                run.recover(amount)
+            } else {
+                super::items::legendary::events::receive_active_heal(&mut run, amount)
+            };
+            if let Some(credits) = credits.as_mut() {
+                credits.write(super::healing::Credit {
+                    owner,
+                    skill,
+                    amount,
+                });
+            }
+        } else {
+            if run.heal_triggered {
+                run.heal(amount);
+            } else {
+                super::items::legendary::events::active_heal(&mut run, amount);
+            }
+        }
         run.heal_t = (run.heal_t - dt).max(0.0);
+        if run.heal_t <= 0.0 {
+            run.heal_credit = None;
+            run.heal_triggered = false;
+        }
     }
     run.heal(heal);
     store.0.merge_diff(
@@ -525,7 +643,7 @@ pub(super) fn hero_vitals(
     if run.shield_t > 0.0 && run.shield > 0.0 {
         shown.push(17);
     }
-    if run.immune_t > 0.0 {
+    if run.immune_t > 0.0 || run.pending_levels > 0 {
         shown.push(642);
     }
     if run.thorns_t > 0.0 {
@@ -535,9 +653,17 @@ pub(super) fn hero_vitals(
         shown.push(774);
     }
     for owned in &run.abilities {
+        if (owned.def.key == "holy_shield" && run.extra_spells.holy_until > run.elapsed)
+            || (owned.def.key == "ice_armor" && run.extra_spells.ice_until > run.elapsed)
+        {
+            shown.push(owned.def.spell);
+        }
         if owned.def.key == "lightning_shield" {
             shown.push(owned.def.spell);
         }
+    }
+    for buff in run.support.buffs.iter().filter(|b| b.until > run.elapsed) {
+        shown.push(data::ability(buff.key).spell);
     }
     if run.passives.iter().any(|(p, _)| p.key == "renew") {
         shown.push(139);
@@ -587,6 +713,69 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::window::{CursorLeft, WindowFocused};
+
+    #[test]
+    fn meters_count_effective_healing_and_damage_after_shields_without_overkill() {
+        let mut run = Run {
+            hp: 10.0,
+            elapsed: 5.0,
+            ..default()
+        };
+        let healed = run.heal(10000.0);
+        assert_eq!(run.heal(10000.0), 0.0);
+        assert_eq!(
+            run.healing_meter
+                .rows(5.0)
+                .iter()
+                .map(|r| r.total)
+                .sum::<f64>(),
+            f64::from(healed)
+        );
+        run.hp = 20.0;
+        run.shield = 10.0;
+        run.shield_t = 5.0;
+        run.immune_t = 1.0;
+        hurt_hero_tagged(&mut run, 1000.0, super::super::spell_engine::Tags::FIRE);
+        assert!(run.taken_meter.rows(5.0).is_empty());
+        run.immune_t = 0.0;
+        hurt_hero_tagged(&mut run, 1000.0, super::super::spell_engine::Tags::FIRE);
+        assert_eq!(run.taken_meter.rows(5.0)[0].total, 20.0);
+    }
+
+    #[test]
+    fn reward_selection_protects_host_and_guests_until_the_last_choice() {
+        use crate::survivors::{hud, spell_engine::Tags, Rng};
+        for owner in [None, Some(42)] {
+            let mut run = Run {
+                owner,
+                hp: 100.0,
+                shield: 20.0,
+                shield_t: 10.0,
+                pending_levels: 2,
+                ..default()
+            };
+            run.equipment.block = 1.0;
+            let mut offer = hud::Offer::default();
+            let mut rng = Rng(42);
+            let mut next = NextState::<Phase>::Unchanged;
+            for remaining in [2, 1] {
+                assert_eq!(run.pending_levels, remaining);
+                let hp = run.hp;
+                assert_eq!(
+                    hurt_hero_tagged(&mut run, 1000.0, Tags::FIRE | Tags::DOT),
+                    0.0
+                );
+                assert_eq!(hurt_hero_with_block(&mut run, 1000.0, 0.0), 0.0);
+                assert_eq!(run.hp, hp);
+                assert_eq!(run.shield, 20.0);
+                assert!(!run.talent_runtime.blocked);
+                offer.choices = vec![hud::Choice::Heal];
+                hud::pick(0, &mut run, &mut offer, &mut rng, &mut next);
+            }
+            assert_eq!(run.pending_levels, 0);
+            assert!(hurt_hero_tagged(&mut run, 30.0, Tags::FIRE) > 0.0);
+        }
+    }
 
     fn held_left() -> World {
         let mut world = World::new();

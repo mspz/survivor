@@ -10,7 +10,16 @@ impl Affix {
             Effect::Intelligence => Some("Intelligence"),
             Effect::Life => Some("Health"),
             Effect::Armour => Some("Armour"),
+            Effect::FireResistance => Some("Fire resistance"),
+            Effect::ColdResistance => Some("Cold resistance"),
+            Effect::LightningResistance => Some("Lightning resistance"),
+            Effect::NatureResistance => Some("Nature resistance"),
+            Effect::ArcaneResistance => Some("Arcane resistance"),
+            Effect::HolyResistance => Some("Holy resistance"),
+            Effect::ShadowResistance => Some("Shadow resistance"),
+            Effect::AllResistance => Some("All resistances"),
             Effect::LifeOnKill => Some("Life on kill"),
+            Effect::LifeOnBlock => Some("Life on block"),
             Effect::FlatDamage => Some("Damage"),
             Effect::SpellDamage => Some("Spell damage"),
             Effect::Projectiles => Some("Projectiles"),
@@ -20,7 +29,11 @@ impl Affix {
             _ => None,
         };
         let value = if let Some(label) = flat {
-            format!("+{:.0} {label}", self.value)
+            format!(
+                "+{:.0}{} {label}",
+                self.value,
+                if self.effect.resistance() { "%" } else { "" }
+            )
         } else if self.effect == Effect::Regeneration {
             format!("+{:.1} Health/s", self.value)
         } else if self.effect == Effect::Proc {
@@ -44,6 +57,7 @@ impl Affix {
         } else {
             let label = match self.effect {
                 Effect::BlockChance => "Increased chance to block",
+                Effect::LifeOnBlockPercent => "Maximum life recovered on block",
                 Effect::Damage => "Damage",
                 Effect::DotDamage => "Damage over time",
                 Effect::CritChance => "Critical strike",
@@ -68,6 +82,7 @@ impl Affix {
                 Effect::PickupRadius => "Pickup radius",
                 Effect::Experience => "Experience",
                 Effect::Luck => "Luck",
+                Effect::MagicFind => "Magic Find",
                 _ => unreachable!("flat effects handled above"),
             };
             format!("+{:.1}% {label}", self.value * 100.0)
@@ -113,7 +128,7 @@ impl Item {
                     entry.0 += value;
                 };
                 add("Armour".into(), item.armour(), false);
-                add("Block chance".into(), item.base_block * 100.0, true);
+                add("Block chance".into(), item.intrinsic_block() * 100.0, true);
                 let damage = item.weapon_damage();
                 add("Minimum weapon damage".into(), damage.min, false);
                 add("Maximum weapon damage".into(), damage.max, false);
@@ -136,7 +151,12 @@ impl Item {
                         let percent = number.contains('%');
                         add(
                             label.to_owned(),
-                            affix.value * if percent { 100.0 } else { 1.0 },
+                            affix.value
+                                * if percent && !affix.effect.resistance() {
+                                    100.0
+                                } else {
+                                    1.0
+                                },
                             percent,
                         );
                     }
@@ -148,6 +168,7 @@ impl Item {
         let after = values(&after);
         let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
         let mut lines = Vec::new();
+        let mut losses = Vec::new();
         for key in keys {
             let old = before.get(key).copied().unwrap_or_default();
             let new = after.get(key).copied().unwrap_or_default();
@@ -155,7 +176,8 @@ impl Item {
             if delta.abs() < 0.0001 {
                 continue;
             }
-            lines.push((
+            let group = if delta > 0.0 { &mut lines } else { &mut losses };
+            group.push((
                 format!("{delta:+.1}{} {key}", if old.1 || new.1 { "%" } else { "" }),
                 if delta > 0.0 {
                     Color::srgb(0.0, 1.0, 0.0)
@@ -164,6 +186,7 @@ impl Item {
                 },
             ));
         }
+        lines.extend(losses);
         if !lines.is_empty() {
             lines.insert(0, ("Compared to equipped".into(), Color::WHITE));
         }
@@ -214,6 +237,7 @@ impl Item {
         };
         let mut lines = vec![
             (self.name.clone(), self.rarity.color()),
+            (format!("Ilvl {}", self.level), Color::WHITE),
             (
                 format!("{slot}    {kind}").trim_end().to_owned(),
                 Color::WHITE,
@@ -229,18 +253,32 @@ impl Item {
                 Color::WHITE,
             ));
         }
-        if self.base_block > 0.0 {
+        if self.intrinsic_block() > 0.0 {
             lines.push((
-                format!("{:.1}% Block chance", self.base_block * 100.0),
+                format!("{:.1}% Block chance", self.intrinsic_block() * 100.0),
                 Color::WHITE,
             ));
         }
-        for primary in [true, false] {
-            for affix in self
-                .affixes
-                .iter()
-                .filter(|a| a.effect.primary() == primary)
-            {
+        if let Some(roll) = &self.legendary {
+            if let Some(d) = legendary::definition(roll.unique) {
+                lines.push(("Unique equipped".into(), self.rarity.color()));
+                lines.push((d.description.into(), self.rarity.color()));
+                if let Some(option) = roll.milestone {
+                    lines.push((
+                        legendary::milestones::description(option),
+                        self.rarity.color(),
+                    ));
+                }
+            }
+        }
+        for (kind, label) in [
+            (AffixKind::Prefix, "Prefixes"),
+            (AffixKind::Suffix, "Suffixes"),
+        ] {
+            if self.affixes.iter().any(|a| a.kind == kind) {
+                lines.push((label.into(), Color::WHITE));
+            }
+            for affix in self.affixes.iter().filter(|a| a.kind == kind) {
                 lines.push((affix.description(), Color::WHITE));
             }
         }
@@ -258,6 +296,33 @@ impl Item {
 mod tests {
     use super::super::tests::{affix, item};
     use super::*;
+
+    #[test]
+    fn resistance_tooltips_and_comparisons_use_percentage_points() {
+        assert_eq!(
+            affix(Effect::AllResistance, 4.0, AffixKind::Suffix, vec![]).description(),
+            "+4% All resistances"
+        );
+        let resistance = |value| {
+            item(
+                SlotKind::Chest,
+                vec![affix(
+                    Effect::FireResistance,
+                    value,
+                    AffixKind::Prefix,
+                    vec![],
+                )],
+            )
+        };
+        let mut inv = Inventory::fixture(vec![resistance(20.0), resistance(30.0)]);
+        assert_eq!(
+            inv.item(1).unwrap().affixes[0].description(),
+            "+20% Fire resistance"
+        );
+        inv.equip(1, "Chest").unwrap();
+        let lines = inv.item(2).unwrap().comparison_lines(&inv);
+        assert!(lines.contains(&("+10.0% Fire resistance".into(), Color::srgb(0.0, 1.0, 0.0))));
+    }
 
     #[test]
     fn comparison_includes_missing_stats_and_aggregates_duplicate_affixes() {
@@ -281,6 +346,8 @@ mod tests {
         assert!(lines.contains(&("-12.0 Stamina".into(), Color::srgb(1.0, 0.15, 0.15))));
         assert!(lines.contains(&("-5.0% Luck".into(), Color::srgb(1.0, 0.15, 0.15))));
         assert!(lines.contains(&("+11.0 Strength".into(), Color::srgb(0.0, 1.0, 0.0))));
+        assert_eq!(lines[1].0, "+11.0 Strength");
+        assert!(lines.iter().skip(2).all(|(line, _)| line.starts_with('-')));
         assert!(inv.item(1).unwrap().comparison_lines(&inv).is_empty());
         assert_eq!(inv.equipped("Chest").unwrap().id, 1);
     }

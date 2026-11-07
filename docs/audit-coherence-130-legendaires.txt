@@ -1,0 +1,374 @@
+ARCHIVE DE L'AUDIT AVANT CORRECTION : les constats ci-dessous documentent les 130 propositions initiales. Les 37 descriptions signalees sont maintenant corrigees dans le catalogue et marquees SPEC_CORRIGEE dans le CSV. Voir corrections-37-uniques.txt, regles-uniques-propositions.txt et validation-160-uniques.txt pour l'etat courant.
+
+AUDIT DE COHÉRENCE DES 130 PROPOSITIONS DE LÉGENDAIRES
+
+PÉRIMÈTRE
+Relecture des 130 propositions de docs/idees-100-legendaires.txt, confrontées au code actuel.
+Audit statique : pas de modification du gameplay ni des descriptions du catalogue.
+Un effet nouveau à programmer n'est pas automatiquement une incohérence : c'est le principe
+de ces propositions. Les tags, profils et sources d'objets légendaires restent à implémenter.
+L'audit relève surtout les faux prérequis, slots inadaptés, noms non identifiés et règles ambiguës.
+
+BILAN PAR OBJET, SANS DOUBLE COMPTAGE
+- 7 à revoir en priorité : 026, 071, 088, 224, 280, 308, 310.
+- 30 à préciser avant implémentation.
+- 93 sans incohérence majeure relevée dans leur principe, observations éventuelles incluses.
+Total : 130.
+« Cohérent » ne signifie pas déjà codé, équilibré, testé en jeu ou compatible avec tous les objets.
+
+VÉRIFICATION DES NOMS
+Les sorts actifs référencés explicitement dans 23 propositions ont une correspondance vérifiée
+dans ABILITIES. Les alias français ont été rapprochés de leurs clés de gameplay, pas uniquement
+d'un identifiant de visuel DBC.
+Exception supplémentaire : 088 « Météores » ne correspond à aucune compétence active identifiée.
+Les noms de milestones cités existent dans talent_design.rs.
+L'Archive des Neuf Voies couvre bien les 81 milestones des 27 spécialisations.
+Flammes sacrées (280) peut désigner holy_fire : normaliser le libellé plutôt que le considérer
+comme une nouvelle compétence. Starfall est un milestone et proc_starfall une nova instantanée.
+
+PRIORITÉS DE CORRECTION
+1. Identifier le vrai sort du 088 et réécrire son comportement de départ.
+2. Changer le slot des cinq objets de caster en main secondaire, ou créer un type Focus.
+3. Résoudre le soin périodique de Drain de vie avant de le mettre en réserve au 310.
+4. Définir soin direct, les familles de DoT, les auras, les deux modèles de totem et les permissions.
+5. Séparer les modifications d'objet du fonctionnement natif qu'elles remplacent.
+
+CONSTATS DÉTAILLÉS
+
+F01 — À REVOIR — Météores n'est pas un sort actif du catalogue actuel
+Objets : 088.
+Constat : Aucune clé d'ABILITY ne correspond à Météores. proc_starfall existe, mais c'est une nova arcanique instantanée déclenchée par un milestone du druide, pas une zone persistante au sol. La description mélange donc un sort non identifié et le comportement d'un autre type de sort.
+Recommandation : Choisir explicitement Starfall/proc_starfall et transformer sa nova en tirs guidés, ou cibler une vraie zone au sol nommée. Ne pas simplement remplacer le mot Météores en conservant la mention de zones persistantes.
+Preuve locale : data.rs::ABILITIES ; procs.rs::proc_starfall ; talent_design.rs::Starfall.
+
+F02 — À REVOIR — Main secondaire non disponible pour la classe visée dans les nouvelles bases actuelles
+Objets : 026, 071, 224, 280, 308.
+Constat : Les mages, prêtres et démonistes ne peuvent pas équiper une arme à une main en Off hand ; les boucliers sont réservés aux classes 1/2/7 et Universal interdit les slots d'arme, dont OffHand. Aucun type de focus/livre tenu en main secondaire n'est défini. Le type Legacy permet des exceptions historiques, mais il est refusé pour les nouvelles bases configurées : ce n'est pas une solution propre de génération.
+Recommandation : Déplacer ces cinq objets vers Cou/Anneau/Bijou, ou ajouter un véritable type de focus de main secondaire avec permissions et visuels avant de les conserver dans ce slot.
+Preuve locale : items/equipment.rs::EquipmentType::can_equip, valid_slot, dual_wield, Item::usable ; items/config.rs::validate.
+
+F03 — À REVOIR — Le soin périodique supposé de Drain de vie n'est pas appliqué par le chemin actuel
+Objets : 310.
+Constat : drain_life existe : c'est un Dot avec Effect::Drain(0.3). Kind::Dot émet un impact direct nul puis installe des ticks. Le soin Effect::Drain n'est exécuté que dans le bloc de dégâts directs positifs ; la boucle des ticks appelle periodic_leech, qui ne soigne que si ShadowDrain est actif. Sans cette autre capacité, la réserve attendue du légendaire n'est donc pas alimentée par le drain natif.
+Recommandation : Corriger d'abord le vol de vie natif des ticks, ou écrire une règle autonome : la réserve du bijou reçoit explicitement une fraction des dégâts périodiques réellement infligés par drain_life. Ce n'est pas un problème d'existence du sort.
+Preuve locale : data.rs::drain_life ; abilities.rs::Kind::Dot, apply_hits, Effect::Drain et boucle des ticks ; talent_runtime.rs::periodic_leech.
+
+F04 — À PRÉCISER — Les zones froides n'ont pas toutes une durée et des ticks
+Objets : 017.
+Constat : Blizzard est une GroundArea temporisée, alors que Nova de givre et Cône de froid sont des impacts instantanés sans cycle de ticks à attendre. La formulation visant toutes les zones froides ne dit pas quoi stocker ni quand faire expirer ces sorts instantanés.
+Recommandation : Limiter l'effet aux zones persistantes de froid, ou définir un délai de stockage propre pour les novas/cônes.
+Preuve locale : data.rs::blizzard, frost_nova, cone_of_cold ; abilities.rs::cast_abilities.
+
+F05 — À PRÉCISER — Première et seconde frappe contradictoires
+Objets : 050.
+Constat : La phrase retire les frappes autour du personnage puis annonce une seconde frappe. On ne sait pas si l'impact initial est conservé, déplacé, ou entièrement remplacé par l'impact retardé.
+Recommandation : Choisir soit une frappe entièrement différée à l'ancienne position, soit un coup initial suivi d'un écho. Définir aussi si une victime peut subir les deux.
+Preuve locale : Description 050 ; abilities.rs::Kind::Melee et PendingHits.
+
+F06 — À PRÉCISER — Une aura n'est pas manuellement reposée à chaque lancement
+Objets : 057.
+Constat : Les auras sont activées par l'autocast et pulsent à leur cooldown. Relancer l'aura peut donc désigner chaque pulsation et déplacer/exploser une zone toutes les secondes, sans action volontaire du joueur.
+Recommandation : Définir un intervalle de pose indépendant des ticks, ou annoncer explicitement que chaque pulsation redépose et consomme la zone précédente.
+Preuve locale : abilities.rs::Kind::Aura ; data.rs::hellfire.
+
+F07 — À PRÉCISER — Soin direct désigne très peu de compétences dans cette simulation
+Objets : 077, 152, 203, 207.
+Constat : Le code distingue l'instantané avec duration <= 0 et les soins étalés avec heal_rate/heal_t. flash_heal est instantané, mais holy_light et lesser_healing_wave sont étalés sur 1 seconde ; regrowth, renew et rejuvenation sont aussi périodiques. 203 peut ainsi manquer de build natif mêlée + soin équipé strictement instantané, et les autres touchent moins de classes que leur vocabulaire le suggère.
+Recommandation : Dire si direct signifie instantané uniquement, activation d'un sort Kind::Heal, ou soin hors régénération. Pour 203, accepter un soin étalé et convertir son budget total, ou accorder explicitement le soin requis.
+Preuve locale : abilities.rs::Kind::Heal ; data.rs::flash_heal, holy_light, lesser_healing_wave, regrowth, renew, rejuvenation ; server.rs::heal_rate/heal_t.
+
+F08 — À PRÉCISER — Les soins excédentaires ne sont pas conservés
+Objets : 078.
+Constat : Run::heal retourne la vie réellement récupérée après plafonnement, pas le surplus. Les soins actifs ne sont lancés que sous 85 % de vie. Cela n'interdit pas tout overheal, mais interdit de remplir librement une réserve en lançant ses soins à pleine vie.
+Recommandation : Mesurer le soin demandé et le soin effectif avant/après plafonnement. Préciser quelles sources alimentent la réserve et conserver ou modifier volontairement la condition d'autocast.
+Preuve locale : server.rs::Run::heal ; abilities.rs::Kind::Heal.
+
+F09 — À PRÉCISER — Living Grove est passif, pas un déclenchement à chaque HoT
+Objets : 087.
+Constat : Le milestone fournit des soins de proximité continus et une pulsation périodique. La deuxième phrase du légendaire les rattache à des soins périodiques déclencheurs, ce qui ne correspond pas à son fonctionnement et pourrait multiplier les pulsations ou créer une boucle.
+Recommandation : Accorder simplement le comportement passif complet de Living Grove, sans le redéclencher sur ses propres soins. Si un autre effet est voulu, le présenter comme une variante plutôt que comme le milestone identique.
+Preuve locale : talent_design.rs::Living Grove ; talent_runtime.rs::pulse et party_effects.
+
+F10 — À PRÉCISER — Les totems offensifs et le totem de soin utilisent deux systèmes
+Objets : 082, 194.
+Constat : Searing/Magma sont des composants Totem temporisés dans abilities.rs. Le totem de restauration est un Summon dans talent_runtime.rs, et ses soins passent par party_effects. Le Summon de soin suit déjà une destination proche du propriétaire malgré son rôle stationary ; il n'a pas le même cycle que les totems offensifs.
+Recommandation : Préciser les familles de totems affectées, leurs origines de soin/attaque et les valeurs reprises lors de l'inversion. Ne pas traiter cette transformation comme un simple échange de tags dans un type commun déjà existant.
+Preuve locale : abilities.rs::Totem, Kind::Totem, tick_areas ; talent_runtime.rs::Summon, pets et party_effects.
+
+F11 — À PRÉCISER — Titan's Grip reste verrouillé au guerrier dans les permissions
+Objets : 046, 279.
+Constat : Inventory::can_equip autorise l'exception à deux armes à deux mains seulement si self.class == 1. Les permissions de TwoHand et Staff ne sont pas identiques, et les bâtons n'emploient pas cette exception. Activer seulement Mechanic::Titans sur une autre classe ne donne pas le résultat promis.
+Recommandation : Définir une permission d'objet indépendante de la classe et dire si elle couvre TwoHand seulement ou également Staff. Garder les restrictions de type qui sont réellement voulues.
+Preuve locale : items/equipment.rs::Inventory::can_equip, clear_off_hand_for_two_hander et can_equip ; items.rs::sync.
+
+F12 — À PRÉCISER — Les deux mains sont agrégées avant le calcul des attaques
+Objets : 279.
+Constat : Loadout additionne Main hand et Off hand dans une unique plage melee. Les affixes sont appliqués au personnage et les procs d'objet ne portent pas un choix de main de frappe. L'alternance des effets d'armes n'existe donc pas comme simple option du calcul actuel.
+Recommandation : Conserver des plages et sources de modificateurs distinctes par main et marquer chaque activation avec la main utilisée. Séparer cette extension de la seule permission Titan's Grip.
+Preuve locale : items/weapons.rs::Loadout::equip et for_spell ; items.rs::Inventory::apply ; items/combat.rs::Event.
+
+F13 — À PRÉCISER — Le coup bloqué n'est pas conservé avec son attaquant
+Objets : 213.
+Constat : L'état de talent garde un booléen blocked. Le helper de blocage reçoit une valeur et un jet, sans identité de l'attaquant ; il retourne zéro en cas de blocage. On ne peut pas reconstituer le coup à partir des dégâts effectivement reçus.
+Recommandation : Enregistrer l'entité attaquante et le montant du coup avant mitigation au moment du blocage. Choisir le sort/source et les règles de critique du renvoi.
+Preuve locale : hero.rs::hurt_hero_with_block ; talent_runtime.rs::Runtime::blocked.
+
+F14 — À PRÉCISER — Provocation et peur ne sont pas équivalentes en solo ni contre les boss
+Objets : 159.
+Constat : La provocation impose un propriétaire-cible dans la sélection des ennemis ; en solo ceux-ci le poursuivent souvent déjà. La peur est ignorée sur les boss, tandis que la provocation ne possède pas la même exclusion dans son application actuelle.
+Recommandation : Définir l'intérêt solo du remplacement d'une peur par une provocation et les contrôles qui ouvrent droit à l'onde de remplacement. Ne pas supposer une immunité universelle des boss à tous les contrôles.
+Preuve locale : talent_runtime.rs::Taunted et M::Taunt ; enemies.rs::ciblage ; abilities.rs::Effect::Fear, Root et Stun.
+
+F15 — À PRÉCISER — Poison, brûlure, maladie et malédiction ne sont pas des familles typées
+Objets : 024, 063, 066, 094, 142, 221, 224, 226, 229, 235, 237.
+Constat : Dot conserve un owner, skill, meter_source, dps, left et tick. Il n'existe pas de champ poison/burn/disease/curse. Les talents reconnaissent notamment proc_poison/deadly_poison par clé ; tous les DoTs Nature ne sont pas des poisons, ni tous les DoTs Ombre des maladies. Les conversions rendent encore plus important le choix entre famille d'origine et famille finale.
+Recommandation : Écrire la liste de sources concernées pour chaque famille ou ajouter une famille explicite. Décider si Morsure de serpent et Immolation entrent dans ces catégories, et de quelle source relève la malédiction créée par 235.
+Preuve locale : enemies.rs::Dot ; talent_runtime.rs::on_death et on_hit ; procs.rs::SPELLS ; spell_engine/tags.rs.
+
+F16 — À PRÉCISER — Les DoTs ordinaires ne sont pas tous simplement rafraîchis
+Objets : 222, 230.
+Constat : Le chemin ordinaire ajoute des Dot et limite leur nombre à six par ennemi. Certains talents remplacent en revanche une instance de même source. Le texte de 230 suppose un rafraîchissement uniforme qui n'existe pas ; les deux plaies de 222 doivent aussi se distinguer des piles actuelles.
+Recommandation : Définir la réapplication par propriétaire et source : remplacement, empilement, ou ajout d'une charge au budget existant. Préciser le traitement de la limite de six et l'éviction d'une autre source.
+Preuve locale : abilities.rs::installation de h.dot et boucle des ticks ; talent_runtime.rs::application des poisons/maladies.
+
+F17 — À PRÉCISER — Foudre peut désigner aussi une zone persistante
+Objets : 086.
+Constat : LIGHTNING est porté par Éclair, Chaîne d'éclairs et Bouclier de foudre, mais aussi Ouragan du druide. Leur donner ATTACK et PROJECTILE ne décide pas quoi faire de Ground, Chain ou Orbit, de leur durée et de leurs pulsations.
+Recommandation : Limiter l'objet aux projectiles de foudre existants, ou définir une transformation de profil pour chacune des autres formes. Préciser quelle arme est utilisée.
+Preuve locale : spell_engine/tags.rs::school et for_spell ; data.rs::hurricane, chain_lightning, lightning_shield ; items/weapons.rs::for_spell.
+
+F18 — À PRÉCISER — La sentence doit respecter la règle d'exécution des boss et le coup normal
+Objets : 176.
+Constat : damage_on_target ne transforme une attaque en exécution fatale que sur les non-bosses sous le seuil. Le texte ne dit pas si le premier coup conserve ses dégâts normaux, ni ce que la sentence fait sur un boss ou sur une victime repassée au-dessus du seuil.
+Recommandation : Conserver explicitement l'impact normal ou annoncer son remplacement. Au déclenchement, utiliser la règle native d'exécution et une retombée de dégâts normale sur les boss, sans mort forcée.
+Preuve locale : spell_engine/mod.rs::damage_on_target ; data.rs::execute.
+
+F19 — À PRÉCISER — Flammes sacrées doit être relié explicitement à holy_fire
+Objets : 280.
+Constat : L'effet visé existe sous la clé holy_fire avec une composante directe et un DoT sacré. Flammes sacrées est ici un libellé de proposition non lié à une clé, pas un second sort à créer ; cela se distingue du vrai cas introuvable Météores.
+Recommandation : Mentionner holy_fire dans la fiche technique et harmoniser son nom d'affichage avec le catalogue de sorts chargé. Conserver la distinction entre un DoT et les ticks de zone de Consécration.
+Preuve locale : data.rs::holy_fire ; spell_engine/tags.rs::school et for_spell.
+
+F20 — OBSERVATION SANS REJET — L'invulnérabilité du familier n'est pas une nouveauté mécanique
+Objets : 188.
+Constat : Les Summon actuels n'ont pas le modèle de points de vie d'un Enemy. La partie distinctive reste l'origine alternée des tirs, pas le fait de rendre le familier invulnérable. Nouvelle cible doit désigner une cible choisie par l'autocast, pas une sélection manuelle supposée.
+Recommandation : Mettre en avant l'alternance d'origine et définir la cible issue de l'autocast. Ne pas compter l'invulnérabilité comme un bénéfice inédit.
+Preuve locale : talent_runtime.rs::Summon et pets.
+
+F21 — OBSERVATION SANS REJET — La couverture des 81 options est valide mais n'abolit pas leurs dépendances
+Objets : 301.
+Constat : Les 81 milestones sont présents dans talent_design.rs et dans la table des rolls. Certains exigent un bouclier, un familier, un totem, des écoles de dégâts ou un mécanisme de base. Plusieurs comportements choisissent encore leur variante par run.class.id ; le fichier de l'objet reconnaît déjà ce travail.
+Recommandation : Conserver la clé classe/arbre/noeud, les conditions originales et le support minimal documenté. Les milestones à bonus numériques restent des rolls valides, conformément à la demande de tout couvrir.
+Preuve locale : talent_design.rs::DESIGNS ; docs/legendaire-301-milestones.txt ; talent_runtime.rs::configure, pets et party_effects.
+
+F22 — OBSERVATION SANS REJET — Rétablissement existe, mais son soin est périodique et automatique
+Objets : 305.
+Constat : regrowth a une durée de huit secondes et est déclenché sous le seuil de 85 % de vie. La réserve doit porter sur le budget total de ce soin, pas sur une portion directe inexistante. Ce fonctionnement constitue un choix de jeu viable, avec un risque volontaire de perdre sa guérison.
+Recommandation : Conserver cette réserve comme un effet nouveau et explicite. Si l'on veut l'armer à pleine vie, il faut changer volontairement la condition d'autocast pour cet objet.
+Preuve locale : data.rs::regrowth ; abilities.rs::Kind::Heal.
+
+F23 — À PRÉCISER — Déplacer le visuel de l'aura ne déplace pas ses conditions d'autocast
+Objets : 309.
+Constat : hellfire est une Aura qui cherche les ennemis autour du héros pour décider de pulser. Déporter son effet sur une Pluie de feu peut laisser l'aura inactive si le héros est loin des ennemis présents dans cette pluie.
+Recommandation : Résoudre la recherche de cibles et la condition de déclenchement autour de la pluie choisie, pas seulement son rendu. Garder le comportement décrit quand aucune pluie n'existe.
+Preuve locale : abilities.rs::Kind::Aura ; data.rs::hellfire et rain_of_fire.
+
+F24 — OBSERVATION SANS REJET — Les conversions et changements de profils ont besoin d'un contrat commun
+Objets : 027, 029, 070, 094, 095, 096, 097, 141, 142, 148, 154, 261, 262, 266, 269, 288, 300.
+Constat : Ces objets sont cohérents comme nouvelles mécaniques, mais les conversions absolues se concurrencent. 070 retire les dégâts directs : 095 peut encore fonctionner si impact direct désigne le contact ciblé même sans dégâts, mais pas s'il exige des dégâts directs positifs. Une conversion totale de 094/095/096/097 empêche généralement la combinaison Sacré + Physique de 056 si ses conditions lisent les écoles finales. Il faut donc préciser ces conditions au lieu d'annoncer toutes ces combinaisons automatiquement incompatibles.
+Recommandation : Définir l'ordre des conversions, la priorité entre conversions absolues, la phase du critique et les règles d'incompatibilité. Une mauvaise synergie entre deux objets ne rend pas chacun incohérent individuellement.
+Preuve locale : Descriptions des objets ; spell_engine/mod.rs ; spell_engine/tags.rs ; items/weapons.rs.
+
+POINTS QUI NE JUSTIFIENT PAS UN REJET
+- Plusieurs écoles ou une classe différente du thème du nom ne rendent pas un objet incohérent.
+  Les combos Sacré + poison, soin + mêlée et froid + saignement peuvent être des objectifs de build.
+- Les conditions exigeant un autre sort appris doivent être annoncées ; le jeu est en autocast.
+- La cascade 003, les impacts décalés 042 et les modifications 302 à 307 peuvent réutiliser
+  des cercles/cônes et impacts ciblés, sans simulation de collision des projectiles.
+- Les neuf nouvelles propositions du druide/démoniste nomment des sorts existants. 308 a un
+  problème de slot et 310 un prérequis de soin, pas des sorts inventés.
+- Les milestones numériques de 301 sont volontairement inclus pour couvrir les 81 demandés.
+- Les renvois, copies et transferts doivent conserver propriétaire/source et protection
+  anti-récursion. Prévoir un budget de dégâts et les limites de cibles/instances.
+- Ne pas appliquer les restrictions de WoW de mémoire : cette branche autorise notamment
+  certaines baguettes à des classes inhabituelles. Les permissions de equipment.rs font foi.
+
+MAPPING DES SORTS NOMMÉS
+001 | L'Écho du Phénix | fireball
+011 | Le Fil de l'Orage | chain_lightning
+013 | Les Crocs du Tonnerre | chain_lightning
+022 | Le Souffle du dragon | arcane_explosion
+026 | La Page impossible | arcane_missiles
+042 | Le Marteau des Failles | thunder_clap
+043 | Le Serment du Boucher | cleave
+044 | La Gorge de Grom | execute
+052 | Le Soleil sous la Terre | consecration
+061 | Le Sourire de Garona | sinister_strike
+071 | Le Sermon renversé | holy_nova
+072 | La Couronne des Murmures | shadow_word_pain
+088 | Le Bois des Étoiles | AUCUNE CLÉ VALIDÉE : Météores
+176 | Le Serment du Bourreau lent | execute
+280 | Le Parchemin du Fléau sacré | holy_fire
+302 | Les Deux Lunes de Remulos | moonfire, wrath
+303 | Les Racines du Dernier Cercle | entangling_roots
+304 | Les Griffes du Bois meurtri | claw, swipe
+305 | Le Serment de la Graine enfouie | regrowth, claw
+306 | Les Ramures de l'Orage | hurricane, entangling_roots
+307 | Le Cœur de l'Immolé | corruption, immolate
+308 | Le Pacte du Créancier | shadow_bolt, curse_of_agony
+309 | La Cage des Trois Brasiers | rain_of_fire, hellfire
+310 | Le Réceptacle du Dernier Soupir | drain_life, death_coil
+
+REVUE INDIVIDUELLE DES 130 PROPOSITIONS
+COHERENT : aucun problème majeur individuel identifié, mais logique d'objet encore à développer.
+A_PRECISER : sens ou périmètre à préciser ; pas une recommandation automatique de suppression.
+A_REVOIR : incohérence ou prérequis manquant dans le modèle actuel ; une adaptation est proposée.
+Les constats NOTE peuvent accompagner un objet COHERENT.
+
+Numéro | Nom | Statut | Constats
+001 | L'Écho du Phénix | COHERENT | —
+003 | Les Trois Soleils | COHERENT | —
+006 | Le Cercle brisé | COHERENT | —
+011 | Le Fil de l'Orage | COHERENT | —
+013 | Les Crocs du Tonnerre | COHERENT | —
+017 | Le Sablier gelé | A_PRECISER | F04
+018 | Les Mille Éclats | COHERENT | —
+022 | Le Souffle du dragon | COHERENT | —
+024 | Le Testament du Pyromane | A_PRECISER | F15
+026 | La Page impossible | A_REVOIR | F02
+027 | Le Prisme d'Azshara | COHERENT | F24
+029 | La Griffe du Sorcier | COHERENT | F24
+036 | La Dent de la Matriarche | COHERENT | —
+042 | Le Marteau des Failles | COHERENT | —
+043 | Le Serment du Boucher | COHERENT | —
+044 | La Gorge de Grom | COHERENT | —
+046 | Les Deux Rois | A_PRECISER | F11
+047 | Le Rempart du Tonnerre | COHERENT | —
+050 | Le Poids du Champion | A_PRECISER | F05
+052 | Le Soleil sous la Terre | COHERENT | —
+055 | L'Alliance de l'Aube | COHERENT | —
+056 | La Couronne du Jugement | COHERENT | —
+057 | La Chapelle errante | A_PRECISER | F06
+058 | La Cloche des Derniers Vœux | COHERENT | —
+061 | Le Sourire de Garona | COHERENT | —
+063 | Le Poison des Deux Mondes | A_PRECISER | F15
+064 | La Cape de l'Assassin patient | COHERENT | —
+065 | La Bague des Plaies ouvertes | COHERENT | —
+066 | Le Flacon du Fossoyeur | A_PRECISER | F15
+069 | Le Masque de la Lame vide | COHERENT | —
+070 | L'Étreinte des Ombres | COHERENT | F24
+071 | Le Sermon renversé | A_REVOIR | F02
+072 | La Couronne des Murmures | COHERENT | —
+075 | Le Rosaire de la Peste | COHERENT | —
+077 | Les Paumes du Paradoxe | A_PRECISER | F07
+078 | La Balance de l'Expiation | A_PRECISER | F08
+081 | Le Tambour des Ancêtres | COHERENT | —
+082 | Le Totem déraciné | A_PRECISER | F10
+086 | Le Gant du Chaman muet | A_PRECISER | F17
+087 | Le Cœur de l'Ancien | A_PRECISER | F09
+088 | Le Bois des Étoiles | A_REVOIR | F01
+091 | Le Trône des Mille Pactes | COHERENT | —
+094 | Le Pacte de Cendre | A_PRECISER | F15, F24
+095 | Le Diamant du Silence | COHERENT | F24
+096 | Le Cœur sans Chair | COHERENT | F24
+097 | Le Testament des Ombres | COHERENT | F24
+098 | La Roue de l'Éternel Retour | COHERENT | —
+099 | Le Miroir du Roi mort | COHERENT | —
+111 | Le Jugement du Ricochet | COHERENT | —
+115 | Le Testament de l'Artilleur | COHERENT | —
+124 | La Rose des Cataclysmes | COHERENT | —
+126 | La Faille des Deux Rives | COHERENT | —
+134 | Le Tambour des Répliques | COHERENT | —
+141 | Le Sang de l'Éclipse | COHERENT | F24
+142 | Le Pacte du Grésil | A_PRECISER | F15, F24
+143 | Les Dents du Glacier rouge | COHERENT | —
+146 | La Couronne du Métal liquide | COHERENT | —
+147 | Les Gants du Jardinier funèbre | COHERENT | —
+148 | Le Pacte de l'Eau lourde | COHERENT | F24
+151 | L'Aiguille du Tonnerre blanc | COHERENT | —
+152 | Le Sel des Plaies bénies | A_PRECISER | F07
+154 | Le Cadran des Deux Royaumes | COHERENT | F24
+155 | Le Baiser du Basilic | COHERENT | —
+159 | L'Encensoir des Contraires | A_PRECISER | F14
+160 | La Rune de la Neuvième École | COHERENT | —
+163 | La Hache du Partage | COHERENT | —
+167 | Le Marteau du Contretemps | COHERENT | —
+168 | La Ceinture du Champion enchaîné | COHERENT | —
+169 | Les Mains de la Faucheuse aveugle | COHERENT | —
+170 | La Dent du Roi noyé | COHERENT | —
+171 | Le Fourreau du Dernier Duel | COHERENT | —
+172 | Le Masque des Trois Fentes | COHERENT | —
+175 | Les Éperons du Sanglier | COHERENT | —
+176 | Le Serment du Bourreau lent | A_PRECISER | F18
+181 | Le Collier du Premier Ordre | COHERENT | —
+185 | La Cloche du Berger rouge | COHERENT | —
+188 | L'Os du Maître disparu | COHERENT | F20
+191 | La Dent du Loup d'hiver | COHERENT | —
+194 | Le Livre des Ordres contraires | A_PRECISER | F10
+198 | La Main du Chef de meute | COHERENT | —
+203 | Le Fer du Médecin | A_PRECISER | F07
+207 | Le Calice des Deux Blessures | A_PRECISER | F07
+212 | L'Alliance des Derniers Remparts | COHERENT | —
+213 | La Cage du Coup retenu | A_PRECISER | F13
+217 | Le Diadème du Cœur exposé | COHERENT | —
+220 | Le Serment des Épines douces | COHERENT | —
+221 | Le Sablier du Poison patient | A_PRECISER | F15
+222 | La Couronne des Plaies jumelles | A_PRECISER | F16
+224 | Le Livre des Malédictions migratrices | A_REVOIR | F02, F15
+226 | La Bague du Fléau solitaire | A_PRECISER | F15
+229 | Le Serpent qui se Mord | A_PRECISER | F15
+230 | Le Clou du Temps malade | A_PRECISER | F16
+233 | La Dent du Vers affamé | COHERENT | —
+234 | Le Bracelet des Deux Fièvres | COHERENT | —
+235 | La Faux des Noms effacés | A_PRECISER | F15
+236 | L'Épine du Sang figé | COHERENT | —
+237 | Le Masque du Guérisseur de peste | A_PRECISER | F15
+238 | Le Parchemin des Contagions inversées | COHERENT | —
+239 | Le Cœur du Chasseur de fièvres | COHERENT | —
+240 | Le Fil des Plaies suspendues | COHERENT | —
+257 | Le Souffle du Coureur d'ombres | COHERENT | —
+261 | Le Livre du Guerrier lettré | COHERENT | F24
+262 | La Lame du Prêtre renégat | COHERENT | F24
+263 | Le Sceau du Piégeur universel | COHERENT | —
+264 | Le Bâton du Faux Totémiste | COHERENT | —
+265 | La Cagoule du Profanateur d'aires | COHERENT | —
+266 | Le Fer du Projectile impossible | COHERENT | F24
+269 | Le Diadème des Deux Disciplines | COHERENT | F24
+273 | Les Gantelets du Sang emprunté | COHERENT | —
+276 | La Fureur des Trois Cieux | COHERENT | —
+277 | Le Rempart du Mage de guerre | COHERENT | —
+279 | Les Deux Mains de l'Hérétique | A_PRECISER | F11, F12
+280 | Le Parchemin du Fléau sacré | A_REVOIR | F02, F19
+281 | La Couronne du Sort interdit | COHERENT | —
+283 | Le Livre de la Phrase parfaite | COHERENT | —
+285 | Le Masque du Maître sans école | COHERENT | —
+286 | La Clef du Dernier Mot | COHERENT | —
+288 | La Bague des Rythmes croisés | COHERENT | F24
+293 | Les Gants du Copiste maladroit | COHERENT | —
+300 | La Couronne de l'Expédition impossible | COHERENT | F24
+301 | L'Archive des Neuf Voies | COHERENT | F21
+302 | Les Deux Lunes de Remulos | COHERENT | —
+303 | Les Racines du Dernier Cercle | COHERENT | —
+304 | Les Griffes du Bois meurtri | COHERENT | —
+305 | Le Serment de la Graine enfouie | COHERENT | F22
+306 | Les Ramures de l'Orage | COHERENT | —
+307 | Le Cœur de l'Immolé | COHERENT | —
+308 | Le Pacte du Créancier | A_REVOIR | F02
+309 | La Cage des Trois Brasiers | A_PRECISER | F23
+310 | Le Réceptacle du Dernier Soupir | A_REVOIR | F03
+
+FICHIERS VÉRIFIÉS
+- docs/idees-100-legendaires.txt et docs/legendaire-301-milestones.txt.
+- crates/benilla-app/src/survivors/data.rs : définitions des sorts et classes.
+- crates/benilla-app/src/survivors/abilities.rs : autocast, hits, ticks, auras et soins.
+- crates/benilla-app/src/survivors/enemies.rs : Dot et ciblage des ennemis.
+- crates/benilla-app/src/survivors/server.rs : Run::heal et état de soin.
+- crates/benilla-app/src/survivors/hero.rs : blocage, absorption et soins périodiques.
+- crates/benilla-app/src/survivors/talent_design.rs : les 81 milestones.
+- crates/benilla-app/src/survivors/talent_runtime.rs : drains, invocations, totems et Grove.
+- crates/benilla-app/src/survivors/procs.rs : proc_starfall, écoles et effets cachés.
+- crates/benilla-app/src/survivors/items/equipment.rs : permissions de classe et slots.
+- crates/benilla-app/src/survivors/items/config.rs : validation des nouvelles bases.
+- crates/benilla-app/src/survivors/items/weapons.rs : agrégation des deux mains.
+- crates/benilla-app/src/survivors/items/combat.rs : informations des déclenchements d'objet.
+- crates/benilla-app/src/survivors/spell_engine/mod.rs et tags.rs : profils, écoles et exécution.

@@ -12,6 +12,7 @@ pub(super) enum Request {
 
 #[derive(Resource, Default)]
 pub(in crate::survivors) struct Lobby {
+    pub panel_open: bool,
     pub joining: bool,
     pub busy: bool,
     pub input: String,
@@ -71,14 +72,16 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(not(target_arch = "wasm32"))]
 fn capture(
     buttons: Query<&Interaction, With<Action>>,
+    lobby: Res<Lobby>,
     mut selection: ResMut<super::super::Selection>,
 ) {
-    selection.ui_captured |= buttons.iter().any(|i| *i != Interaction::None);
+    selection.ui_captured |= lobby.joining || buttons.iter().any(|i| *i != Interaction::None);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component, Clone, Copy)]
-pub(super) enum Action {
+pub(in crate::survivors) enum Action {
+    Toggle,
     Join,
     Cancel,
     Paste,
@@ -139,6 +142,11 @@ pub(super) fn input(
     }
     for action in actions {
         match action {
+            Action::Toggle => {
+                lobby.panel_open = !lobby.panel_open;
+                lobby.joining = lobby.panel_open;
+                lobby.revision += 1;
+            }
             Action::Join if !lobby.busy => {
                 if let Err(error) = super::native::address::parse(&lobby.input) {
                     lobby.fail(error);
@@ -159,8 +167,11 @@ pub(super) fn input(
                 lobby.revision += 1;
             }
             Action::Cancel => {
-                lobby.request = Some(Request::Cancel);
+                if lobby.busy || !lobby.active {
+                    lobby.request = Some(Request::Cancel);
+                }
                 lobby.joining = false;
+                lobby.panel_open = false;
                 lobby.revision += 1;
             }
             Action::Paste if !lobby.busy => {
@@ -188,13 +199,17 @@ fn draw(
     phase: Res<State<super::super::Phase>>,
     font: Option<Res<super::super::hud::HudFont>>,
     roots: Query<Entity, With<Overlay>>,
-    mut shown: Local<Option<(super::super::Phase, u64)>>,
+    mut shown: Local<Option<(super::super::Phase, u64, bool)>>,
+    selection: Option<Res<super::super::Selection>>,
 ) {
     use super::super::{combat_ui::skin, hud, Phase};
     let Some(font) = font else {
         return;
     };
-    let key = (*phase.get(), lobby.revision);
+    let in_hub = selection
+        .as_deref()
+        .map_or(*phase.get() == Phase::Hub, |s| s.in_hub);
+    let key = (*phase.get(), lobby.revision, in_hub);
     if *shown == Some(key) {
         return;
     }
@@ -203,7 +218,7 @@ fn draw(
         commands.entity(root).despawn();
     }
     let f = &font.0;
-    if lobby.joining && *phase.get() == Phase::Menu {
+    if lobby.joining && (*phase.get() == Phase::Menu || in_hub) {
         commands
             .spawn((
                 Overlay,
@@ -290,57 +305,40 @@ fn draw(
                         skin::button(ui, f, "Annuler", Action::Cancel, 240.0);
                     });
             });
-    } else if lobby.active && *phase.get() != Phase::Menu {
+    } else if lobby.active && lobby.panel_open && *phase.get() != Phase::Menu && in_hub {
         commands
             .spawn((
                 Overlay,
                 GlobalZIndex(650),
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(18.0),
-                    bottom: Val::Px(18.0),
-                    width: Val::Px(380.0),
-                    padding: UiRect::all(Val::Px(12.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(6.0),
+                    left: Val::Px(0.0),
+                    bottom: Val::Px(50.0),
+                    width: Val::Px(300.0),
+                    padding: UiRect::all(Val::Px(7.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: Val::Px(8.0),
                     ..default()
                 },
             ))
             .with_children(|ui| {
                 skin::backdrop(ui);
                 ui.spawn((
-                    Text::new(format!("Salon · {}/8 joueurs", lobby.members)),
+                    Text::new(format!("Connecté · {}/8 joueurs", lobby.members)),
                     TextFont {
                         font: f.clone(),
-                        font_size: 16.0,
+                        font_size: 13.0,
                         ..default()
                     },
                     TextColor(hud::GOLD_TONE),
                 ));
-                ui.spawn((
-                    Text::new("Connexion directe : IPv4 Hamachi / réseau local"),
-                    TextFont {
-                        font: f.clone(),
-                        font_size: 16.0,
-                        ..default()
-                    },
-                ));
-                if !lobby.status.is_empty() {
-                    ui.spawn((
-                        Text::new(&lobby.status),
-                        TextFont {
-                            font: f.clone(),
-                            font_size: 13.0,
-                            ..default()
-                        },
-                    ));
-                }
                 ui.spawn(Node {
                     column_gap: Val::Px(6.0),
                     ..default()
                 })
                 .with_children(|row| {
-                    skin::button(row, f, "Quitter le salon", Action::Leave, 170.0);
+                    skin::button(row, f, "Quitter", Action::Leave, 85.0);
                 });
             });
     } else if !lobby.error.is_empty() && *phase.get() == Phase::Menu {
@@ -417,6 +415,48 @@ mod tests {
         assert!(matches!(actions[0], Action::Cancel));
     }
 
+    #[test]
+    fn connection_panel_is_compact_centered_and_hidden_in_expeditions() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Phase>()
+            .insert_resource(super::super::super::Selection {
+                in_hub: true,
+                ..default()
+            })
+            .insert_resource(Lobby {
+                active: true,
+                panel_open: true,
+                members: 2,
+                ..default()
+            })
+            .insert_resource(super::super::super::hud::HudFont(Handle::default()))
+            .add_systems(Update, draw);
+        app.world_mut()
+            .resource_mut::<NextState<Phase>>()
+            .set(Phase::Hub);
+        app.update();
+        let world = app.world_mut();
+        let node = world
+            .query_filtered::<&Node, With<Overlay>>()
+            .single(world)
+            .unwrap();
+        assert_eq!(node.width, Val::Px(300.0));
+        assert_eq!(node.left, Val::Px(0.0));
+        world
+            .resource_mut::<super::super::super::Selection>()
+            .in_hub = false;
+        world.resource_mut::<NextState<Phase>>().set(Phase::Playing);
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(
+            world
+                .query_filtered::<Entity, With<Overlay>>()
+                .iter(world)
+                .count(),
+            0
+        );
+    }
     #[test]
     fn enter_in_the_ipv4_dialog_cannot_start_a_solo_game() {
         let mut world = world();

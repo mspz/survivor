@@ -45,23 +45,23 @@ impl Action {
     ];
     pub fn name(self) -> &'static str {
         match self {
-            Self::Forward => "Move forward",
-            Self::Back => "Move backward",
-            Self::TurnLeft => "Turn left / RMB strafe",
-            Self::TurnRight => "Turn right / RMB strafe",
-            Self::StrafeLeft => "Strafe left",
-            Self::StrafeRight => "Strafe right",
-            Self::Jump => "Jump",
-            Self::Mobility => "Class movement skill",
-            Self::Talents => "Talent window",
-            Self::Grade => "Colour / sharpening",
-            Self::Card1 => "Choose card 1",
-            Self::Card2 => "Choose card 2",
-            Self::Card3 => "Choose card 3",
-            Self::Pause => "Pause / resume",
-            Self::Character => "Character sheet",
-            Self::DamageMeter => "Damage meter",
-            Self::Inventory => "Bags / inventory",
+            Self::Forward => "Avancer",
+            Self::Back => "Reculer",
+            Self::TurnLeft => "Tourner à gauche",
+            Self::TurnRight => "Tourner à droite",
+            Self::StrafeLeft => "Pas à gauche",
+            Self::StrafeRight => "Pas à droite",
+            Self::Jump => "Sauter",
+            Self::Mobility => "Compétence de déplacement",
+            Self::Talents => "Talents",
+            Self::Grade => "Filtre couleur et netteté",
+            Self::Card1 => "Choisir la carte 1",
+            Self::Card2 => "Choisir la carte 2",
+            Self::Card3 => "Choisir la carte 3",
+            Self::Pause => "Pause / reprendre",
+            Self::Character => "Personnage",
+            Self::DamageMeter => "Compteur de combat",
+            Self::Inventory => "Sacs / inventaire",
         }
     }
 }
@@ -146,6 +146,9 @@ pub(super) struct Settings {
     pub incoming: bool,
     pub critical_only: bool,
     pub grade: bool,
+    pub invert_x: bool,
+    pub invert_y: bool,
+    pub zoom_speed: f32,
 }
 impl Settings {
     pub fn defaults() -> Self {
@@ -184,6 +187,9 @@ impl Settings {
             incoming: true,
             critical_only: false,
             grade: true,
+            invert_x: false,
+            invert_y: false,
+            zoom_speed: 1.0,
         }
     }
     pub fn pressed(&self, action: Action, keys: &ButtonInput<KeyCode>) -> bool {
@@ -233,6 +239,10 @@ impl Settings {
                 ));
             }
         }
+        out.push_str(&format!(
+            "invert_x {}\ninvert_y {}\nzoom_speed {}\n",
+            self.invert_x, self.invert_y, self.zoom_speed
+        ));
         out
     }
     fn decode(text: &str) -> Self {
@@ -246,6 +256,23 @@ impl Settings {
             };
             let flag = value.parse::<bool>().ok();
             match name {
+                "invert_x" => {
+                    if let Some(v) = flag {
+                        out.invert_x = v;
+                    }
+                }
+                "invert_y" => {
+                    if let Some(v) = flag {
+                        out.invert_y = v;
+                    }
+                }
+                "zoom_speed" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        if v.is_finite() {
+                            out.zoom_speed = v.clamp(0.25, 2.0);
+                        }
+                    }
+                }
                 "damage" => {
                     if let Some(v) = flag {
                         out.damage = v;
@@ -343,22 +370,27 @@ enum Tab {
     Sound,
     Mouse,
     Display,
+    Video,
+    Help,
 }
 #[derive(Resource, Default)]
 pub(super) struct Panel {
     pub open: bool,
     tab: Tab,
     capture: Option<(Action, usize)>,
+    scroll: f32,
 }
 
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<Settings>()
         .init_resource::<Panel>()
+        .add_message::<bevy::input::mouse::MouseWheel>()
         .add_systems(
             Update,
             (
                 ui::input.before(super::hud::keys),
                 ui::render.after(ui::input),
+                ui::scroll.after(ui::input).before(ui::render),
             ),
         );
 }
@@ -385,8 +417,12 @@ mod tests {
         s.rebind(Action::Back, 1, None);
         s.damage = false;
         s.critical_only = true;
+        s.invert_y = true;
+        s.zoom_speed = 1.5;
         assert_eq!(Settings::decode(&s.encode()), s);
         assert_eq!(Settings::decode("broken"), Settings::defaults());
+        assert_eq!(Settings::decode("v1\nzoom_speed NaN\n").zoom_speed, 1.0);
+        assert_eq!(Settings::decode("v1\nzoom_speed 100\n").zoom_speed, 2.0);
     }
     #[test]
     fn combat_number_filters_are_independent() {

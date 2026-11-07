@@ -1,5 +1,5 @@
 //! The rune panel: the dropped rune and the account's slots, shown at the results after a
-//! victory and in Stormwind on R. Rebuilt whenever the runes or the message change.
+//! victory and in the hub on R. Rebuilt whenever the runes or the message change.
 use super::{parse_color, Rune, RuneAction, Runes};
 use crate::survivors::{combat_ui::skin, hud, Phase, Rng, Selection};
 use bevy::prelude::*;
@@ -377,8 +377,8 @@ fn clicks(
     }
 }
 
-/// R opens the panel in Stormwind and on the training ground; a rune still waiting to be
-/// placed opens it on arrival in Stormwind.
+/// R opens the panel in the hub and on the training ground; a rune still waiting to be
+/// placed opens it on arrival in the hub.
 fn hub_keys(
     keys: Res<ButtonInput<KeyCode>>,
     phase: Res<State<Phase>>,

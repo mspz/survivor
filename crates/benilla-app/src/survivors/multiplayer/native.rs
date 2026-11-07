@@ -25,10 +25,13 @@ use std::{
     time::Duration,
 };
 pub(super) mod address;
+mod prediction;
 mod rooms;
 mod saves;
 
 struct Peer {
+    money_earned: u64,
+    trade: game::items::TradeAccount,
     socket: Socket,
     session: Option<session::LocalSession>,
     profile: Option<wire::Profile>,
@@ -57,6 +60,7 @@ struct Guest {
 
 #[derive(Resource)]
 struct Network {
+    coins: MessageCursor<game::enemies::Loot>,
     connecting: Option<(
         std::net::SocketAddr,
         crossbeam_channel::Receiver<Result<TcpStream, String>>,
@@ -71,7 +75,8 @@ struct Network {
     casts: MessageCursor<CastEvent>,
     gos: MessageCursor<SpellGoTargets>,
     swings: MessageCursor<SwingMessage>,
-    loot: MessageCursor<game::enemies::Loot>,
+    loot: MessageCursor<game::items::ChestOpened>,
+    numbers: MessageCursor<units::CombatNumber>,
 }
 
 #[derive(Resource)]
@@ -164,9 +169,11 @@ pub(super) fn plugin(app: &mut App) {
         tick: 0,
         since_snapshot: 0.0,
         effects: Vec::new(),
+        coins: default(),
         casts: default(),
         gos: default(),
         swings: default(),
+        numbers: default(),
         loot: default(),
     });
     register_rules(app.world_mut());
@@ -183,6 +190,12 @@ pub(super) fn plugin(app: &mut App) {
             .before(game::enemies::spawn_enemies),
     )
     .add_systems(Update, interpolate.after(pump).before(hero::place_camera))
+    .add_systems(
+        Update,
+        prediction::predict
+            .after(pump)
+            .in_set(session::Stage::Simulate),
+    )
     .add_systems(PostUpdate, publish.after(game::forms::sync));
     app.add_systems(Update, rooms::update.after(super::lobby::input));
 }
@@ -300,6 +313,8 @@ fn pump_host(world: &mut World, network: &mut Network) {
             network.peers.insert(
                 network.next_peer,
                 Peer {
+                    money_earned: 0,
+                    trade: default(),
                     socket,
                     session: None,
                     profile: None,
@@ -347,6 +362,11 @@ fn pump_host(world: &mut World, network: &mut Network) {
                         failed = true;
                         break;
                     }
+                    peer.trade = profile
+                        .save
+                        .as_ref()
+                        .map(|s| game::items::TradeAccount::decode(&s.inventory))
+                        .unwrap_or_default();
                     peer.profile = Some(profile);
                     info!("Survivors client {id} joined");
                 }
@@ -397,7 +417,48 @@ fn pump_host(world: &mut World, network: &mut Network) {
                                     .insert(session.wire_id(), companion);
                             }
                         }
+                        peer.trade = game::items::TradeAccount::decode(&save.inventory);
                         profile.save = Some(save);
+                    }
+                }
+                wire::ToServer::ResetMeter => {
+                    if peer.session.is_some() {
+                        world.resource_scope(|world, mut players: Mut<Companions>| {
+                            super::reset_meters(
+                                &mut world.resource_mut::<Run>(),
+                                Some(&mut players),
+                            );
+                        });
+                    }
+                }
+                wire::ToServer::Chest(request) => {
+                    if let Some(session) = &peer.session {
+                        let result = (|| {
+                            let accessible = world.resource::<Selection>().in_hub
+                                && world
+                                    .resource::<Companions>()
+                                    .0
+                                    .get(&session.wire_id())
+                                    .is_some_and(|p| {
+                                        world.get::<Transform>(p.entity).is_some_and(|t| {
+                                            game::shared_chest::near(t.translation)
+                                        })
+                                    });
+                            world
+                                .get_resource_mut::<game::shared_chest::Store>()
+                                .ok_or_else(|| "Coffre indisponible.".to_string())?
+                                .request_for(
+                                    &peer.trade.identity,
+                                    &peer.trade.pending_deposits,
+                                    request,
+                                    accessible,
+                                )
+                        })();
+                        if let Some(mut view) = world.get_resource_mut::<game::shared_chest::View>()
+                        {
+                            view.notices
+                                .insert(session.wire_id(), result.err().unwrap_or_default());
+                        }
                     }
                 }
                 wire::ToServer::LootAck(ack) => {
@@ -521,7 +582,7 @@ fn apply_pick(world: &mut World, id: u64, offer_id: u64, index: usize) {
     };
     if companion.offer_id == offer_id
         && companion.run.pending_levels > 0
-        && index < companion.offer.len()
+        && (index < companion.offer.len() || (3..=7).contains(&index))
     {
         hud::pick(
             index,
@@ -601,7 +662,8 @@ fn simulate(world: &mut World) {
         return;
     }
     let phase = *world.resource::<State<Phase>>().get();
-    if !matches!(phase, Phase::Playing | Phase::Hub)
+    let combat = !world.resource::<Selection>().in_hub && super::runs_in(phase, Role::Host);
+    if !(phase == Phase::Hub || super::runs_in(phase, Role::Host))
         || world
             .resource::<crate::loading_screen::LoadingScreen>()
             .covering()
@@ -644,9 +706,13 @@ fn simulate(world: &mut World) {
             continue;
         };
         world.entity_mut(companion.entity).insert(companion.physics);
-        let mut host_run = world.remove_resource::<Run>().unwrap();
+        let host_run = world.remove_resource::<Run>().unwrap();
         companion.run.next_guid = host_run.next_guid;
         world.insert_resource(companion.run);
+        world.insert_resource(super::HostPlayer {
+            entity: local_entity,
+            run: host_run,
+        });
         let host_session = world.remove_resource::<session::LocalSession>().unwrap();
         world.insert_resource(peer.session.take().unwrap());
         let next = world.remove_resource::<NextState<Phase>>().unwrap();
@@ -657,7 +723,7 @@ fn simulate(world: &mut World) {
         let focus = world.resource::<crate::player::Player>().pos;
         // Registered systems keep their query/message cursors; this does not rebuild systems per frame.
         for (index, system) in ids.into_iter().enumerate() {
-            if index >= 2 && phase != Phase::Playing {
+            if index >= 2 && !combat {
                 continue;
             }
             if let Err(error) = world.run_system(system) {
@@ -674,6 +740,7 @@ fn simulate(world: &mut World) {
             hit.owner = Some(id);
         }
         companion.run = world.remove_resource::<Run>().unwrap();
+        let mut host_run = world.remove_resource::<super::HostPlayer>().unwrap().run;
         host_run.next_guid = companion.run.next_guid;
         world.insert_resource(host_run);
         companion.physics = world
@@ -758,6 +825,32 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
             guest
                 .socket
                 .send(&wire::ToServer::LootAck(guest.receipts.loot))?;
+            let vault = world
+                .get_resource::<game::shared_chest::View>()
+                .map(|v| v.replica.identity.clone())
+                .unwrap_or_default();
+            let mut chest_requests = world
+                .get_resource_mut::<game::shared_chest::View>()
+                .map(|mut v| std::mem::take(&mut v.requests))
+                .unwrap_or_default();
+            if let Some(inventory) = world.get_resource::<game::items::Inventory>() {
+                chest_requests.extend(
+                    inventory
+                        .pending_deposits()
+                        .iter()
+                        .filter(|t| t.vault == vault)
+                        .map(|t| game::shared_chest::Request::Deposit(t.token.clone())),
+                );
+            }
+            if world
+                .get_resource_mut::<GuestActions>()
+                .is_some_and(|mut a| std::mem::take(&mut a.reset_meter))
+            {
+                guest.socket.send(&wire::ToServer::ResetMeter)?;
+            }
+            for request in chest_requests {
+                guest.socket.send(&wire::ToServer::Chest(request))?;
+            }
             guest.sequence += 1;
             guest.socket.send(&wire::ToServer::Input(wire::Input {
                 sequence: guest.sequence,
@@ -847,14 +940,22 @@ fn decode_choice(choice: wire::Choice) -> Option<hud::Choice> {
 
 fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
     wire::Stats {
+        auras: game::player_auras::collect(run),
+        healing_meter: run.healing_meter.clone(),
+        taken_meter: run.taken_meter.clone(),
+        movement_speed: run.stats().speed * run.haste_mult(),
+        meter: run.meter.clone(),
         earned: game::talents::earned(run),
         hp: run.hp,
         max_hp: run.stats().max_hp,
         elapsed: run.elapsed,
         level: run.level,
+        character_level: run.meta_level,
         xp: run.xp,
         kills: run.kills,
         dead: run.dead_t.is_some(),
+        revival: [run.revival.seconds, run.revival.assisting],
+        coop_revive: run.revival.enabled,
         won: run.won,
         abilities: run
             .abilities
@@ -867,6 +968,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
             .map(|(p, n)| (p.key.into(), *n))
             .collect(),
         offer_id,
+        draft_uses: run.draft_uses,
         choices: offer.choices().iter().map(encode_choice).collect(),
         mobility: [
             run.mobile.cd,
@@ -876,6 +978,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         ],
         shield: [run.shield, run.shield_t],
         immune: run.immune_t,
+        support_bonuses: game::healer_buffs::snapshot(run),
         damage_done: run.damage_done,
     }
 }
@@ -907,11 +1010,26 @@ fn publish(world: &mut World) {
         return;
     }
     let mut network = world.remove_resource::<Network>().unwrap();
-    let boss_kills = network
-        .loot
-        .read(world.resource::<Messages<game::enemies::Loot>>())
-        .filter(|loot| loot.boss)
-        .count();
+    let opened = world
+        .get_resource::<Messages<game::items::ChestOpened>>()
+        .map(|messages| {
+            network
+                .loot
+                .read(messages)
+                .map(|loot| loot.level)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let money = world
+        .get_resource::<Messages<game::enemies::Loot>>()
+        .map(|messages| {
+            network
+                .coins
+                .read(messages)
+                .map(|drop| game::currency::reward(drop.item_level, drop.boss))
+                .fold(0u64, u64::saturating_add)
+        })
+        .unwrap_or(0);
     for peer in network.peers.values_mut() {
         let Some(connection) = &peer.session else {
             continue;
@@ -919,16 +1037,17 @@ fn publish(world: &mut World) {
         let Some(player) = world.resource::<Companions>().0.get(&connection.wire_id()) else {
             continue;
         };
-        let (level, class) = (player.run.level, player.run.class.id);
-        for _ in 0..boss_kills {
+        let (class, magic_find) = (player.run.class.id, player.run.equipment.magic_find);
+        peer.money_earned = peer
+            .money_earned
+            .saturating_add(money)
+            .min(game::currency::MAX_BALANCE);
+        for &level in &opened {
             let item = world.resource_scope(|world, mut rng: Mut<Rng>| {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
-                if rng.f32() >= inventory.config.boss_drop_chance {
-                    return None;
-                }
                 inventory
                     .config
-                    .generate_for_class(level, class, &mut rng)
+                    .generate_loot(level, class, magic_find, &mut rng)
                     .ok()
             });
             if let Some(item) = item {
@@ -945,6 +1064,19 @@ fn publish(world: &mut World) {
         .map(|(e, g)| (e, g.0))
         .collect();
     let guid = |e: Entity| entity_guids.get(&e).copied();
+    if let Some(numbers) = world.get_resource::<Messages<units::CombatNumber>>() {
+        for number in network.numbers.read(numbers) {
+            if let Some(target) = guid(number.anchor) {
+                network.effects.push(wire::Effect::Number {
+                    owner: number.owner,
+                    target,
+                    amount: number.amount,
+                    crit: number.crit,
+                    color: number.color,
+                });
+            }
+        }
+    }
     for go in network
         .gos
         .read(world.resource::<Messages<SpellGoTargets>>())
@@ -987,7 +1119,11 @@ fn publish(world: &mut World) {
     }
     network.since_snapshot = 0.0;
     network.tick += 1;
-    let phase = *world.resource::<State<Phase>>().get();
+    let phase = if world.resource::<Selection>().in_hub {
+        Phase::Hub
+    } else {
+        *world.resource::<State<Phase>>().get()
+    };
     let units: Vec<wire::Unit> = world
         .query_filtered::<(
             &Guid,
@@ -997,10 +1133,16 @@ fn publish(world: &mut World) {
             Option<&MovementState>,
             Option<&RemoteOwner>,
             Option<&game::unit_frames::Status>,
+            Has<game::enemies::StillPickup>,
+            Has<hero::Hero>,
+            Option<&game::enemies::Rank>,
         ), With<RunEntity>>()
         .iter(world)
         .map(
-            |(guid, net, store, tf, movement, owner, status)| wire::Unit {
+            |(guid, net, store, tf, movement, owner, status, static_pickup, local, rank)| wire::Unit {
+                rank: rank.copied(),
+                party_player: local || owner.is_some(),
+                static_pickup,
                 status: status.cloned(),
                 guid: guid.0,
                 owner: owner.map(|o| o.0),
@@ -1052,6 +1194,29 @@ fn publish(world: &mut World) {
     let stage = selection.stage;
     let in_hub = selection.in_hub;
     let effects = std::mem::take(&mut network.effects);
+    let mut party = Vec::new();
+    let host_name = world
+        .get_resource::<game::characters::Roster>()
+        .and_then(|r| r.current())
+        .map_or_else(|| "Hôte".into(), |c| c.name.clone());
+    let summary = |id, name, run: &Run| {
+        let rows = run.meter.rows(run.elapsed);
+        game::combat_ui::PartyRow {
+            id,
+            name,
+            class: run.class.id,
+            dps: rows.iter().map(|r| r.dps).sum(),
+            total: rows.iter().map(|r| r.total).sum(),
+        }
+    };
+    party.push(summary(0, host_name, world.resource::<Run>()));
+    for (&id, player) in &world.resource::<Companions>().0 {
+        let name = world
+            .get::<game::unit_frames::Status>(player.entity)
+            .map_or_else(|| player.run.class.name.into(), |s| s.name.clone());
+        party.push(summary(id, name, &player.run));
+    }
+    world.insert_resource(game::combat_ui::PartyDamage(party.clone()));
     let mut disconnected = Vec::new();
     for (&key, peer) in &mut network.peers {
         let Some(connection) = &peer.session else {
@@ -1064,7 +1229,27 @@ fn publish(world: &mut World) {
         if !peer.socket.idle() {
             continue;
         }
+        let mut chest = world
+            .get_resource::<game::shared_chest::Store>()
+            .map(|s| s.replica_for(&peer.trade.identity, &peer.trade.pending_deposits))
+            .unwrap_or_default();
+        if !in_hub {
+            chest.entries.clear();
+        }
+        if let Some(notice) = world
+            .get_resource::<game::shared_chest::View>()
+            .and_then(|v| v.notices.get(&connection.wire_id()))
+            .filter(|s| !s.is_empty())
+        {
+            chest.notice = notice.clone();
+        }
         let snapshot = wire::Snapshot {
+            boss_warnings: world
+                .get_resource::<game::boss_spells::Warnings>()
+                .map_or_else(Vec::new, |w| w.0.clone()),
+            money_earned: peer.money_earned,
+            chest,
+            party: party.clone(),
             run_id: world.get::<Guid>(companion.entity).map_or(0, |g| g.0),
             loot: peer.loot.clone(),
             tick: network.tick,
@@ -1074,7 +1259,11 @@ fn publish(world: &mut World) {
             in_hub,
             stats: stats(&companion.run, &companion.offer, companion.offer_id),
             units: units.clone(),
-            effects: effects.clone(),
+            effects: effects
+                .iter()
+                .filter(|e| visible_to(e, Some(connection.wire_id())))
+                .cloned()
+                .collect(),
             equipment: equipment.clone(),
         };
         if peer
@@ -1098,22 +1287,58 @@ fn encode_phase(phase: Phase, companion: &Companion) -> u8 {
     if matches!(phase, Phase::Menu | Phase::Hub) {
         return 1;
     }
-    if companion.run.dead_t.is_some_and(|t| t > 3.0) {
-        return 6;
-    }
-    if companion.run.pending_levels > 0 {
+    if companion.run.dead_t.is_none() && companion.run.pending_levels > 0 {
         return 3;
     }
     match phase {
         Phase::Menu => 0,
         Phase::Hub => 1,
         Phase::Playing => 2,
-        Phase::LevelUp | Phase::Paused | Phase::CharacterSheet => 4,
+        Phase::LevelUp | Phase::Paused | Phase::CharacterSheet => 2,
         Phase::GameOver => 6,
     }
 }
 
+fn received_phase(remote: u8, in_hub: bool, choosing_reward: bool) -> Phase {
+    // A snapshot can announce world transitions and this guest's rewards, never host menus.
+    if remote == 6 {
+        Phase::GameOver
+    } else if in_hub {
+        Phase::Hub
+    } else if choosing_reward {
+        Phase::LevelUp
+    } else {
+        Phase::Playing
+    }
+}
+
+fn local_phase(current: Phase, remote: Phase, offer_changed: bool) -> Phase {
+    // Only expedition transitions belong to the host. Personal menus stay on this machine.
+    if matches!(current, Phase::Paused | Phase::CharacterSheet)
+        && matches!(remote, Phase::Hub | Phase::Playing | Phase::LevelUp)
+    {
+        current
+    } else if current == Phase::LevelUp && remote == Phase::LevelUp && !offer_changed {
+        current
+    } else {
+        remote
+    }
+}
+
 fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot) {
+    world.insert_resource(game::boss_spells::Warnings(snapshot.boss_warnings.clone()));
+    if world.contains_resource::<game::items::Inventory>()
+        && world.contains_resource::<game::shared_chest::View>()
+    {
+        world.resource_scope(|world, mut inventory: Mut<game::items::Inventory>| {
+            game::shared_chest::receive(
+                snapshot.chest.clone(),
+                &mut inventory,
+                &mut world.resource_mut::<game::shared_chest::View>(),
+            );
+        });
+    }
+    world.insert_resource(game::combat_ui::PartyDamage(snapshot.party.clone()));
     let members = snapshot
         .units
         .iter()
@@ -1239,6 +1464,27 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             guest.entities.insert(unit.guid, entity);
             entity
         };
+        if let Some(rank) = unit.rank {
+            world.entity_mut(entity).insert(rank);
+        } else {
+            world.entity_mut(entity).remove::<game::enemies::Rank>();
+        }
+        if unit.party_player {
+            world
+                .entity_mut(entity)
+                .insert(game::unit_frames::PartyPlayer);
+        } else {
+            world
+                .entity_mut(entity)
+                .remove::<game::unit_frames::PartyPlayer>();
+        }
+        if unit.static_pickup {
+            world.entity_mut(entity).insert(game::enemies::StillPickup);
+        } else {
+            world
+                .entity_mut(entity)
+                .remove::<game::enemies::StillPickup>();
+        }
         if let Some(status) = unit.status {
             world.entity_mut(entity).insert(status);
         } else {
@@ -1247,10 +1493,19 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
                 .remove::<game::unit_frames::Status>();
         }
         if unit.owner == guest.id && guest.id.is_some() {
-            world.entity_mut(entity).insert(hero::Hero {
-                vy: unit.vertical_speed,
-                air: 0.0,
-            });
+            prediction::receive(
+                world,
+                entity,
+                prediction::Authority {
+                    transform: to,
+                    vertical_speed: unit.vertical_speed,
+                    acknowledged: snapshot.acknowledged,
+                    speed: snapshot.stats.movement_speed,
+                    map: snapshot.map,
+                    in_hub: snapshot.in_hub,
+                    dead: snapshot.stats.dead,
+                },
+            );
             let selection = world.resource::<Selection>();
             if let (Some(class), Some(&(display, race, sex))) = (
                 selection.class,
@@ -1267,6 +1522,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         }
     }
     let stats = snapshot.stats;
+    world.insert_resource(game::player_auras::Remote(stats.auras.clone()));
     let class = world
         .resource::<Selection>()
         .class
@@ -1289,6 +1545,8 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.hp = stats.hp;
         run.elapsed = stats.elapsed;
         run.level = stats.level;
+        run.meta_level = stats.character_level.max(1);
+        run.draft_uses = stats.draft_uses;
         run.xp = stats.xp;
         run.kills = stats.kills;
         run.won = stats.won;
@@ -1301,8 +1559,15 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.shield = stats.shield[0];
         run.shield_t = stats.shield[1];
         run.immune_t = stats.immune;
+        game::healer_buffs::restore(&mut run, stats.support_bonuses);
         run.damage_done = stats.damage_done;
+        run.meter = stats.meter.clone();
+        run.healing_meter = stats.healing_meter.clone();
+        run.taken_meter = stats.taken_meter.clone();
         run.dead_t = stats.dead.then_some(0.0);
+        run.revival.enabled = stats.coop_revive;
+        run.revival.seconds = stats.revival[0];
+        run.revival.assisting = stats.revival[1];
         run.abilities = stats
             .abilities
             .iter()
@@ -1331,6 +1596,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             run.version = run.version.wrapping_add(1);
         }
     }
+    let choosing_reward = !stats.dead && !stats.choices.is_empty();
     if offer_changed {
         world.resource_mut::<game::cards::PendingPick>().clear();
         world.resource_mut::<hud::Offer>().choices = stats
@@ -1339,25 +1605,53 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             .filter_map(decode_choice)
             .collect();
     }
-    let phase = match snapshot.phase {
-        0 | 1 => Phase::Hub,
-        2 => Phase::Playing,
-        3 => Phase::LevelUp,
-        6 => Phase::GameOver,
-        _ => Phase::Paused,
-    };
+    let phase = received_phase(snapshot.phase, snapshot.in_hub, choosing_reward);
     let current = *world.resource::<State<Phase>>().get();
+    let phase = local_phase(current, phase, offer_changed);
     if current != phase {
         world.resource_mut::<NextState<Phase>>().set(phase);
     }
     for effect in snapshot.effects {
-        play_effect(world, &guest.entities, effect);
+        if visible_to(&effect, guest.id) {
+            play_effect(world, &guest.entities, effect);
+        }
+    }
+}
+
+fn visible_to(effect: &wire::Effect, recipient: Option<u64>) -> bool {
+    match effect {
+        wire::Effect::Number { owner, .. } => *owner == recipient,
+        _ => true,
     }
 }
 
 fn play_effect(world: &mut World, entities: &BTreeMap<u64, Entity>, effect: wire::Effect) {
     let seq = world.resource_mut::<PlaySeq>().next();
     match effect {
+        wire::Effect::Number {
+            owner: _,
+            target,
+            amount,
+            crit,
+            color,
+        } => {
+            if world
+                .get_resource::<game::options::Settings>()
+                .is_some_and(|s| {
+                    !s.numbers(color == units::COLOR_HEAL, color == units::COLOR_HURT, crit)
+                })
+            {
+                return;
+            }
+            if let Some(&anchor) = entities.get(&target) {
+                world.write_message(crate::combat_text::CombatTextSpawn {
+                    anchor,
+                    text: (amount.round().max(1.0) as i64).to_string(),
+                    category: if crit { 2 } else { 0 },
+                    color: Some(color),
+                });
+            }
+        }
         wire::Effect::Cast {
             caster,
             spell,
@@ -1420,10 +1714,9 @@ fn play_effect(world: &mut World, entities: &BTreeMap<u64, Entity>, effect: wire
 
 fn interpolate(
     time: Res<Time<Real>>,
-    mut units: Query<(&mut Transform, &mut Interpolation, Has<hero::Hero>)>,
-    mut player: ResMut<crate::player::Player>,
+    mut units: Query<(&mut Transform, &mut Interpolation), Without<hero::Hero>>,
 ) {
-    for (mut tf, mut interpolation, local) in &mut units {
+    for (mut tf, mut interpolation) in &mut units {
         interpolation.elapsed += time.delta_secs();
         let alpha = (interpolation.elapsed / 0.1).min(1.0);
         // Large jumps are teleports, not motion to interpolate across the map.
@@ -1444,21 +1737,133 @@ fn interpolate(
                 .rotation
                 .slerp(interpolation.to.rotation, alpha);
         }
-        if local {
-            player.active = true;
-            player.detached = false;
-            player.settling = false;
-            player.world_stale = false;
-            player.pos = tf.translation;
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn player_buff_snapshots_include_authoritative_effects_and_remaining_durations() {
+        let mut run = game::Run::default();
+        game::support_spells::grant(&mut run, "battle_shout", 0.4, 5.0, None);
+        let snapshot = super::stats(&run, &game::hud::Offer::default(), 0);
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let decoded: super::wire::Stats = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.auras.len(), 1);
+        assert_eq!(decoded.auras[0].left, Some(5.0));
+        assert!(decoded.auras[0].description.contains("40.0%"));
+    }
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use std::time::Instant;
+
+    #[test]
+    fn host_menus_never_open_a_guest_menu_or_reward_picker() {
+        for remote in [0, 1, 2, 3, 4, 5, 255] {
+            assert_eq!(received_phase(remote, false, false), Phase::Playing);
+            assert_eq!(received_phase(remote, true, false), Phase::Hub);
+            assert_eq!(received_phase(remote, false, true), Phase::LevelUp);
+            assert_eq!(
+                local_phase(Phase::Paused, received_phase(remote, false, false), false),
+                Phase::Paused
+            );
+        }
+        assert_eq!(received_phase(6, false, true), Phase::GameOver);
+    }
+
+    #[test]
+    fn snapshots_preserve_personal_menus_but_end_them_when_the_run_ends() {
+        for menu in [Phase::Paused, Phase::CharacterSheet] {
+            for remote in [Phase::Hub, Phase::Playing, Phase::LevelUp] {
+                assert_eq!(local_phase(menu, remote, true), menu);
+            }
+            assert_eq!(local_phase(menu, Phase::GameOver, false), Phase::GameOver);
+        }
+        assert_eq!(
+            local_phase(Phase::Playing, Phase::LevelUp, true),
+            Phase::LevelUp
+        );
+        assert_eq!(
+            local_phase(Phase::LevelUp, Phase::Playing, true),
+            Phase::Playing
+        );
+    }
+
+    #[test]
+    fn floating_numbers_are_private_to_their_owner_and_guests_do_not_render_on_the_host() {
+        for owner in [None, Some(42), Some(77)] {
+            let effect = wire::Effect::Number {
+                owner,
+                target: 1,
+                amount: 10.0,
+                crit: false,
+                color: units::COLOR_SPELL,
+            };
+            for recipient in [None, Some(42), Some(77)] {
+                assert_eq!(visible_to(&effect, recipient), owner == recipient);
+            }
+        }
+        let mut world = world();
+        world.init_resource::<Messages<units::CombatNumber>>();
+        let anchor = world.spawn_empty().id();
+        world
+            .run_system_once(move |mut fx: units::Fx| {
+                fx.number(Some(42), anchor, 25.0, false, units::COLOR_SPELL);
+                fx.number(None, anchor, 10.0, false, units::COLOR_SPELL);
+            })
+            .unwrap();
+        assert_eq!(world.resource::<Messages<units::CombatNumber>>().len(), 2);
+        let numbers: Vec<_> = world
+            .resource_mut::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .drain()
+            .collect();
+        assert_eq!(numbers.len(), 1);
+        assert_eq!(numbers[0].text, "10");
+    }
+    #[test]
+    fn combat_numbers_use_the_receivers_filters_even_if_the_host_hides_them() {
+        let mut world = world();
+        world.init_resource::<Messages<units::CombatNumber>>();
+        let mut settings = game::options::Settings::default();
+        settings.damage = false;
+        world.insert_resource(settings);
+        let anchor = world.spawn_empty().id();
+        world
+            .run_system_once(move |mut fx: units::Fx| {
+                fx.number(None, anchor, 26.6, true, units::COLOR_SPELL);
+            })
+            .unwrap();
+        assert!(world
+            .resource::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .is_empty());
+        let number = world
+            .resource_mut::<Messages<units::CombatNumber>>()
+            .drain()
+            .next()
+            .unwrap();
+        let entities = BTreeMap::from([(42, anchor)]);
+        let effect = wire::Effect::Number {
+            owner: number.owner,
+            target: 42,
+            amount: number.amount,
+            crit: number.crit,
+            color: number.color,
+        };
+        play_effect(&mut world, &entities, effect.clone());
+        assert!(world
+            .resource::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .is_empty());
+        world.resource_mut::<game::options::Settings>().damage = true;
+        play_effect(&mut world, &entities, effect);
+        let text = world
+            .resource_mut::<Messages<crate::combat_text::CombatTextSpawn>>()
+            .drain()
+            .next()
+            .unwrap();
+        assert_eq!(text.anchor, anchor);
+        assert_eq!(text.text, "27");
+        assert_eq!(text.category, 2);
+    }
 
     fn world() -> World {
         let mut world = World::new();
@@ -1544,7 +1949,7 @@ mod tests {
                 pets,
                 match class {
                     2 => 2,
-                    5 => 1,
+                    5 => 2,
                     7 => 3,
                     _ => 0,
                 },
@@ -1574,9 +1979,11 @@ mod tests {
             tick: 0,
             since_snapshot: 0.0,
             effects: default(),
+            coins: default(),
             casts: default(),
             gos: default(),
             swings: default(),
+            numbers: default(),
             loot: default(),
         }
     }
@@ -1598,8 +2005,442 @@ mod tests {
     }
 
     #[test]
+    fn kill_money_is_given_to_every_guest_once_even_when_a_guest_is_dead() {
+        let mut host = world();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut clients = [
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+        ];
+        for (i, client) in clients.iter_mut().enumerate() {
+            join(client, i);
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while host.resource::<Companions>().0.len() < 2 {
+            tick(&mut host);
+            for client in &mut clients {
+                client.receive::<wire::ToClient>().unwrap();
+            }
+            assert!(Instant::now() < deadline);
+        }
+        host.resource_mut::<Companions>()
+            .0
+            .values_mut()
+            .next()
+            .unwrap()
+            .run
+            .hp = 0.0;
+        host.write_message(game::enemies::Loot {
+            item_level: 1,
+            pos: Vec3::ZERO,
+            xp: 1,
+            boss: false,
+        });
+        host.write_message(game::enemies::Loot {
+            item_level: 60,
+            pos: Vec3::ZERO,
+            xp: 1,
+            boss: true,
+        });
+        publish(&mut host);
+        assert!(host
+            .resource::<Network>()
+            .peers
+            .values()
+            .all(|p| p.money_earned == 100003));
+        publish(&mut host);
+        assert!(host
+            .resource::<Network>()
+            .peers
+            .values()
+            .all(|p| p.money_earned == 100003));
+        let mut seen = [false; 2];
+        while !seen.iter().all(|s| *s) {
+            for (i, client) in clients.iter_mut().enumerate() {
+                for message in client.receive::<wire::ToClient>().unwrap() {
+                    if let wire::ToClient::Snapshot(snapshot) = message {
+                        if snapshot.money_earned == 100003 {
+                            seen[i] = true;
+                        }
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline);
+        }
+    }
+
+    #[test]
+    fn guest_opens_boss_chest_and_each_party_member_gets_exactly_one_item() {
+        let mut host = world();
+        host.insert_resource(game::items::Inventory::fixture(vec![]));
+        host.init_resource::<Messages<game::items::ChestOpened>>();
+        host.init_resource::<Messages<crate::sound::CoinSound>>();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut clients = [
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+        ];
+        join(&mut clients[0], 0);
+        join(&mut clients[1], 1);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while host.resource::<Companions>().0.len() < 2 {
+            tick(&mut host);
+            for client in &mut clients {
+                client.receive::<wire::ToClient>().unwrap();
+            }
+            assert!(Instant::now() < deadline);
+        }
+        let pos = Vec3::new(10000.0, 0.0, 10000.0);
+        host.resource_mut::<Messages<game::enemies::Loot>>()
+            .write(game::enemies::Loot {
+                item_level: 9,
+                pos,
+                xp: 0,
+                boss: true,
+            });
+        host.run_system_once(game::items::chest_drops).unwrap();
+        assert_eq!(
+            host.query::<&game::items::ItemDrop>().iter(&host).count(),
+            1
+        );
+        host.run_system_once(game::items::collect_drops).unwrap();
+        tick(&mut host);
+        assert!(host.resource::<game::items::Inventory>().all().is_empty());
+        assert!(host
+            .resource::<Network>()
+            .peers
+            .values()
+            .all(|p| p.loot.is_empty()));
+        let entities: Vec<_> = host
+            .resource::<Companions>()
+            .0
+            .values()
+            .map(|p| p.entity)
+            .collect();
+        for e in entities {
+            host.get_mut::<Transform>(e).unwrap().translation = pos;
+        }
+        host.run_system_once(game::items::collect_drops).unwrap();
+        assert_eq!(host.resource::<game::items::Inventory>().all().len(), 1);
+        assert_eq!(
+            host.query::<&game::items::ItemDrop>().iter(&host).count(),
+            0
+        );
+        host.run_system_once(game::items::collect_drops).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut seen = [false; 2];
+        while !seen.iter().all(|s| *s) {
+            tick(&mut host);
+            for (i, client) in clients.iter_mut().enumerate() {
+                for message in client.receive::<wire::ToClient>().unwrap() {
+                    if let wire::ToClient::Snapshot(s) = message {
+                        if !s.loot.is_empty() {
+                            assert_eq!(s.loot.len(), 1);
+                            let item: game::items::Item = toml::from_str(&s.loot[0].1).unwrap();
+                            assert_eq!(item.level, 9);
+                            seen[i] = true;
+                        }
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline);
+        }
+        for _ in 0..3 {
+            tick(&mut host);
+        }
+        assert_eq!(host.resource::<game::items::Inventory>().all().len(), 1);
+        assert!(host
+            .resource::<Network>()
+            .peers
+            .values()
+            .all(|p| p.loot.len() == 1));
+    }
+
+    #[test]
+    fn tcp_guest_can_reset_group_meters_without_changing_expedition_damage() {
+        let mut host = world();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut client = Socket::new(TcpStream::connect(address).unwrap()).unwrap();
+        join(&mut client, 0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while host.resource::<Companions>().0.is_empty() {
+            tick(&mut host);
+            client.receive::<wire::ToClient>().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        fn seed(run: &mut Run) {
+            run.meter
+                .record_hit("fireball", run.elapsed, 100.0, false, false);
+            run.healing_meter
+                .record_hit("flash_heal", run.elapsed, 20.0, false, false);
+            run.taken_meter
+                .record_hit("enemy", run.elapsed, 30.0, false, false);
+            run.damage_done = 100.0;
+        }
+        seed(&mut host.resource_mut::<Run>());
+        for p in host.resource_mut::<Companions>().0.values_mut() {
+            seed(&mut p.run);
+        }
+        client.send(&wire::ToServer::ResetMeter).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            tick(&mut host);
+            if client.receive::<wire::ToClient>().unwrap().into_iter().any(|message| {
+                matches!(message, wire::ToClient::Snapshot(s) if !s.party.is_empty() && s.party.iter().all(|p| p.total == 0.0 && p.dps == 0.0) && s.stats.meter.rows(s.stats.elapsed).is_empty())
+            }) { break; }
+            assert!(Instant::now() < deadline);
+        }
+        let check = |run: &Run| {
+            assert!(run.meter.rows(run.elapsed).is_empty());
+            assert!(run.healing_meter.rows(run.elapsed).is_empty());
+            assert!(run.taken_meter.rows(run.elapsed).is_empty());
+            assert_eq!(run.damage_done, 100.0);
+        };
+        check(host.resource::<Run>());
+        for p in host.resource::<Companions>().0.values() {
+            check(&p.run);
+        }
+    }
+
+    #[test]
+    fn two_tcp_guests_receive_only_their_own_floating_numbers() {
+        let mut host = world();
+        host.init_resource::<Messages<units::CombatNumber>>();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut clients = [
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+        ];
+        join(&mut clients[0], 0);
+        join(&mut clients[1], 1);
+        let mut ids = [None, None];
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while ids.iter().any(Option::is_none) {
+            tick(&mut host);
+            for i in 0..2 {
+                for message in clients[i].receive::<wire::ToClient>().unwrap() {
+                    if let wire::ToClient::Welcome { id, .. } = message {
+                        ids[i] = Some(id);
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline);
+        }
+        let anchor = host
+            .query_filtered::<Entity, With<hero::Hero>>()
+            .single(&host)
+            .unwrap();
+        for (owner, amount) in [(None, 111.0), (ids[0], 222.0), (ids[1], 333.0)] {
+            host.resource_mut::<Messages<units::CombatNumber>>()
+                .write(units::CombatNumber {
+                    owner,
+                    anchor,
+                    amount,
+                    crit: false,
+                    color: units::COLOR_SPELL,
+                });
+        }
+        let mut seen = [vec![], vec![]];
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while seen.iter().any(Vec::is_empty) {
+            tick(&mut host);
+            for i in 0..2 {
+                for message in clients[i].receive::<wire::ToClient>().unwrap() {
+                    if let wire::ToClient::Snapshot(snapshot) = message {
+                        for effect in snapshot.effects {
+                            if let wire::Effect::Number { owner, amount, .. } = effect {
+                                assert_eq!(owner, ids[i]);
+                                seen[i].push(amount);
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline);
+        }
+        assert_eq!(seen, [vec![222.0], vec![333.0]]);
+    }
+    #[test]
+    fn two_tcp_guests_exchange_an_item_through_the_shared_chest_once() {
+        fn save(inventory: &game::items::Inventory) -> wire::ClientSave {
+            wire::ClientSave {
+                talent_xp: 0,
+                talents: [[0; 19]; 3],
+                inventory: inventory.shared_save().unwrap(),
+                look: None,
+            }
+        }
+        fn receive(
+            clients: &mut [Socket; 2],
+            inventories: &mut [game::items::Inventory; 2],
+            views: &mut [game::shared_chest::View; 2],
+        ) {
+            for i in 0..2 {
+                for message in clients[i].receive::<wire::ToClient>().unwrap() {
+                    if let wire::ToClient::Snapshot(snapshot) = message {
+                        game::shared_chest::receive(
+                            snapshot.chest,
+                            &mut inventories[i],
+                            &mut views[i],
+                        );
+                    }
+                }
+                for request in std::mem::take(&mut views[i].requests) {
+                    clients[i].send(&wire::ToServer::Chest(request)).unwrap();
+                }
+            }
+        }
+        let mut host = world();
+        host.resource_mut::<Selection>().in_hub = true;
+        let local = host
+            .query_filtered::<Entity, With<hero::Hero>>()
+            .single(&host)
+            .unwrap();
+        host.get_mut::<Transform>(local).unwrap().translation = game::shared_chest::position();
+        host.init_resource::<game::shared_chest::Store>();
+        host.init_resource::<game::shared_chest::View>();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut clients = [
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+            Socket::new(TcpStream::connect(address).unwrap()).unwrap(),
+        ];
+        let mut inventories = [
+            game::items::Inventory::fixture(vec![game::shared_chest::fixture_item()]),
+            game::items::Inventory::fixture(vec![]),
+        ];
+        let mut views = [
+            game::shared_chest::View::default(),
+            game::shared_chest::View::default(),
+        ];
+        for i in 0..2 {
+            inventories[i].ensure_trade_identity().unwrap();
+            clients[i]
+                .send(&wire::ToServer::Join {
+                    version: wire::VERSION,
+                    profile: wire::Profile {
+                        name: format!("Trader {i}"),
+                        class: 0,
+                        display: data::CLASSES[0].looks[0],
+                        race: 1,
+                        sex: 0,
+                        save: Some(save(&inventories[i])),
+                    },
+                })
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while views.iter().any(|v| v.replica.identity.is_empty()) {
+            tick(&mut host);
+            receive(&mut clients, &mut inventories, &mut views);
+            assert!(
+                Instant::now() < deadline,
+                "both traders should receive the chest"
+            );
+        }
+        let traders: Vec<_> = host
+            .resource::<Companions>()
+            .0
+            .values()
+            .map(|p| p.entity)
+            .collect();
+        for trader in traders {
+            host.get_mut::<Transform>(trader).unwrap().translation = game::shared_chest::position();
+        }
+        let vault = views[0].replica.identity.clone();
+        inventories[0].begin_deposit(1, &vault).unwrap();
+        let token = inventories[0].pending_deposits()[0].token.clone();
+        clients[0]
+            .send(&wire::ToServer::Save(save(&inventories[0])))
+            .unwrap();
+        clients[0]
+            .send(&wire::ToServer::Chest(
+                game::shared_chest::Request::Deposit(token.clone()),
+            ))
+            .unwrap();
+        clients[0]
+            .send(&wire::ToServer::Chest(
+                game::shared_chest::Request::Deposit(token),
+            ))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while views[1].replica.entries.is_empty() || !inventories[0].pending_deposits().is_empty() {
+            tick(&mut host);
+            receive(&mut clients, &mut inventories, &mut views);
+            assert!(
+                Instant::now() < deadline,
+                "the deposited item should be shared once"
+            );
+        }
+        assert_eq!(views[1].replica.entries.len(), 1);
+        let entry = views[1].replica.entries[0].id;
+        let request = wire::ToServer::Chest(game::shared_chest::Request::Withdraw { vault, entry });
+        clients[1].send(&request).unwrap();
+        clients[1].send(&request).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            tick(&mut host);
+            receive(&mut clients, &mut inventories, &mut views);
+            if inventories[1].all().len() == 1
+                && host
+                    .resource::<game::shared_chest::Store>()
+                    .replica(&inventories[1])
+                    .deliveries
+                    .is_empty()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the withdrawal should be delivered and acknowledged"
+            );
+        }
+        assert!(inventories[0].all().is_empty());
+        assert_eq!(inventories[1].all().len(), 1);
+        assert!(host
+            .resource::<game::shared_chest::Store>()
+            .replica(&inventories[1])
+            .entries
+            .is_empty());
+    }
+    #[test]
     fn two_tcp_guests_move_independently_and_receive_authoritative_avatars() {
         let mut host = world();
+        host.insert_resource(game::boss_spells::Warnings(vec![
+            game::boss_spells::Warning {
+                spell: game::boss_spells::Spell::Rings,
+                origin: [10.0, 2.0, 20.0],
+                direction: [1.0, 0.0, 0.0],
+                mortars: vec![],
+                elapsed: 1.2,
+                circle: None,
+            },
+        ]));
+        host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            let serial = run.guid();
+            game::enemies::spawn_gem(
+                &mut commands,
+                serial,
+                Vec3::X * 10_000.0,
+                game::enemies::GemKind::Xp(1),
+            );
+        })
+        .unwrap();
+        let healer = host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            let def = &data::roster(run.expedition_map).enemies[0];
+            game::enemies::spawn_enemy(&mut commands, &mut run, def, Vec3::X * 50.0, Vec3::ZERO, false)
+        }).unwrap();
+        host.entity_mut(healer).insert(game::enemies::Rank::Healer);
+        let healer_guid = host.get::<Guid>(healer).unwrap().0;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         host.insert_resource(network(listener));
@@ -1635,6 +2476,12 @@ mod tests {
             .unwrap();
         let local_before = host.get::<Transform>(local).unwrap().translation;
         for sequence in 1..=4 {
+            host.insert_resource(State::new(match sequence {
+                1 => Phase::Playing,
+                2 => Phase::Paused,
+                3 => Phase::CharacterSheet,
+                _ => Phase::LevelUp,
+            }));
             for (index, client) in clients.iter_mut().enumerate() {
                 client
                     .send(&wire::ToServer::Input(wire::Input {
@@ -1674,6 +2521,9 @@ mod tests {
             assert!(Instant::now() < deadline);
         }
         let snapshot = snapshot.unwrap();
+        assert_eq!(snapshot.boss_warnings.len(), 1);
+        assert_eq!(snapshot.boss_warnings[0].progress(), 0.5);
+        assert_eq!(snapshot.phase, 2, "the host's menu never pauses guests");
         assert!(ids
             .iter()
             .all(|id| snapshot.units.iter().any(|u| u.owner == Some(*id))));
@@ -1694,6 +2544,55 @@ mod tests {
             receipts: default(),
         };
         apply_snapshot(&mut guest_world, &mut guest, snapshot);
+        let guest_healer = guest.entities[&healer_guid];
+        assert_eq!(guest_world.get::<game::enemies::Rank>(guest_healer), Some(&game::enemies::Rank::Healer));
+
+        let warnings = guest_world.resource::<game::boss_spells::Warnings>();
+        assert_eq!(warnings.0[0].origin, [10.0, 2.0, 20.0]);
+        assert_eq!(warnings.0[0].progress(), 0.5);
+        let local_guest = guest_world
+            .query_filtered::<Entity, With<hero::Hero>>()
+            .single(&guest_world)
+            .unwrap();
+        assert!(guest_world.get::<Interpolation>(local_guest).is_none());
+        let guest_before = guest_world
+            .get::<Transform>(local_guest)
+            .unwrap()
+            .translation;
+        let mut guest_network = network(TcpListener::bind("127.0.0.1:0").unwrap());
+        guest_network.listener = None;
+        guest_network.guest = Some(guest);
+        guest_world.insert_resource(guest_network);
+        guest_world.insert_resource(Role::Guest);
+        let command = session::Command {
+            active: true,
+            axes: Vec2::Y,
+            jump: true,
+            ..default()
+        };
+        guest_world.resource_scope(|world, session: Mut<session::LocalSession>| {
+            session
+                .submit(&mut world.resource_mut::<session::Sessions>(), command)
+                .unwrap();
+        });
+        guest_world.run_system_once(session::receive).unwrap();
+        guest_world
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(16));
+        guest_world.run_system_once(prediction::predict).unwrap();
+        let predicted = guest_world
+            .get::<Transform>(local_guest)
+            .unwrap()
+            .translation;
+        assert!(
+            predicted.z < guest_before.z,
+            "input moves immediately without another snapshot"
+        );
+        assert!(predicted.y > guest_before.y, "jump also starts locally");
+        assert_eq!(
+            guest_world.resource::<crate::player::Player>().pos,
+            predicted
+        );
         assert_eq!(
             guest_world
                 .query_filtered::<Entity, With<hero::Hero>>()
@@ -1706,7 +2605,29 @@ mod tests {
                 .query_filtered::<Entity, With<Replicated>>()
                 .iter(&guest_world)
                 .count(),
+            5
+        );
+        assert_eq!(
+            guest_world
+                .resource::<game::combat_ui::PartyDamage>()
+                .0
+                .len(),
             3
+        );
+        assert_eq!(
+            guest_world
+                .query_filtered::<Entity, With<game::unit_frames::PartyPlayer>>()
+                .iter(&guest_world)
+                .count(),
+            3
+        );
+        assert_eq!(
+            guest_world
+                .query_filtered::<Entity, With<game::enemies::StillPickup>>()
+                .iter(&guest_world)
+                .count(),
+            1,
+            "replicated pickups retain their animation-free presentation"
         );
         // Disconnection reaps the controlled character and invalidates its input.
         let owned_effect = host.spawn(super::super::OwnedEffect(ids[0])).id();
@@ -1745,6 +2666,75 @@ mod tests {
     }
 
     #[test]
+    fn horde_spawns_around_host_and_guests_and_skips_dead_players() {
+        for elapsed in [1.0, data::BOSS_EVERY_SECS / 2.0] {
+            let mut world = world();
+            world.init_resource::<game::enemies::Spawner>();
+            world.resource_mut::<Run>().elapsed = elapsed;
+            let profile = wire::Profile {
+                name: "Guest".into(),
+                class: 0,
+                display: data::CLASSES[0].looks[0],
+                race: 1,
+                sex: 0,
+                save: None,
+            };
+            let player = spawn_companion(&mut world, 42, &profile);
+            let entity = player.entity;
+            let host_entity = world
+                .query_filtered::<Entity, With<hero::Hero>>()
+                .single(&world)
+                .unwrap();
+            let host_pos = world.get::<Transform>(host_entity).unwrap().translation;
+            let guest_pos = host_pos + Vec3::X * 1000.0;
+            world.get_mut::<Transform>(entity).unwrap().translation = guest_pos;
+            world.resource_mut::<Companions>().0.insert(42, player);
+            world.run_system_once(game::enemies::spawn_enemies).unwrap();
+            let positions: Vec<_> = world
+                .query_filtered::<(Entity, &Transform), With<game::enemies::Enemy>>()
+                .iter(&world)
+                .map(|(e, tf)| (e, tf.translation))
+                .collect();
+            let near = |p: Vec3, center: Vec3| units::flat(p - center).length() < 50.0;
+            assert!(positions.iter().any(|(_, p)| near(*p, host_pos)));
+            assert!(positions.iter().any(|(_, p)| near(*p, guest_pos)));
+            let maximum = world.resource::<Run>().expeditions.max_monsters;
+            assert!(positions.len() <= maximum);
+            for (e, _) in positions {
+                world.despawn(e);
+            }
+            world.resource_mut::<Run>().hp = 0.0;
+            world.resource_mut::<Run>().dead_t = Some(1.0);
+            world
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs(1));
+            world.run_system_once(game::enemies::spawn_enemies).unwrap();
+            let spawned: Vec<_> = world
+                .query_filtered::<(Entity, &Transform), With<game::enemies::Enemy>>()
+                .iter(&world)
+                .map(|(e, tf)| (e, tf.translation))
+                .collect();
+            assert!(!spawned.is_empty());
+            assert!(spawned.iter().all(|(_, p)| near(*p, guest_pos)));
+            for (e, _) in spawned {
+                world.despawn(e);
+            }
+            world
+                .resource_mut::<Companions>()
+                .0
+                .get_mut(&42)
+                .unwrap()
+                .run
+                .hp = 0.0;
+            world.run_system_once(game::enemies::spawn_enemies).unwrap();
+            assert_eq!(
+                world.query::<&game::enemies::Enemy>().iter(&world).count(),
+                0
+            );
+        }
+    }
+
+    #[test]
     fn enemies_damage_the_nearest_guest_and_drains_heal_the_correct_player() {
         let mut world = world();
         world.init_resource::<game::enemies::Spawner>();
@@ -1771,6 +2761,17 @@ mod tests {
             .next()
             .unwrap();
         world.get_mut::<Transform>(enemy).unwrap().translation = position + Vec3::X * 0.1;
+        assert_eq!(world.resource::<Run>().expedition_players, 2);
+        let config = &world.resource::<Run>().expeditions;
+        let expected = config
+            .stats(world.resource::<Run>().expedition_map, false)
+            .0
+            * config.factor(world.resource::<Run>().elapsed)
+            * config.party_health(2);
+        assert_eq!(
+            world.get::<game::enemies::Enemy>(enemy).unwrap().max_hp,
+            expected
+        );
         world
             .get_mut::<game::enemies::Enemy>(enemy)
             .unwrap()
@@ -1791,6 +2792,24 @@ mod tests {
         assert_eq!(world.resource::<Run>().damage_done, 0.0);
     }
 
+    #[test]
+    fn fallen_guests_wait_for_revival_instead_of_entering_personal_game_over() {
+        let companion = Companion {
+            entity: Entity::from_raw_u32(42).unwrap(),
+            run: Run {
+                hp: 0.0,
+                dead_t: Some(10.0),
+                pending_levels: 1,
+                ..default()
+            },
+            physics: hero::Hero { vy: 0.0, air: 0.0 },
+            offer: default(),
+            offer_id: 0,
+        };
+        assert_eq!(encode_phase(Phase::Playing, &companion), 2);
+        assert_eq!(encode_phase(Phase::Paused, &companion), 2);
+        assert_eq!(encode_phase(Phase::GameOver, &companion), 6);
+    }
     #[test]
     fn a_living_guest_keeps_the_run_alive_after_the_host_falls() {
         let mut world = world();
@@ -1926,6 +2945,7 @@ mod tests {
     ) -> game::items::Item {
         use game::items::{Affix, AffixKind, Effect, EquipmentType, Item, Rarity, SlotKind};
         Item {
+            affix_rules: 0,
             id: 0,
             base: "live-gear-test".into(),
             name: name.into(),
@@ -1933,6 +2953,7 @@ mod tests {
             icon: "Interface\\Icons\\INV_Misc_QuestionMark".into(),
             rarity: Rarity::Epic,
             level: 1,
+            legendary: None,
             base_damage: None,
             base_armour: None,
             base_block: 0.0,
@@ -2041,9 +3062,11 @@ mod tests {
             tick: 0,
             since_snapshot: 0.0,
             effects: default(),
+            coins: default(),
             casts: default(),
             gos: default(),
             swings: default(),
+            numbers: default(),
             loot: default(),
             guest: Some(Guest {
                 socket,

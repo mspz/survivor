@@ -34,6 +34,7 @@ impl Tags {
     pub const ARCANE: Self = Self(1 << 21);
     pub const HOLY: Self = Self(1 << 22);
     pub const SHADOW: Self = Self(1 << 23);
+    pub const BUFF: Self = Self(1 << 24);
     pub fn contains(self, tags: Self) -> bool {
         self.0 & tags.0 == tags.0
     }
@@ -57,6 +58,7 @@ impl Tags {
             (Self::HEAL, "Healing"),
             (Self::UTILITY, "Utility"),
             (Self::MOVEMENT, "Movement"),
+            (Self::BUFF, "Buff"),
             (Self::PHYSICAL, "Physical"),
             (Self::FIRE, "Fire"),
             (Self::COLD, "Cold"),
@@ -83,11 +85,22 @@ pub fn weapon_hit(tags: Tags) -> bool {
 
 /// Every authored ability has an explicit damage school. Missing classifications fail tests.
 pub fn school(key: &str) -> Option<Tags> {
+    if let Some(school) = super::super::support_spells::school(key) {
+        return Some(school);
+    }
     if let Some(spell) = super::super::procs::find(key) {
         return Some(Tags(spell.tags.0 & (0xff << 16)));
     }
     use Tags as T;
     Some(match key {
+        "bloodthirst" | "revenge" | "mongoose_bite" | "fan_of_knives" | "garrote" | "rake" => {
+            T::PHYSICAL
+        }
+        "holy_shield" | "hammer_of_the_righteous" | "penance" => T::HOLY,
+        "frost_trap" | "ice_armor" => T::COLD,
+        "earthbind_totem" | "efflorescence" | "totemic_recall" => T::NATURE,
+        "lava_lash" | "living_bomb" => T::FIRE,
+        "devouring_plague" | "seed_of_corruption" | "soul_burn" => T::SHADOW,
         "claw" => T::PHYSICAL,
         "flash_heal" => T::HOLY,
         "taunt" => T::PHYSICAL,
@@ -162,6 +175,9 @@ pub fn mobility(spell: u32) -> Option<(&'static str, Tags)> {
 }
 
 pub fn for_spell(def: &AbilityDef) -> Tags {
+    if def.key == "totemic_recall" {
+        return Tags::SPELL | Tags::NATURE | Tags::UTILITY | Tags::TOTEM;
+    }
     if let Some(spell) = super::super::procs::find(def.key) {
         return spell.tags;
     }
@@ -169,6 +185,19 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     let attack = matches!(
         def.key,
         "cleave"
+            | "mangle"
+            | "rip"
+            | "ferocious_bite"
+            | "wand_attack"
+            | "bloodthirst"
+            | "revenge"
+            | "mongoose_bite"
+            | "fan_of_knives"
+            | "garrote"
+            | "rake"
+            | "lava_lash"
+            | "hammer_of_the_righteous"
+            | "frost_trap"
             | "rend"
             | "claw"
             | "overpower"
@@ -206,6 +235,7 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     }
     tags = tags | school(def.key).unwrap_or_default();
     if def.kind == Kind::Melee
+        || matches!(def.key, "revenge" | "fan_of_knives")
         || matches!(
             def.key,
             "execute" | "rupture" | "whirlwind" | "blade_flurry" | "sweeping_strikes"
@@ -213,13 +243,18 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     {
         tags = tags | T::MELEE;
     }
-    if def.kind == Kind::Bolt {
+    if def.kind == Kind::Bolt || def.key == "searing_totem" {
         tags = tags | T::PROJECTILE;
     }
     if matches!(
         def.kind,
         Kind::Nova | Kind::Cone | Kind::Ground | Kind::GroundSelf | Kind::Aura
-    ) || (def.radius > 0.0 && matches!(def.kind, Kind::Bolt | Kind::Strike | Kind::Totem))
+    ) || (def.radius > 0.0
+        && matches!(
+            def.kind,
+            Kind::Bolt | Kind::Strike | Kind::Melee | Kind::Totem | Kind::Heal
+        ))
+        || matches!(def.key, "living_bomb" | "seed_of_corruption")
     {
         tags = tags | T::AREA;
     }
@@ -229,13 +264,22 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     if def.dot > 0.0 || def.kind == Kind::Dot {
         tags = tags | T::DOT;
     }
-    if def.duration > 0.0 {
+    if def.duration > 0.0
+        || matches!(
+            def.effect,
+            super::Effect::Slow(..)
+                | super::Effect::Weaken(..)
+                | super::Effect::Root(_)
+                | super::Effect::Stun(_)
+                | super::Effect::Fear(_)
+        )
+    {
         tags = tags | T::DURATION;
     }
     if def.kind == Kind::Totem {
         tags = tags | T::TOTEM;
     }
-    if def.key == "explosive_trap" {
+    if matches!(def.key, "explosive_trap" | "frost_trap") {
         tags = tags | T::TRAP;
     }
     if matches!(def.kind, Kind::Aura | Kind::Orbit) {
@@ -247,7 +291,7 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     if def.kind == Kind::Heal {
         tags = tags | T::HEAL;
     }
-    tags
+    super::super::support_spells::buff_tags(def, tags)
 }
 
 #[derive(Clone, Copy, Debug, Default)]

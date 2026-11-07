@@ -15,6 +15,83 @@ fn change(change: Change) -> Modifier {
 fn spell(key: &str, mods: &[Modifier]) -> Resolved {
     resolve(data::ability(key), 1, &base(), mods)
 }
+#[test]
+fn debuff_ranks_increase_strength_duration_and_honor_duration_modifiers() {
+    let shout = data::ability("demoralizing_shout");
+    for (rank, reduction, duration) in [
+        (1, 0.5, 5.0),
+        (3, 0.55, 5.5),
+        (5, 0.65, 6.5),
+        (6, 0.75, 7.5),
+    ] {
+        let p = resolve(shout, rank, &base(), &[]);
+        let Effect::Weaken(m, t) = p.effect else {
+            panic!()
+        };
+        assert!((1.0 - m - reduction).abs() < 0.001);
+        assert_eq!(t, duration);
+        assert!(p.tags.contains(Tags::DURATION));
+    }
+    let p = resolve(shout, 3, &base(), &[change(Change::IncreasedDuration(0.5))]);
+    let Effect::Weaken(_, t) = p.effect else {
+        panic!()
+    };
+    assert_eq!(t, 8.25);
+    for key in [
+        "frostbolt",
+        "frost_nova",
+        "hammer_of_justice",
+        "psychic_scream",
+    ] {
+        let def = data::ability(key);
+        assert_ne!(
+            resolve(def, 1, &base(), &[]).effect,
+            resolve(def, 6, &base(), &[]).effect,
+            "{key}"
+        );
+    }
+    assert_eq!(
+        resolve(data::ability("execute"), 6, &base(), &[]).effect,
+        data::ability("execute").effect
+    );
+}
+#[test]
+fn spell_shields_scale_power_without_becoming_offensive_hits() {
+    let def = data::ability("power_word_shield");
+    let before = resolve(def, 1, &base(), &[]);
+    let modifiers = [
+        change(Change::FlatSpellDamage(10.0)),
+        Modifier {
+            filter: Filter::requiring(Tags::HOLY),
+            ..change(Change::IncreasedDamage(0.5))
+        },
+        Modifier {
+            filter: Filter {
+                all: Tags::SPELL,
+                any: Tags::DAMAGE | Tags::HEAL,
+                ..default()
+            },
+            ..change(Change::IncreasedEffect(0.2))
+        },
+        change(Change::FlatDamage(1000.0)),
+        change(Change::CriticalChance(1.0)),
+        change(Change::CriticalMultiplier(10.0)),
+        change(Change::RecastChance(1.0)),
+        Modifier {
+            filter: Filter::requiring(Tags::FIRE),
+            ..change(Change::IncreasedDamage(100.0))
+        },
+    ];
+    let p = resolve(def, 1, &base(), &modifiers);
+    assert!((p.dmg - 68.0).abs() < 0.001);
+    assert_eq!(p.crit, before.crit);
+    assert_eq!(p.crit_multiplier, before.crit_multiplier);
+    assert_eq!(p.recast, 0.0);
+    assert!(!p.tags.contains(Tags::DAMAGE));
+    let mut stats = base();
+    stats.spell_power = 0.5;
+    assert!((resolve(def, 1, &stats, &[]).dmg - 45.0).abs() < 0.001);
+}
 fn target(n: u32, x: f32) -> targeting::Target {
     targeting::Target {
         e: Entity::from_raw_u32(n).unwrap(),
@@ -48,35 +125,144 @@ fn every_authored_spell_has_a_school_and_exactly_one_attack_or_spell_tag() {
     }
 }
 #[test]
-fn unmodified_values_preserve_existing_rank_scaling_for_every_spell() {
+fn run_ranks_boost_specializations_and_grant_one_signature_effect_for_every_spell() {
     let stats = base();
     for def in data::ABILITIES {
         for level in 1..=data::MAX_ABILITY_LEVEL {
             let p = resolve(def, level, &stats, &[]);
-            let rank = f32::from(level - 1);
+            let rank = [0.0, 1.0, 2.0, 4.0, 6.0, 10.0][usize::from(level - 1)];
+            let cooldown_rank = [0.0, 1.0, 2.0, 3.0, 4.0, 6.0][usize::from(level - 1)];
+            let signature_power = if level == 6
+                && !p.tags.contains(Tags::AREA)
+                && matches!(
+                    def.kind,
+                    Kind::Shield | Kind::Heal | Kind::Thorns | Kind::Totem
+                ) {
+                1.25
+            } else {
+                1.0
+            };
             assert!(
-                (p.dmg - def.damage * (1.0 + 0.3 * rank) * stats.might).abs() < 0.001,
+                (p.dmg
+                    - (def.damage + if def.damage > 0.0 { 5.0 * rank } else { 0.0 })
+                        * stats.might
+                        * signature_power)
+                    .abs()
+                    < 0.001,
                 "{}",
                 def.key
             );
-            assert!((p.dot - def.dot * (1.0 + 0.3 * rank) * stats.might).abs() < 0.001);
-            assert!((p.radius - def.radius * (1.0 + 0.08 * rank) * stats.area).abs() < 0.001);
             assert!(
-                (p.cooldown
-                    - (def.cooldown
-                        * 0.93f32.powi(i32::from(level) - 1)
-                        * (1.0 - stats.haste).max(0.35))
-                    .max(0.2))
-                .abs()
+                (p.dot - (def.dot + if def.dot > 0.0 { 5.0 * rank } else { 0.0 }) * stats.might)
+                    .abs()
                     < 0.001
             );
-            assert_eq!(
-                p.count,
-                def.count as usize + [3, 5, 7].into_iter().filter(|&n| level >= n).count()
+            let rank_radius = if p.tags.contains(Tags::AREA) {
+                0.25 * rank
+                    + if level == 6
+                        && matches!(
+                            def.kind,
+                            Kind::Nova
+                                | Kind::Cone
+                                | Kind::Ground
+                                | Kind::GroundSelf
+                                | Kind::Aura
+                                | Kind::Totem
+                                | Kind::Heal
+                        )
+                    {
+                        1.5
+                    } else {
+                        0.0
+                    }
+            } else {
+                0.0
+            };
+            let rank_duration = if level == 6
+                && (def.kind == Kind::Immune || (def.kind == Kind::Thorns && def.damage == 0.0))
+            {
+                1.5
+            } else if p.tags.contains(Tags::DOT) && def.duration > 0.0 {
+                0.5 * rank
+            } else {
+                0.0
+            };
+            assert!((p.radius - (def.radius + rank_radius) * stats.area).abs() < 0.001);
+            assert_eq!(p.duration, def.duration + rank_duration);
+            assert!(
+                (p.cooldown
+                    - ((def.cooldown - 0.1 * cooldown_rank).max(0.0)
+                        * if def.key == "totemic_recall" && level == 6 {
+                            0.75
+                        } else {
+                            1.0
+                        }
+                        * (1.0 - stats.haste).max(0.35))
+                    .max(0.2)
+                        * 1.2)
+                    .abs()
+                    < 0.001
             );
+            let extra = usize::from(
+                level == 6
+                    && matches!(
+                        def.kind,
+                        Kind::Bolt
+                            | Kind::Strike
+                            | Kind::Melee
+                            | Kind::Dot
+                            | Kind::Orbit
+                            | Kind::Chain
+                    ),
+            ) * 2;
+            assert_eq!(p.count, def.count as usize + extra);
+            assert_eq!(p.chains, if def.kind == Kind::Chain { p.count } else { 0 });
+            assert_eq!(p.forks, 0);
         }
     }
 }
+#[test]
+fn legendary_extra_effects_roll_once_and_stack_past_one_hundred_percent() {
+    for (key, change, index) in [
+        ("fireball", Change::ProjectileChance(0.2), 0),
+        ("heroic_strike", Change::MeleeTargetChance(0.2), 1),
+        ("fireball", Change::ChainChance(0.2), 2),
+        ("fireball", Change::ForkChance(0.2), 3),
+    ] {
+        let modifier = Modifier {
+            source: 1,
+            filter: Filter::default(),
+            change,
+        };
+        let base = spell(key, &[]);
+        for (rank, roll, expected) in [
+            (1, 0.1, 1),
+            (1, 0.3, 0),
+            (5, 0.9, 1),
+            (6, 0.1, 2),
+            (6, 0.3, 1),
+        ] {
+            let mut p = spell(
+                key,
+                &[Modifier {
+                    change: change.scaled(rank),
+                    ..modifier
+                }],
+            );
+            p.roll_extras([roll; 4]);
+            let actual = match index {
+                0 | 1 => p.count - base.count,
+                2 => p.chains - base.chains,
+                _ => p.forks - base.forks,
+            };
+            assert_eq!(actual, expected, "{key}, rank {rank}, roll {roll}");
+            let snapshot = p;
+            p.roll_extras([0.0; 4]);
+            assert_eq!(p, snapshot);
+        }
+    }
+}
+
 #[test]
 fn projectiles_cannot_affect_melee_even_with_an_unfiltered_modifier() {
     let mods = [change(Change::AdditionalProjectiles(4))];
@@ -114,10 +300,8 @@ fn elemental_filters_and_increased_more_have_distinct_stacking() {
         change(Change::MoreDamage(-0.2)),
     ];
     assert!((spell("fireball", &mods).dmg - 50.4).abs() < 0.001);
-    assert_eq!(
-        spell("power_word_shield", &mods).dmg,
-        spell("power_word_shield", &[]).dmg
-    );
+    let shield_base = spell("power_word_shield", &[]).dmg;
+    assert!((spell("power_word_shield", &mods).dmg - shield_base * 1.5 * 1.4 * 0.8).abs() < 0.001);
 }
 #[test]
 fn selectors_support_exclusions_any_tags_and_one_specific_skill() {
@@ -248,6 +432,25 @@ fn repeat_hundreds_are_guaranteed_and_only_the_fraction_is_random() {
     assert_eq!(recast_count(-1.0, 0.0, false), 0);
 }
 #[test]
+fn repeat_ordinals_reset_for_each_original_cast_even_with_overlapping_batches() {
+    let mut queue = Recasts::default();
+    queue.schedule(0, 0.0, 2);
+    queue.schedule(0, 0.1, 3);
+    for (time, expected) in [1, 2, 1, 2, 3].into_iter().enumerate() {
+        assert_eq!(queue.take_due_ordinal(0, time as f32 + 1.0), Some(expected));
+    }
+    assert!(queue.is_empty());
+    queue.schedule(0, 10.0, recast_count(4.0, 0.99, false));
+    for ordinal in 1..=4 {
+        assert_eq!(
+            queue.take_due_ordinal(0, 10.0 + ordinal as f32),
+            Some(ordinal)
+        );
+    }
+    assert!(queue.is_empty());
+}
+
+#[test]
 fn large_repeat_bursts_use_one_job_and_are_spaced_without_dropping_new_casts() {
     let mut queue = Recasts::default();
     queue.schedule(0, 0.0, 1000);
@@ -264,7 +467,7 @@ fn large_repeat_bursts_use_one_job_and_are_spaced_without_dropping_new_casts() {
     assert_eq!(queue.0[1].remaining, u64::MAX);
 }
 #[test]
-fn damage_resolution_preserves_crit_execute_armour_and_shields() {
+fn damage_resolution_preserves_crit_and_execute() {
     assert_eq!(critical(20.0, 0.5, 0.2), (40.0, true));
     assert_eq!(
         damage_on_target(3.0, 20.0, 100.0, false, Effect::Execute(0.3)),
@@ -274,8 +477,6 @@ fn damage_resolution_preserves_crit_execute_armour_and_shields() {
         damage_on_target(3.0, 20.0, 100.0, true, Effect::Execute(0.3)),
         3.0
     );
-    assert_eq!(mitigate(10.0, 2.0, 5.0, false), (3.0, 5.0));
-    assert_eq!(mitigate(10.0, 2.0, 5.0, true), (0.0, 0.0));
 }
 
 #[test]
@@ -294,7 +495,7 @@ fn all_nine_mobility_skills_are_classified_and_ignore_projectile_damage_modifier
         assert!(!tags.contains(Tags::PROJECTILE));
         assert!(tags::school(key).is_some());
         let p = resolve_mobility(def, &mods);
-        assert_eq!(p.cooldown, def.cooldown / 2.0);
+        assert_eq!(p.cooldown, def.cooldown / 2.0 * 1.2);
         assert_eq!(p.duration, def.secs * 2.0);
     }
     let howl = super::super::mobility::for_class(9).unwrap();

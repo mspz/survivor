@@ -6,7 +6,7 @@ use super::{
     enemies::{Dot, Enemy},
     hero::Hero,
     multiplayer::{Companions, RemoteOwner},
-    spell_engine::{tags, Change, Filter, Modifier, Tags},
+    spell_engine::{tags, Tags},
     talent_design::{self, Mechanic as M},
     units::{self, Fx, UnitSpec},
     Owned, Rng, Run,
@@ -27,10 +27,10 @@ pub(super) struct Runtime {
     summon: f32,
     healing: f32,
     party_pulse: bool,
-    party_buff: f32,
     bursts: Vec<Burst>,
 }
 struct Burst {
+    parent: u64,
     chain: u64,
     pos: Vec3,
     damage: f32,
@@ -50,12 +50,21 @@ pub(super) struct Taunted {
 }
 #[derive(Component)]
 pub(super) struct Summon {
+    family: u8,
     owner: Option<u64>,
     slot: u8,
     cooldown: f32,
     stationary: bool,
     target: Option<Entity>,
     retarget: f32,
+    carried: Option<Dot>,
+    carry_until: f32,
+    harvested: Option<Entity>,
+}
+impl Summon {
+    pub(super) fn owned_totem(&self, owner: Option<u64>) -> bool {
+        self.family == 2 && self.stationary && self.owner == owner
+    }
 }
 
 const PET_LEASH: f32 = 100.0;
@@ -101,7 +110,7 @@ fn pet_target(
     Some(candidates[(rng.next_u64() % count as u64) as usize].0)
 }
 pub(super) fn active(run: &Run, m: M) -> bool {
-    run.talent_runtime.enabled.contains(&m)
+    run.talent_runtime.enabled.contains(&m) || super::items::legendary::milestones::active(run, m)
 }
 fn chain_bit(m: M) -> u64 {
     1u64 << (m as u32)
@@ -120,11 +129,21 @@ fn hit_tags(m: M) -> Tags {
         }
 }
 fn accepts(run: &Run, h: &Hit, m: M, tags: Tags) -> bool {
-    active(run, m) && h.proc_chain & chain_bit(m) == 0 && tags.contains(hit_tags(m))
+    h.can_proc() && active(run, m) && tags.contains(hit_tags(m))
 }
 fn meter_source(run: &Run, m: M) -> Option<&'static str> {
     if !active(run, m) {
         return None;
+    }
+    if !run.talent_runtime.enabled.contains(&m) {
+        if let Some(grant) = run
+            .legendary
+            .grants
+            .iter()
+            .find(|g| g.milestone().mechanic == m)
+        {
+            return Some(grant.milestone().name);
+        }
     }
     let class = data::CLASSES.iter().position(|c| c.id == run.class.id)?;
     talent_design::DESIGNS[class * 3..class * 3 + 3]
@@ -196,6 +215,12 @@ pub(super) fn configure(run: &mut Run) {
     if class == 8 && run.talent_build[2][8] > 0 {
         unlocks.push("rejuvenation");
     }
+    if class == 5 && run.talent_build[2][8] > 0 {
+        unlocks.extend(["healing_stream_totem", "totemic_recall"]);
+    }
+    if class == 5 && run.talent_build[2][12] > 0 {
+        unlocks.push("strength_of_earth_totem");
+    }
     for key in unlocks {
         if !run.abilities.iter().any(|a| a.def.key == key) {
             run.abilities.push(Owned {
@@ -208,29 +233,41 @@ pub(super) fn configure(run: &mut Run) {
 }
 pub(super) fn block_chance(run: &Run) -> f32 {
     if active(run, M::Block) {
-        0.2
+        0.2 * super::items::legendary::milestones::sources(run, M::Block)
+            .len()
+            .max(1) as f32
     } else {
         0.0
     }
 }
 pub(super) fn refreshed_shield(run: &mut Run, capacity: f32) {
-    if run.shield > 0.0 && run.shield_t > 0.0 && active(run, M::Shieldburst) {
+    if run.shield > 0.0
+        && run.shield_t > 0.0
+        && active(run, M::Shieldburst)
+        && run.legendary.events.shield_origin == super::items::legendary::events::Origin::Skill
+    {
         run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
     run.talent_runtime.shield_capacity = capacity;
 }
 pub(super) fn before_hit(run: &mut Run, h: &Hit, en: &Enemy) -> f32 {
-    if run.talent_runtime.enabled.is_empty() {
+    if run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty() {
         return 1.0;
     }
-    let t = tags::for_spell(data::ability(h.skill));
+    let t = h
+        .tags
+        .unwrap_or_else(|| tags::for_spell(data::ability(h.skill)));
     let focus = accepts(run, h, M::Focus, t) || accepts(run, h, M::ArcaneFocus, t);
-    if focus {
+    if focus || accepts(run, h, M::Execution, t) {
         if run.talent_runtime.target != Some(h.target) {
             run.talent_runtime.target = Some(h.target);
             run.talent_runtime.streak = 0;
         }
-        let bonus = run.talent_runtime.streak.min(10) as f32 * 0.08;
+        let bonus = if focus {
+            run.talent_runtime.streak.min(10) as f32 * 0.08
+        } else {
+            0.0
+        };
         run.talent_runtime.streak += 1;
         return 1.0 + bonus;
     }
@@ -248,10 +285,15 @@ pub(super) fn on_hit(
     rng: &mut Rng,
     pending: &mut PendingHits,
 ) {
-    if h.damage <= 0.0 || run.talent_runtime.enabled.is_empty() {
+    if !h.can_proc()
+        || h.damage <= 0.0
+        || (run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty())
+    {
         return;
     }
-    let t = tags::for_spell(data::ability(h.skill));
+    let t = h
+        .tags
+        .unwrap_or_else(|| tags::for_spell(data::ability(h.skill)));
     // Count only eligible hits: e.g. a Fire hit cannot advance an Arcane milestone.
     for (index, qualifies) in [
         accepts(run, h, M::Flurry, t),
@@ -270,7 +312,20 @@ pub(super) fn on_hit(
     let poison = accepts(run, h, M::Poison, t);
     let arcane = accepts(run, h, M::Moonfire, t);
     let plague = accepts(run, h, M::ShadowPlague, t) || accepts(run, h, M::Plague, t) || arcane;
-    if (poison || plague) && en.hp > 0.0 {
+    if (poison || plague)
+        && en.hp > 0.0
+        && procs::ready(
+            run,
+            if poison {
+                "proc_poison"
+            } else if arcane {
+                "proc_lunar_flare"
+            } else {
+                "proc_plague"
+            },
+            t,
+        )
+    {
         let key = if poison {
             "proc_poison"
         } else if arcane {
@@ -283,29 +338,45 @@ pub(super) fn on_hit(
             .iter()
             .find(|d| d.owner == h.owner && d.skill == key)
             .map_or(1.0, |d| d.tick);
-        en.dots.retain(|d| !(d.owner == h.owner && d.skill == key));
+        if !run.legendary.has(230) {
+            en.dots.retain(|d| !(d.owner == h.owner && d.skill == key));
+        }
         let p = procs::resolve(run, key, 0.0, h.damage * 0.18, 6.0, 0.0, 1);
-        en.dots.push(Dot {
-            owner: h.owner,
-            skill: key,
-            meter_source: meter_source(
-                run,
-                if poison {
-                    M::Poison
-                } else if arcane {
-                    M::Moonfire
-                } else if active(run, M::ShadowPlague) {
-                    M::ShadowPlague
+        super::items::legendary::periodic::install(
+            run,
+            en,
+            h.target,
+            pos,
+            Dot {
+                owner: h.owner,
+                skill: key,
+                tags: Some(p.tags),
+                meter_source: meter_source(
+                    run,
+                    if poison {
+                        M::Poison
+                    } else if arcane {
+                        M::Moonfire
+                    } else if active(run, M::ShadowPlague) {
+                        M::ShadowPlague
+                    } else {
+                        M::Plague
+                    },
+                ),
+                item_source: None,
+                origin: if h.origin == super::items::legendary::events::Origin::Item {
+                    h.origin
                 } else {
-                    M::Plague
+                    super::items::legendary::events::Origin::Talent
                 },
-            ),
-            dps: p.dot,
-            left: p.duration,
-            tick,
-        });
+                meta: Default::default(),
+                dps: p.dot,
+                left: p.duration,
+                tick,
+            },
+        );
     }
-    if accepts(run, h, M::Freeze, t) {
+    if accepts(run, h, M::Freeze, t) && procs::ready(run, "proc_frostbite", t) {
         let duration = procs::resolve(run, "proc_frostbite", 0.0, 0.0, 3.0, 0.0, 1).duration;
         en.slow = 0.6;
         en.slow_t = duration;
@@ -323,46 +394,50 @@ pub(super) fn on_hit(
     } else {
         0.0
     };
-    run.talent_runtime.healing += procs::resolve(
-        run,
-        "proc_holy_heal",
-        h.damage.min(en.max_hp) * healing,
-        0.0,
-        0.0,
-        0.0,
-        1,
-    )
-    .dmg;
+    if healing > 0.0 && procs::ready(run, "proc_holy_heal", t) {
+        run.talent_runtime.healing += procs::resolve(
+            run,
+            "proc_holy_heal",
+            h.damage.min(en.max_hp) * healing,
+            0.0,
+            0.0,
+            0.0,
+            1,
+        )
+        .dmg;
+    }
     let now = run.elapsed;
     let mut extra = |key, damage, splash, source, mechanic| {
         let mut hit = Hit::direct(key, h.target, damage, false);
         hit.owner = h.owner;
+        hit.cast_id = h.cast_id;
         hit.triggered = true;
+        hit.proc_admitted = true;
+        hit.origin = if h.origin == super::items::legendary::events::Origin::Item {
+            h.origin
+        } else {
+            super::items::legendary::events::Origin::Talent
+        };
         hit.proc_chain = h.proc_chain | chain_bit(mechanic);
         hit.splash = splash;
         hit.meter_source = source;
         pending.0.push((now + 0.01, hit));
     };
-    if accepts(run, h, M::Seal, t) {
-        let key = if run.class.id == 7 {
-            "flame_shock"
-        } else {
-            "holy_shock"
-        };
-        extra(
-            key,
-            h.damage * 0.25,
-            if active(run, M::SealStorm) { 6.0 } else { 0.0 },
-            meter_source(
-                run,
-                if active(run, M::SealStorm) {
-                    M::SealStorm
-                } else {
-                    M::Seal
-                },
-            ),
-            M::Seal,
-        );
+    if accepts(run, h, M::Seal, t) && procs::ready_milestone(run, M::Seal, t) {
+        for donor in super::items::legendary::milestones::sources(run, M::Seal) {
+            let key = if donor == 7 {
+                "flame_shock"
+            } else {
+                "holy_shock"
+            };
+            extra(
+                key,
+                h.damage * 0.25,
+                if active(run, M::SealStorm) { 6.0 } else { 0.0 },
+                super::items::legendary::milestones::source_name(donor, M::Seal),
+                M::Seal,
+            );
+        }
         if active(run, M::SealStorm) {
             let amount =
                 procs::resolve(run, "proc_holy_heal", h.damage * 0.05, 0.0, 0.0, 0.0, 1).dmg;
@@ -371,6 +446,7 @@ pub(super) fn on_hit(
     }
     if accepts(run, h, M::Splash, t) {
         run.talent_runtime.bursts.push(Burst {
+            parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::Splash),
             pos,
             damage: h.damage * 0.4,
@@ -384,8 +460,12 @@ pub(super) fn on_hit(
             spread_source: None,
         });
     }
-    if holy && run.class.id == 2 && accepts(run, h, M::HolyJudgement, t) {
+    if holy
+        && super::items::legendary::milestones::sources(run, M::HolyJudgement).contains(&2)
+        && accepts(run, h, M::HolyJudgement, t)
+    {
         run.talent_runtime.bursts.push(Burst {
+            parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::HolyJudgement),
             pos,
             damage: h.damage * 0.5,
@@ -399,7 +479,10 @@ pub(super) fn on_hit(
             spread_source: None,
         });
     }
-    if accepts(run, h, M::Windfury, t) && rng.f32() < 0.2 {
+    if accepts(run, h, M::Windfury, t)
+        && rng.f32() < 0.2
+        && procs::ready_milestone(run, M::Windfury, t)
+    {
         extra(
             h.skill,
             h.damage * 0.5,
@@ -415,7 +498,10 @@ pub(super) fn on_hit(
             M::Windfury,
         );
     }
-    if accepts(run, h, M::Execution, t) && run.talent_runtime.streak >= 10 {
+    if accepts(run, h, M::Execution, t)
+        && run.talent_runtime.streak >= 10
+        && procs::ready_milestone(run, M::Execution, t)
+    {
         extra(
             h.skill,
             h.damage * 2.0,
@@ -457,6 +543,7 @@ pub(super) fn on_hit(
             _ => (7.0, 64),
         };
         run.talent_runtime.bursts.push(Burst {
+            parent: h.cast_id,
             chain: h.proc_chain | chain_bit(mechanic),
             pos,
             damage: h.damage * factor,
@@ -471,15 +558,17 @@ pub(super) fn on_hit(
         });
     }
 }
-pub(super) fn periodic_leech(run: &mut Run, skill: &str, damage: f32) {
-    if active(run, M::ShadowDrain) && tags::school(skill).is_some_and(|t| t.contains(Tags::SHADOW))
+pub(super) fn periodic_leech(run: &mut Run, tags: Tags, damage: f32) {
+    if active(run, M::ShadowDrain)
+        && tags.contains(Tags::SHADOW)
+        && procs::ready(run, "proc_shadow_leech", tags)
     {
         let amount = procs::resolve(run, "proc_shadow_leech", damage * 0.12, 0.0, 0.0, 0.0, 1).dmg;
         run.heal(amount);
     }
 }
 pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
-    if run.talent_runtime.enabled.is_empty() {
+    if run.talent_runtime.enabled.is_empty() && run.legendary.grants.is_empty() {
         return;
     }
     let owned: Vec<_> = en
@@ -505,10 +594,13 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
         || active(run, M::Poisonburst) && poison
         || active(run, M::Fireburst) && fire
         || active(run, M::Plagueburst) && !owned.is_empty()
-        || run.class.id == 5 && active(run, M::PlagueSpread) && !owned.is_empty()
+        || super::items::legendary::milestones::sources(run, M::PlagueSpread).contains(&5)
+            && active(run, M::PlagueSpread)
+            && !owned.is_empty()
         || freeze;
     if spread || explode {
         run.talent_runtime.bursts.push(Burst {
+            parent: run.proc_runtime.parent,
             chain: 0,
             pos,
             damage: if explode {
@@ -578,7 +670,7 @@ pub(super) fn tick(
     mut fx: Fx,
 ) {
     let dt = time.delta_secs();
-    if dt <= 0.0 || run.dead_t.is_some() {
+    if dt <= 0.0 || run.dead_t.is_some() || run.pending_levels > 0 {
         return;
     }
     let Ok((me, tf)) = hero.single() else {
@@ -588,11 +680,38 @@ pub(super) fn tick(
     let owner = run.owner;
     let now = run.elapsed;
     let bursts = std::mem::take(&mut run.talent_runtime.bursts);
-    for burst in bursts {
+    for mut burst in bursts {
+        if run.legendary.has(238) && !burst.dots.is_empty() {
+            let mut gathered = Vec::new();
+            for (_, tf, mut en) in &mut enemies {
+                if !en.dead && units::flat(tf.translation - burst.pos).length() <= burst.radius {
+                    en.dots.retain(|dot| {
+                        if dot.owner == owner {
+                            gathered.push(dot.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+            }
+            for dot in gathered {
+                super::items::legendary::periodic::field(
+                    &mut run,
+                    238,
+                    burst.pos,
+                    super::items::legendary::periodic::budget(&dot),
+                    dot.left,
+                    dot.tags.unwrap_or(Tags::SHADOW),
+                    false,
+                );
+            }
+            burst.dots.clear();
+        }
         let skill = procs::source_key(&run, burst.meter_source)
             .filter(|key| !key.ends_with("_spread"))
             .unwrap_or("proc_plagueburst");
-        let p = procs::resolve(
+        let mut p = procs::resolve(
             &run,
             skill,
             burst.damage,
@@ -601,6 +720,52 @@ pub(super) fn tick(
             burst.radius,
             burst.targets,
         );
+        p.roll_extras(std::array::from_fn(|i| {
+            if p.extra_chances[i] > 0.0 {
+                rng.f32()
+            } else {
+                1.0
+            }
+        }));
+        if !procs::ready(&mut run, skill, p.tags) {
+            continue;
+        }
+        if skill == "proc_starfall" && run.legendary.has(88) {
+            let mut targets: Vec<_> = enemies
+                .iter()
+                .filter(|(_, tf, en)| {
+                    !en.dead && units::flat(tf.translation - burst.pos).length() <= 24.0
+                })
+                .map(|(e, tf, _)| (e, units::flat(tf.translation - burst.pos).length()))
+                .collect();
+            targets.sort_by(|a, b| a.1.total_cmp(&b.1));
+            targets.truncate(3);
+            let count = targets.len().max(1) as f32;
+            for (target, dist) in targets {
+                let (damage, crit) = super::spell_engine::critical_with_multiplier(
+                    p.dmg / count,
+                    p.crit,
+                    p.crit_multiplier,
+                    rng.f32(),
+                );
+                let mut hit = Hit::direct(skill, target, damage, crit);
+                hit.owner = owner;
+                hit.origin = super::items::legendary::events::Origin::Talent;
+                hit.triggered = true;
+                hit.proc_admitted = true;
+                hit.proc_resolved = true;
+                hit.tags = Some(p.tags);
+                hit.direct_dot = p.direct_dot.map(|mut dot| {
+                    dot.dps /= count;
+                    dot
+                });
+                hit.proc_chain = burst.chain;
+                hit.cast_id = burst.parent;
+                hit.meter_source = burst.meter_source;
+                pending.0.push((now + dist / 25.0, hit));
+            }
+            continue;
+        }
         let spread_key =
             procs::source_key(&run, burst.spread_source).unwrap_or("proc_plague_spread");
         let spread_radius = if burst.dots.is_empty() {
@@ -649,8 +814,13 @@ pub(super) fn tick(
                 let mut hit = Hit::direct(skill, entity, damage, crit);
                 hit.owner = owner;
                 hit.triggered = true;
+                hit.proc_admitted = true;
                 hit.proc_resolved = true;
+                hit.direct_dot = p.direct_dot;
+                hit.tags = Some(p.tags);
                 hit.proc_chain = burst.chain;
+                hit.cast_id = burst.parent;
+                hit.origin = super::items::legendary::events::Origin::Talent;
                 hit.meter_source = burst.meter_source;
                 let spell = data::ability(burst.skill).spell;
                 for repeat in 0..repeats {
@@ -684,30 +854,42 @@ pub(super) fn tick(
         } else {
             45.0
         };
-        let skill = if run.class.id == 1 {
-            "thunder_clap"
+        let donors = if shield > 0.0 {
+            vec![run.class.id]
         } else {
-            "holy_nova"
+            super::items::legendary::milestones::sources(&run, M::Bulwark)
         };
-        for (entity, tf, en) in &enemies {
-            if !en.dead && units::flat(tf.translation - pos).length() <= radius {
-                let mut hit = Hit::direct(skill, entity, damage, false);
-                hit.owner = owner;
-                hit.triggered = true;
-                hit.meter_source = meter_source(
-                    &run,
-                    if shield > 0.0 {
-                        if nova {
-                            M::ShieldNova
+        for donor in donors {
+            let skill = if donor == 1 {
+                "thunder_clap"
+            } else {
+                "holy_nova"
+            };
+            for (entity, tf, en) in &enemies {
+                if !en.dead && units::flat(tf.translation - pos).length() <= radius {
+                    let mut hit = Hit::direct(skill, entity, damage, false);
+                    hit.owner = owner;
+                    hit.triggered = true;
+                    hit.meter_source = meter_source(
+                        &run,
+                        if shield > 0.0 {
+                            if nova {
+                                M::ShieldNova
+                            } else {
+                                M::Shieldburst
+                            }
                         } else {
-                            M::Shieldburst
-                        }
-                    } else {
-                        M::Bulwark
-                    },
-                );
-                pending.0.push((now, hit));
+                            M::Bulwark
+                        },
+                    );
+                    if shield <= 0.0 {
+                        hit.meter_source =
+                            super::items::legendary::milestones::source_name(donor, M::Bulwark);
+                    }
+                    pending.0.push((now, hit));
+                }
             }
+            fx.cast(me, data::ability(skill).spell, &[me], None);
         }
         if active(&run, M::ShieldHeal) {
             let max = run.stats().max_hp;
@@ -716,14 +898,13 @@ pub(super) fn tick(
         }
         if blocked {
             run.talent_runtime.last_block = now;
-            if run.class.id == 2 {
+            if super::items::legendary::milestones::sources(&run, M::Bulwark).contains(&2) {
                 let max = run.stats().max_hp;
                 let amount =
                     procs::resolve(&run, "proc_holy_heal", max * 0.02, 0.0, 0.0, 0.0, 1).dmg;
                 run.heal(amount);
             }
         }
-        fx.cast(me, data::ability(skill).spell, &[me], None);
     }
     for (index, mechanic, key) in [
         (0, M::Taunt, "proc_taunt"),
@@ -739,12 +920,16 @@ pub(super) fn tick(
         }
         if mechanic == M::Taunt {
             let p = procs::resolve(&run, "proc_taunt", 0.0, 0.0, 3.0, 12.0, 1);
-            for (entity, tf, en) in &enemies {
+            for (entity, tf, mut en) in &mut enemies {
                 if !en.dead && units::flat(tf.translation - pos).length() <= p.radius {
-                    commands.entity(entity).insert(Taunted {
-                        owner,
-                        until: now + p.duration,
-                    });
+                    if run.legendary.has(159) && !en.boss {
+                        en.fear_t = en.fear_t.max(p.duration);
+                    } else {
+                        commands.entity(entity).insert(Taunted {
+                            owner,
+                            until: now + p.duration,
+                        });
+                    }
                     fx.impact(entity, 355);
                 }
             }
@@ -762,60 +947,73 @@ pub(super) fn tick(
             }
         }
     }
-    let totem = active(&run, M::HealTotem);
-    let demon = active(&run, M::Demon);
-    let count = if active(&run, M::Demons) {
-        3
-    } else if active(&run, M::Pack) {
-        2
-    } else if demon || active(&run, M::Pet) || totem {
-        1
-    } else {
-        0
-    };
+    let counts = [
+        if active(&run, M::Pack) {
+            2
+        } else {
+            u8::from(active(&run, M::Pet))
+        },
+        if active(&run, M::Demons) {
+            3
+        } else {
+            u8::from(active(&run, M::Demon))
+        },
+        if active(&run, M::SpiritTotem) {
+            2
+        } else {
+            u8::from(active(&run, M::HealTotem))
+        },
+    ];
     if now >= run.talent_runtime.summon {
         run.talent_runtime.summon = now + 1.0;
-        for slot in 0..count {
-            if pets
-                .iter()
-                .any(|(_, _, p, _)| p.owner == owner && p.slot == slot)
-            {
-                continue;
-            }
-            let serial = run.guid();
-            let entity = units::spawn_unit(
-                &mut commands,
-                &UnitSpec {
-                    serial,
-                    display: if totem {
-                        4587
-                    } else if demon {
-                        4449
-                    } else {
-                        247
+        for (family, count) in counts.into_iter().enumerate() {
+            for slot in 0..count {
+                let totem = family == 2;
+                let demon = family == 1;
+                if pets.iter().any(|(_, _, p, _)| {
+                    p.owner == owner && p.family == family as u8 && p.slot == slot
+                }) {
+                    continue;
+                }
+                let serial = run.guid();
+                let entity = units::spawn_unit(
+                    &mut commands,
+                    &UnitSpec {
+                        serial,
+                        display: if totem {
+                            4587
+                        } else if demon {
+                            4449
+                        } else {
+                            247
+                        },
+                        scale: 1.0,
+                        level: 60,
+                        faction: units::FACTION_FRIENDLY,
+                        bytes0: 0,
+                        weapons: &[],
+                        sheath: 0,
                     },
-                    scale: 1.0,
-                    level: 60,
-                    faction: units::FACTION_FRIENDLY,
-                    bytes0: 0,
-                    weapons: &[],
-                    sheath: 0,
-                },
-                pos + Vec3::X * (2.0 + f32::from(slot)),
-                0.0,
-            );
-            commands.entity(entity).insert(Summon {
-                owner,
-                slot,
-                cooldown: rng.range(0.05, 0.55),
-                stationary: totem,
-                target: None,
-                retarget: 0.0,
-            });
-            if let Some(owner) = owner {
-                commands
-                    .entity(entity)
-                    .insert(super::multiplayer::OwnedEffect(owner));
+                    pos + Vec3::X * (2.0 + f32::from(slot)),
+                    0.0,
+                );
+                commands.entity(entity).insert(Summon {
+                    family: family as u8,
+                    owner,
+                    slot,
+                    cooldown: rng.range(0.05, 0.55),
+                    stationary: totem,
+                    target: None,
+                    retarget: 0.0,
+                    carried: None,
+                    carry_until: 0.0,
+                    harvested: None,
+                });
+                if let Some(owner) = owner {
+                    commands
+                        .entity(entity)
+                        .insert(super::multiplayer::OwnedEffect(owner));
+                }
             }
         }
     }
@@ -823,7 +1021,11 @@ pub(super) fn tick(
         if pet.owner != owner {
             continue;
         }
-        if pet.slot >= count {
+        let demon = pet.family == 1;
+        if pet.carry_until < now {
+            pet.carried = None;
+        }
+        if pet.slot >= counts[pet.family as usize] {
             commands.entity(entity).despawn();
             continue;
         }
@@ -857,26 +1059,115 @@ pub(super) fn tick(
             pet.retarget = rng.range(1.2, 2.4);
         }
         let target = pet.target.and_then(|e| enemies.get(e).ok());
+        if !pet.stationary && run.legendary.has(185) {
+            if let Some((e, _, _)) = enemies
+                .iter()
+                .filter(|(_, _, en)| {
+                    !en.dead
+                        && en.dots.iter().any(|d| {
+                            d.owner == owner
+                                && super::items::legendary::periodic::family(d)
+                                    == super::items::legendary::periodic::Family::Bleed
+                        })
+                })
+                .min_by(|(_, a, _), (_, b, _)| {
+                    units::flat(a.translation - tf.translation)
+                        .length_squared()
+                        .total_cmp(&units::flat(b.translation - tf.translation).length_squared())
+                })
+            {
+                if pet.carried.is_none() {
+                    pet.target = Some(e);
+                }
+            }
+        }
         let destination = if pet.stationary {
-            pos + Vec3::X * 2.0
+            tf.translation
         } else {
             target.as_ref().map_or(pos, |t| t.1.translation)
+        };
+        let destination = if run.legendary.has(188) && !pet.stationary {
+            run.legendary
+                .casting
+                .spirit_destination
+                .unwrap_or(destination)
+        } else {
+            destination
         };
         let delta = units::flat(destination - tf.translation);
         let len = delta.length();
         let move_by = (dt * 8.0).min((len - 1.5).max(0.0));
         tf.translation += delta.normalize_or_zero() * move_by;
-        tf.translation.y = pos.y;
+        if !pet.stationary {
+            tf.translation.y = pos.y;
+        }
         mv.speed = if move_by > 0.0 { 8.0 } else { 0.0 };
         mv.flags = if move_by > 0.0 { 1 } else { 0 };
         pet.cooldown -= dt;
+        if !pet.stationary {
+            run.legendary.casting.pet = Some(tf.translation);
+        }
         if let Some((target, target_tf, _)) = target {
             if pet.cooldown <= 0.0
                 && units::flat(target_tf.translation - tf.translation).length() <= range
-                && (!pet.stationary || active(&run, M::DualTotem))
+                && (!pet.stationary || active(&run, M::DualTotem) || run.legendary.has(194))
             {
+                let target_pos = target_tf.translation;
+                if !pet.stationary && run.legendary.has(188) {
+                    pet.cooldown = 0.5;
+                    continue;
+                }
+                if !pet.stationary && run.legendary.has(185) {
+                    if pet.harvested != Some(target) {
+                        if let Some(dot) = pet.carried.take() {
+                            if let Ok((_, _, mut en)) = enemies.get_mut(target) {
+                                en.dots.push(dot);
+                            }
+                            pet.harvested = None;
+                        } else if let Ok((_, _, mut en)) = enemies.get_mut(target) {
+                            if let Some(dot) = en.dots.iter_mut().find(|d| {
+                                d.owner == owner
+                                    && super::items::legendary::periodic::family(d)
+                                        == super::items::legendary::periodic::Family::Bleed
+                            }) {
+                                let mut portion = dot.clone();
+                                portion.dps *= 0.3;
+                                dot.dps *= 0.7;
+                                pet.carried = Some(portion);
+                                pet.carry_until = now + 6.0;
+                                pet.harvested = Some(target);
+                                pet.target = None;
+                            }
+                        }
+                    }
+                }
+                if !pet.stationary {
+                    super::items::legendary::effects::pet_mark(&mut run, target, target_pos);
+                }
+                if !pet.stationary && run.legendary.has(191) {
+                    pet.cooldown = 1.5;
+                    continue;
+                }
+                if !pet.stationary && run.legendary.has(181) {
+                    if let Some((key, _)) = run.legendary.casting.last_melee {
+                        super::items::legendary::casting::copy(
+                            &mut run,
+                            181,
+                            key,
+                            tf.translation,
+                            Some(target),
+                            0.0,
+                        );
+                        pet.cooldown = 1.5;
+                        continue;
+                    }
+                }
                 let damage = (if pet.stationary { 24.0 } else { 18.0 })
-                    * if active(&run, M::DemonLord) { 2.0 } else { 1.0 };
+                    * if demon && active(&run, M::DemonLord) {
+                        2.0
+                    } else {
+                        1.0
+                    };
                 let skill = if demon {
                     "proc_demon_bolt"
                 } else if pet.stationary {
@@ -914,11 +1205,13 @@ pub(super) fn tick(
                         M::Pet
                     },
                 );
-                if active(&run, M::Pack) || active(&run, M::Demons) {
+                if (!demon && !pet.stationary && active(&run, M::Pack))
+                    || (demon && active(&run, M::Demons))
+                {
                     hit.dot = damage * 0.2;
                     hit.dot_dur = 4.0;
                 }
-                if active(&run, M::DemonLord) {
+                if demon && active(&run, M::DemonLord) {
                     hit.splash = 4.0;
                 }
                 pending.0.push((now, hit.clone()));
@@ -935,6 +1228,7 @@ pub(super) fn support(
     mut players: Option<ResMut<Companions>>,
     hero: Query<&Transform, With<Hero>>,
     remotes: Query<(&Transform, &RemoteOwner)>,
+    totems: Query<(&Transform, &Summon)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -945,16 +1239,29 @@ pub(super) fn support(
     };
     let mut sources = vec![];
     struct Source {
+        owner: Option<u64>,
         pos: Vec3,
         rate: (f32, f32),
+        healing_centers: Vec<Vec3>,
         pulse: (f32, f32),
         flat: (f32, f32),
-        buff: (f32, f32),
+        buff: super::healer_buffs::Source,
     }
-    fn source(run: &mut Run, pos: Vec3) -> Source {
-        let rate = if active(run, M::SpiritTotem) {
+    fn source(run: &mut Run, pos: Vec3, totems: &Query<(&Transform, &Summon)>) -> Source {
+        let totem_healing =
+            (active(run, M::HealTotem) || active(run, M::SpiritTotem)) && !run.legendary.has(194);
+        let healing_centers = if totem_healing {
+            totems
+                .iter()
+                .filter(|(_, t)| t.owned_totem(run.owner))
+                .map(|(tf, _)| tf.translation)
+                .collect()
+        } else {
+            vec![pos]
+        };
+        let rate = if active(run, M::SpiritTotem) && !run.legendary.has(194) {
             0.04
-        } else if active(run, M::HealTotem) {
+        } else if active(run, M::HealTotem) && !run.legendary.has(194) {
             0.02
         } else if active(run, M::Grove) {
             0.03
@@ -966,7 +1273,9 @@ pub(super) fn support(
         let pulse = std::mem::take(&mut run.talent_runtime.party_pulse)
             && (active(run, M::HolyBurst) || active(run, M::Grove));
         let healing = std::mem::take(&mut run.talent_runtime.healing);
-        let key = if active(run, M::HealTotem) || active(run, M::SpiritTotem) {
+        let key = if (active(run, M::HealTotem) || active(run, M::SpiritTotem))
+            && !run.legendary.has(194)
+        {
             "proc_totem_heal"
         } else if active(run, M::Grove) {
             "proc_grove"
@@ -987,74 +1296,71 @@ pub(super) fn support(
             12.0,
             1,
         );
-        let buff = procs::resolve(
-            run,
-            "proc_ally_buff",
-            if active(run, M::AllyBuff) { 0.15 } else { 0.0 },
-            0.0,
-            0.0,
-            12.0,
-            1,
-        );
+        let buff = super::healer_buffs::source(run);
         Source {
+            owner: run.owner,
             pos,
             rate: (rate.dmg, rate.radius),
+            healing_centers,
             pulse: (pulse.dmg, pulse.radius),
             flat: (healing, procs::radius(run, "proc_holy_heal", 12.0)),
-            buff: (buff.dmg, buff.radius),
+            buff,
         }
     }
     if run.dead_t.is_none() {
-        sources.push(source(&mut run, tf.translation));
+        sources.push(source(&mut run, tf.translation, &totems));
     }
     if let Some(players) = players.as_deref_mut() {
         for (tf, owner) in &remotes {
             if let Some(p) = players.0.get_mut(&owner.0) {
                 if p.run.dead_t.is_none() {
-                    sources.push(source(&mut p.run, tf.translation));
+                    sources.push(source(&mut p.run, tf.translation, &totems));
                 }
             }
         }
     }
-    fn receive(run: &mut Run, pos: Vec3, dt: f32, sources: &[Source]) {
-        let mut buff = 0.0_f32;
+    let mut credits = Vec::new();
+    fn receive(
+        run: &mut Run,
+        pos: Vec3,
+        dt: f32,
+        sources: &[Source],
+        credits: &mut Vec<(Option<u64>, f32)>,
+    ) {
         for source in sources {
             let distance = units::flat(source.pos - pos).length();
             let in_range = |(amount, radius)| if distance <= radius { amount } else { 0.0 };
-            let amount = run.stats().max_hp * (in_range(source.rate) * dt + in_range(source.pulse))
-                + in_range(source.flat);
-            run.heal(amount);
-            buff = buff.max(in_range(source.buff));
-        }
-        if run.talent_runtime.party_buff == buff {
-            return;
-        }
-        run.talent_runtime.party_buff = buff;
-        run.replace_spell_modifiers(
-            0x7000_0000,
-            if buff > 0.0 {
-                vec![
-                    Change::IncreasedDamage(buff),
-                    Change::IncreasedAttackSpeed(buff),
-                ]
-                .into_iter()
-                .map(|change| Modifier {
-                    source: 0,
-                    filter: Filter::default(),
-                    change,
-                })
-                .collect::<Vec<_>>()
+            // Overlapping ancestral totems extend coverage without multiplying the same HoT.
+            let rate = if source
+                .healing_centers
+                .iter()
+                .any(|center| units::flat(*center - pos).length() <= source.rate.1)
+            {
+                source.rate.0
             } else {
-                vec![]
-            },
-        );
+                0.0
+            };
+            let amount =
+                run.stats().max_hp * (rate * dt + in_range(source.pulse)) + in_range(source.flat);
+            credits.push((source.owner, run.recover(amount)));
+        }
+        super::healer_buffs::receive(run, pos, dt, sources.iter().map(|s| (s.pos, &s.buff)));
     }
-    receive(&mut run, tf.translation, dt, &sources);
+    receive(&mut run, tf.translation, dt, &sources, &mut credits);
     if let Some(players) = players.as_deref_mut() {
         for (tf, owner) in &remotes {
             if let Some(p) = players.0.get_mut(&owner.0) {
-                receive(&mut p.run, tf.translation, dt, &sources);
+                receive(&mut p.run, tf.translation, dt, &sources, &mut credits);
             }
+        }
+    }
+    for (owner, amount) in credits {
+        if let Some(source) =
+            super::multiplayer::player_run(&mut run, players.as_deref_mut(), owner)
+        {
+            source
+                .healing_meter
+                .record_hit("party_healing", source.elapsed, amount, false, true);
         }
     }
 }
@@ -1063,6 +1369,149 @@ pub(super) fn support(
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    fn restoration_world() -> (World, Entity) {
+        use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
+        let mut world = World::new();
+        let mut shaman = run(5, 2, &[8, 12, 18]);
+        shaman.hp = 10.0;
+        world.insert_resource(shaman);
+        world.insert_resource(Rng(42));
+        world.init_resource::<Time>();
+        world.init_resource::<PendingHits>();
+        world.init_resource::<PlaySeq>();
+        world.init_resource::<Messages<CastEvent>>();
+        world.init_resource::<Messages<SpellGoTargets>>();
+        world.init_resource::<Messages<SwingMessage>>();
+        world.init_resource::<Messages<crate::combat_text::CombatTextSpawn>>();
+        world.init_resource::<Messages<Hit>>();
+        world.init_resource::<Messages<super::super::enemies::Loot>>();
+        world.init_resource::<Messages<crate::net::FieldChanged>>();
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(100));
+        let hero = world
+            .spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()))
+            .id();
+        world.run_system_once(tick).unwrap();
+        (world, hero)
+    }
+    #[test]
+    fn spirit_council_has_two_stationary_totems_and_three_targets_per_volley() {
+        let (mut world, hero) = restoration_world();
+        assert_eq!(world.query::<&Summon>().iter(&world).count(), 2);
+        let targets = world
+            .run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+                [4.0, 5.0, 6.0, 70.0].map(|x| {
+                    super::super::enemies::spawn_enemy(
+                        &mut commands,
+                        &mut run,
+                        &data::roster(0).enemies[0],
+                        Vec3::X * x,
+                        Vec3::ZERO,
+                        false,
+                    )
+                })
+            })
+            .unwrap();
+        for entity in targets {
+            world.get_mut::<Enemy>(entity).unwrap().hp = 10000.0;
+        }
+        for mut totem in world.query::<&mut Summon>().iter_mut(&mut world) {
+            totem.cooldown = 0.0;
+        }
+        world.run_system_once(tick).unwrap();
+        assert_eq!(world.resource::<PendingHits>().0.len(), 2);
+        world
+            .run_system_once(super::super::abilities::apply_hits)
+            .unwrap();
+        for entity in &targets[..3] {
+            assert!(world.get::<Enemy>(*entity).unwrap().hp < 10000.0);
+        }
+        assert_eq!(world.get::<Enemy>(targets[3]).unwrap().hp, 10000.0);
+        let original: Vec<_> = world
+            .query::<(Entity, &Transform, &Summon)>()
+            .iter(&world)
+            .map(|(e, tf, _)| (e, tf.translation))
+            .collect();
+        world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+        world.run_system_once(tick).unwrap();
+        for (entity, pos) in &original {
+            assert_eq!(world.get::<Transform>(*entity).unwrap().translation, *pos);
+        }
+        world.resource_mut::<Run>().abilities = vec![Owned {
+            def: data::ability("totemic_recall"),
+            level: 1,
+            cd: 0.0,
+        }];
+        let cooldowns: Vec<_> = original
+            .iter()
+            .map(|(e, _)| (*e, world.get::<Summon>(*e).unwrap().cooldown))
+            .collect();
+        world
+            .run_system_once(super::super::abilities::cast_abilities)
+            .unwrap();
+        for (entity, cd) in cooldowns {
+            assert!(
+                world
+                    .get::<Transform>(entity)
+                    .unwrap()
+                    .translation
+                    .distance(Vec3::X * 30.0)
+                    <= 3.01
+            );
+            assert_eq!(world.get::<Summon>(entity).unwrap().cooldown, cd);
+        }
+    }
+    #[test]
+    fn restoration_heals_from_totems_without_stacking_and_keeps_party_blessings() {
+        let (mut world, hero) = restoration_world();
+        world.get_mut::<Transform>(hero).unwrap().translation.x = 30.0;
+        let mut players = Companions::default();
+        for (id, x) in [(42, 2.0), (43, 31.0)] {
+            let entity = world
+                .spawn((RemoteOwner(id), Transform::from_xyz(x, 0.0, 0.0)))
+                .id();
+            players.0.insert(
+                id,
+                super::super::multiplayer::Companion {
+                    entity,
+                    run: Run {
+                        owner: Some(id),
+                        hp: 10.0,
+                        ..default()
+                    },
+                    physics: Hero { vy: 0.0, air: 0.0 },
+                    offer: default(),
+                    offer_id: 0,
+                },
+            );
+        }
+        world.insert_resource(players);
+        world.run_system_once(support).unwrap();
+        let healing = world.resource::<Companions>().0[&42].run.hp - 10.0;
+        assert!(healing > 0.0);
+        assert_eq!(world.resource::<Run>().hp, 10.0);
+        let players = world.resource::<Companions>();
+        assert_eq!(players.0[&43].run.hp, 10.0);
+        assert!(players.0[&43].run.healer_buffs.bonuses.recovery > 0.0);
+        assert!(players.0[&43].run.healer_buffs.bonuses.damage > 0.0);
+        let one = world
+            .query_filtered::<Entity, With<Summon>>()
+            .iter(&world)
+            .next()
+            .unwrap();
+        world.despawn(one);
+        world
+            .resource_mut::<Companions>()
+            .0
+            .get_mut(&42)
+            .unwrap()
+            .run
+            .hp = 10.0;
+        world.run_system_once(support).unwrap();
+        assert!((world.resource::<Companions>().0[&42].run.hp - 10.0 - healing).abs() < 0.001);
+    }
 
     #[test]
     fn pet_targets_vary_between_nearby_enemies_without_ignoring_reach() {
@@ -1321,13 +1770,12 @@ mod tests {
         let mut rng = Rng(42);
         for skill in data::ABILITIES
             .iter()
-            .filter(|s| tags::for_spell(s).contains(Tags::DAMAGE))
+            .filter(|s| !s.key.starts_with("proc_") && tags::for_spell(s).contains(Tags::DAMAGE))
         {
             let mut poison = run(3, 0, &[8]);
             let mut enemy = enemy();
             let mut pending = PendingHits::default();
-            let mut h = Hit::direct(skill.key, Entity::from_bits(1), 10.0, false);
-            h.triggered = true; // Also covers compatible impacts produced by another spell proc.
+            let h = Hit::direct(skill.key, Entity::from_bits(1), 10.0, false);
             on_hit(
                 &mut poison,
                 &h,
@@ -1356,7 +1804,31 @@ mod tests {
         }
     }
     #[test]
-    fn distinct_procs_can_chain_but_cannot_cycle_back_to_a_previous_milestone() {
+    fn proc_rules_all_proc_origins_are_rejected_as_milestone_sources() {
+        use super::super::items::legendary::events::Origin;
+        for (origin, triggered, key) in [
+            (Origin::Talent, false, "fireball"),
+            (Origin::Item, false, "fireball"),
+            (Origin::Legendary, false, "fireball"),
+            (Origin::Skill, true, "fireball"),
+            (Origin::Skill, false, "proc_fireburst"),
+        ] {
+            let mut run = run(3, 0, &[8]);
+            let mut en = enemy();
+            let mut pending = PendingHits::default();
+            let mut rng = Rng::default();
+            let mut hit = Hit::direct(key, Entity::from_bits(1), 100.0, false);
+            hit.origin = origin;
+            hit.triggered = triggered;
+            on_hit(&mut run, &hit, &mut en, Vec3::ZERO, &mut rng, &mut pending);
+            assert!(en.dots.is_empty());
+            assert!(pending.0.is_empty());
+            assert!(run.talent_runtime.bursts.is_empty());
+        }
+    }
+
+    #[test]
+    fn distinct_procs_cannot_trigger_other_milestones() {
         assert!((M::Grove as u32) < 64);
         let mut paladin = run(1, 2, &[8, 12]);
         let mut enemy = enemy();
@@ -1384,11 +1856,10 @@ mod tests {
             &mut pending,
         );
         assert!(pending.0.is_empty(), "Seal recursively triggered itself");
-        let splash = paladin.talent_runtime.bursts.pop().unwrap();
-        assert_eq!(splash.chain, chain_bit(M::Seal) | chain_bit(M::Splash));
-        let mut child = Hit::direct("proc_splash", root.target, splash.damage, false);
+        assert!(paladin.talent_runtime.bursts.is_empty());
+        let mut child = Hit::direct("proc_splash", root.target, 10.0, false);
         child.triggered = true;
-        child.proc_chain = splash.chain;
+        child.proc_chain = chain_bit(M::Splash);
         on_hit(
             &mut paladin,
             &child,
@@ -1405,10 +1876,7 @@ mod tests {
     }
     #[test]
     fn milestone_hit_counters_ignore_incompatible_schools() {
-        for (class, tree, compatible, other, count) in [
-            (6, 0, "arcane_missiles", "fireball", 5),
-            (8, 0, "starfire", "fireball", 5),
-        ] {
+        for (class, tree, compatible, other, count) in [(8, 0, "starfire", "fireball", 5)] {
             let mut run = run(class, tree, &[18]);
             run.elapsed = 2.0;
             let mut enemy = enemy();
@@ -1436,7 +1904,8 @@ mod tests {
         let mut rng = Rng::default();
         let mut pending = PendingHits::default();
         // A SPELL + PHYSICAL definition proves this condition does not require ATTACK.
-        let mut h = Hit::direct("proc_bloodburst", Entity::from_bits(1), 10.0, false);
+        let mut h = Hit::direct("cleave", Entity::from_bits(1), 10.0, false);
+        h.tags = Some(Tags::SPELL | Tags::PHYSICAL | Tags::DAMAGE);
         on_hit(
             &mut poison,
             &h,
@@ -1511,6 +1980,7 @@ mod tests {
         assert_eq!(enemy.dots[0].dps, 18.0);
         enemy.dots[0].tick = 0.25;
         enemy.dots[0].left = 2.0;
+        run.elapsed += 0.5;
         on_hit(
             &mut run,
             &hit,
@@ -1544,8 +2014,12 @@ mod tests {
         let mut enemy = enemy();
         enemy.dots.push(Dot {
             meter_source: None,
+            tags: None,
             owner: Some(8),
             skill: "deadly_poison",
+            item_source: None,
+            origin: crate::survivors::items::legendary::events::Origin::Talent,
+            meta: Default::default(),
             dps: 10.0,
             left: 4.0,
             tick: 1.0,
@@ -1574,6 +2048,10 @@ mod tests {
                 owner: None,
                 skill: "rend",
                 meter_source: None,
+                tags: None,
+                item_source: None,
+                origin: crate::survivors::items::legendary::events::Origin::Skill,
+                meta: Default::default(),
                 dps: 5.0,
                 left: 4.0,
                 tick: 1.0,
@@ -1602,6 +2080,22 @@ mod tests {
         enemy.root_t = 1.0;
         assert_eq!(before_hit(&mut frost, &h, &enemy), 1.6);
     }
+    #[test]
+    fn proc_rules_triggered_shields_cannot_trigger_break_or_refresh_bursts() {
+        let mut run = run(4, 0, &[8, 12, 18]);
+        run.hp = 100.0;
+        run.shield = 40.0;
+        run.shield_t = 5.0;
+        run.talent_runtime.shield_capacity = 40.0;
+        run.legendary.events.shield_origin = super::super::items::legendary::events::Origin::Talent;
+        super::super::hero::hurt_hero(&mut run, 100.0);
+        assert_eq!(run.shield, 0.0);
+        assert_eq!(run.talent_runtime.shield_burst, 0.0);
+        run.shield = 30.0;
+        refreshed_shield(&mut run, 50.0);
+        assert_eq!(run.talent_runtime.shield_burst, 0.0);
+    }
+
     #[test]
     fn shield_break_and_refresh_queue_one_explosion_and_tanks_block() {
         let mut run = run(4, 0, &[8, 12, 18]);

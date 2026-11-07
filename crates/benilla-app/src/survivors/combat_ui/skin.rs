@@ -474,7 +474,7 @@ mod tests {
                     "Create New Character",
                     "Enter World",
                     "Game menu [Esc]",
-                    "Back to Stormwind",
+                    "Back to Hub",
                     "Talents | Level 40",
                 ] {
                     button_sized(ui, &font, label, TestButton, 40.0, 20.0, 16.0, false);

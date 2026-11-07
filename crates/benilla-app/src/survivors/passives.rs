@@ -10,10 +10,11 @@ pub(super) fn legendary(passive: &PassiveDef) -> bool {
         passive.effect,
         PassiveEffect::Modifier(
             _,
-            Change::AdditionalProjectiles(_)
-                | Change::AdditionalMeleeTargets(_)
-                | Change::Fork(_)
-                | Change::AdditionalChains(_)
+            Change::ProjectileChance(_)
+                | Change::MeleeTargetChance(_)
+                | Change::ForkChance(_)
+                | Change::ChainChance(_)
+                | Change::FlatRange(_)
         )
     )
 }
@@ -79,7 +80,7 @@ pub(super) fn scope(filter: Filter, change: Change) -> String {
         return labels;
     }
     match change {
-        Change::AdditionalChains(_) => "Projectile / Chain".to_owned(),
+        Change::AdditionalChains(_) | Change::ChainChance(_) => "Projectile / Chain".to_owned(),
         Change::RecastChance(_) => "Repeatable damaging skills".to_owned(),
         Change::CriticalChance(_) | Change::CriticalMultiplier(_) => "Damaging hits".to_owned(),
         _ => "Damaging skills".to_owned(),
@@ -88,6 +89,29 @@ pub(super) fn scope(filter: Filter, change: Change) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legendary_attack_range_stacks_and_only_offers_to_attacks_with_target_range() {
+        let p = passive("attack_range");
+        assert!(legendary(p));
+        for key in ["heroic_strike", "arcane_shot", "serpent_sting"] {
+            let mut run = run(&[key]);
+            assert!(eligible(p, &run), "{key}");
+            let def = data::ability(key);
+            let before = run.resolve_spell(def, 1);
+            run.passives.push((p, 3));
+            sync(&mut run);
+            let after = run.resolve_spell(def, 1);
+            assert_eq!(after.range, before.range + 6.0, "{key}");
+            assert_eq!(after.radius, before.radius);
+            assert!(eligible(p, &run));
+            assert_eq!(
+                run.resolve_spell(data::ability("fireball"), 1).range,
+                data::ability("fireball").range
+            );
+        }
+        assert!(!eligible(p, &run(&["fireball"])));
+        assert!(!eligible(p, &run(&["whirlwind"])));
+    }
     use super::super::Owned;
     use super::*;
     fn run(keys: &[&str]) -> Run {
@@ -105,6 +129,35 @@ mod tests {
     }
     fn passive(key: &str) -> &'static PassiveDef {
         data::PASSIVES.iter().find(|p| p.key == key).unwrap()
+    }
+    #[test]
+    fn legendary_chances_stack_and_are_applied_when_casting() {
+        for (key, spell, index) in [
+            ("projectiles", "fireball", 0),
+            ("melee_targets", "heroic_strike", 1),
+            ("chains", "fireball", 2),
+            ("fork", "fireball", 3),
+        ] {
+            let mut run = run(&[spell]);
+            run.passives.push((passive(key), 6));
+            sync(&mut run);
+            assert!(
+                (run.resolve_spell(data::ability(spell), 1).extra_chances[index] - 1.2).abs()
+                    < 0.001
+            );
+            assert!(eligible(passive(key), &run));
+            let cast = run.resolve_spell_for_cast(
+                data::ability(spell),
+                1,
+                &mut super::super::Rng::default(),
+            );
+            match index {
+                0 | 1 => assert!(cast.count >= 2),
+                2 => assert!(cast.chains >= 1),
+                _ => assert!(cast.forks >= 1),
+            }
+            assert_eq!(cast.extra_chances, [0.0; 4]);
+        }
     }
     #[test]
     fn repeat_passives_remain_useful_above_one_hundred_percent() {
@@ -161,7 +214,7 @@ mod tests {
     fn utility_and_dot_only_builds_do_not_receive_useless_damage_or_crit_bonuses() {
         assert!(!eligible(passive("kings"), &run(&["corruption"])));
         assert!(eligible(passive("dot"), &run(&["corruption"])));
-        assert!(!eligible(passive("holy"), &run(&["power_word_shield"])));
+        assert!(eligible(passive("holy"), &run(&["power_word_shield"])));
         assert!(eligible(passive("duration"), &run(&["power_word_shield"])));
         assert!(!eligible(passive("kings"), &run(&["thorns"])));
     }
@@ -170,7 +223,11 @@ mod tests {
         let mut run = run(&["fireball", "heroic_strike"]);
         run.passives.push((passive("projectiles"), 1));
         sync(&mut run);
-        assert_eq!(run.resolve_spell(data::ability("fireball"), 1).count, 2);
+        assert_eq!(
+            run.resolve_spell(data::ability("fireball"), 1)
+                .extra_chances[0],
+            0.2
+        );
         assert_eq!(
             run.resolve_spell(data::ability("heroic_strike"), 1).count,
             1
@@ -178,7 +235,11 @@ mod tests {
         run.passives[0].1 = 2;
         sync(&mut run);
         sync(&mut run);
-        assert_eq!(run.resolve_spell(data::ability("fireball"), 1).count, 3);
+        assert_eq!(
+            run.resolve_spell(data::ability("fireball"), 1)
+                .extra_chances[0],
+            0.4
+        );
         run.passives.clear();
         sync(&mut run);
         assert_eq!(run.resolve_spell(data::ability("fireball"), 1).count, 1);
@@ -202,14 +263,21 @@ mod tests {
             ],
         );
         assert!(!eligible(passive("kings"), &run));
-        assert!(!eligible(passive("fork"), &run));
+        assert!(eligible(passive("fork"), &run));
     }
     #[test]
     fn damage_stacks_continue_past_previous_rank_limits() {
         let mut run = run(&["fireball"]);
         run.passives.push((passive("fire"), 300));
         sync(&mut run);
-        assert!((run.resolve_spell(data::ability("fireball"), 1).dmg - 740.0).abs() < 0.01);
+        let damage = engine::resolve(
+            data::ability("fireball"),
+            1,
+            &run.stats(),
+            run.spell_modifiers.entries(),
+        )
+        .dmg;
+        assert!((damage - 740.0).abs() < 0.01);
         assert!(eligible(passive("fire"), &run));
         assert!(matches!(
             Change::AdditionalProjectiles(2).scaled(u64::MAX),

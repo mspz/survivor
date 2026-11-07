@@ -1,0 +1,160 @@
+001 | Phoenix's Echo
+003 | The Three Suns
+006 | The Broken Circle
+011 | Stormthread
+013 | Thunderfangs
+017 | The Frozen Hourglass
+018 | A Thousand Shards
+022 | Dragon's Breath
+024 | The Pyromaniac's Testament
+026 | The Impossible Page
+027 | Azshara's Prism
+029 | The Sorcerer's Claw
+036 | The Matriarch's Fang
+042 | The Rift Hammer
+043 | The Butcher's Oath
+044 | Grom's Throat
+046 | The Two Kings
+047 | Thunder's Bulwark
+050 | The Champion's Burden
+052 | The Sun Beneath the Earth
+055 | The Dawn's Covenant
+056 | The Crown of Judgment
+057 | The Wandering Chapel
+058 | The Bell of Last Vows
+061 | Garona's Smile
+063 | The Poison of Two Worlds
+064 | The Patient Assassin's Cloak
+065 | The Ring of Open Wounds
+066 | The Gravedigger's Flask
+069 | The Hollow Blade's Mask
+070 | Shadow's Embrace
+071 | The Inverted Sermon
+072 | The Crown of Whispers
+075 | The Plague Rosary
+077 | The Palms of Paradox
+078 | The Scales of Atonement
+081 | The Ancestors' Drum
+082 | The Uprooted Totem
+086 | The Silent Shaman's Glove
+087 | The Ancient's Heart
+088 | Starwood
+091 | The Throne of a Thousand Pacts
+094 | The Ashen Pact
+095 | The Diamond of Silence
+096 | The Fleshless Heart
+097 | The Testament of Shadows
+098 | The Wheel of Eternal Return
+099 | The Dead King's Mirror
+111 | Ricochet's Judgment
+115 | The Gunner's Testament
+124 | The Rose of Cataclysms
+126 | The Rift Between Two Shores
+134 | The Drum of Aftershocks
+141 | Eclipse Blood
+142 | The Sleet Pact
+143 | The Red Glacier's Teeth
+146 | The Crown of Liquid Metal
+147 | The Grave Gardener's Gloves
+148 | The Heavy Water Pact
+151 | The Needle of White Thunder
+152 | The Salt of Blessed Wounds
+154 | The Dial of Two Realms
+155 | The Basilisk's Kiss
+159 | The Censer of Opposites
+160 | The Rune of the Ninth School
+163 | The Axe of Shared Fate
+167 | The Hammer of Discordant Time
+168 | The Chained Champion's Belt
+169 | The Blind Reaper's Hands
+170 | The Drowned King's Fang
+171 | The Scabbard of the Last Duel
+172 | The Three-Slit Mask
+175 | The Boar's Spurs
+176 | The Slow Executioner's Oath
+181 | The Collar of the First Command
+185 | The Red Shepherd's Bell
+188 | The Lost Master's Bone
+191 | The Winter Wolf's Fang
+194 | The Book of Contrary Orders
+198 | The Packleader's Hand
+203 | The Physician's Steel
+207 | The Chalice of Two Wounds
+212 | The Band of Last Bulwarks
+213 | The Cage of the Withheld Blow
+217 | The Diadem of the Exposed Heart
+220 | The Oath of Gentle Thorns
+221 | The Hourglass of Patient Poison
+222 | The Crown of Twin Wounds
+224 | The Book of Wandering Curses
+226 | The Ring of the Lone Scourge
+229 | The Serpent That Bites Itself
+230 | The Nail of Sickened Time
+233 | The Hungry Worm's Fang
+234 | The Bracelet of Two Fevers
+235 | The Scythe of Erased Names
+236 | The Thorn of Frozen Blood
+237 | The Plague Healer's Mask
+238 | The Scroll of Inverted Contagions
+239 | The Fever Hunter's Heart
+240 | The Thread of Suspended Wounds
+257 | The Shadowrunner's Breath
+261 | The Learned Warrior's Book
+262 | The Renegade Priest's Blade
+263 | The Universal Trapper's Seal
+264 | The False Totemist's Staff
+265 | The Ground Defiler's Cowl
+266 | The Steel of the Impossible Projectile
+269 | The Diadem of Two Disciplines
+273 | The Gauntlets of Borrowed Blood
+276 | The Fury of Three Skies
+277 | The Warmage's Bulwark
+279 | The Heretic's Two Hands
+280 | The Scroll of the Sacred Scourge
+281 | The Crown of the Forbidden Spell
+283 | The Book of the Perfect Phrase
+285 | The Schoolless Master's Mask
+286 | The Key to the Last Word
+288 | The Ring of Interwoven Rhythms
+293 | The Clumsy Scribe's Gloves
+300 | The Crown of the Impossible Expedition
+301 | The Archive of Nine Paths
+302 | Remulos's Twin Moons
+303 | The Roots of the Last Circle
+304 | The Claws of the Wounded Grove
+305 | The Oath of the Buried Seed
+306 | The Antlers of the Storm
+307 | The Immolated Heart
+308 | The Creditor's Pact
+309 | The Cage of Three Pyres
+310 | The Vessel of the Last Breath
+311 | The Bonebreaker's Tally
+312 | The Frost King's Shard
+313 | The Funeral Ember
+314 | The Knell of the Final Ticks
+315 | The Palms of Caged Thunder
+316 | The Pauldrons of Returned Venom
+317 | The Sight of Five Names
+318 | The Buckle of Broken Shackles
+319 | The Choir of Three Schools
+320 | The Eye of the Hollow Center
+321 | The Breastplate of Returned Scales
+322 | The Beacon of the Dark Step
+323 | The Glove of the First Infection
+324 | The Boots of the Blazing Wake
+325 | The Ring of the Ravenous Feast
+326 | The Diadem of the Foretold Strike
+327 | The Hide of Quenched Fevers
+328 | The Rosary of Three Words
+329 | The Gauntlets of the Sweeping Riposte
+330 | The Soles of Fleeting Refuge
+331 | The Heart of the Crimson Threshold
+332 | The Belt of Two Disciplines
+333 | The Mask of Patient Precision
+334 | The Bindings of Two Fevers
+335 | The Pauldrons of Unbroken Glass
+336 | The Seal of the Fifth Guard
+337 | The Veil of the Final Straw
+338 | The Ring of the Suspended Harvest
+339 | The Knot of Crossed Schools
+340 | The Reliquary of Breath Restored

@@ -321,6 +321,15 @@ impl Marks {
 }
 
 /// The messages that make a local cast look like a server's.
+#[derive(Message, Clone)]
+pub(super) struct CombatNumber {
+    pub owner: Option<u64>,
+    pub anchor: Entity,
+    pub amount: f32,
+    pub crit: bool,
+    pub color: u32,
+}
+
 #[derive(SystemParam)]
 pub(super) struct Fx<'w> {
     settings: Option<Res<'w, super::options::Settings>>,
@@ -331,6 +340,7 @@ pub(super) struct Fx<'w> {
     text: MessageWriter<'w, CombatTextSpawn>,
     area_scales: Option<ResMut<'w, crate::entities::dest_fx::AreaVisualScales>>,
     echoes: Option<ResMut<'w, crate::entities::dest_fx::EchoCasts>>,
+    numbers: Option<ResMut<'w, Messages<CombatNumber>>>,
 }
 
 /// More impacts than this per cast only cost frames.
@@ -421,7 +431,27 @@ impl Fx<'_> {
     }
 
     /// A floating number over `anchor`, 0xAARRGGBB.
-    pub fn number(&mut self, anchor: Entity, amount: f32, crit: bool, color: u32) {
+    pub fn number(
+        &mut self,
+        owner: Option<u64>,
+        anchor: Entity,
+        amount: f32,
+        crit: bool,
+        color: u32,
+    ) {
+        if let Some(numbers) = self.numbers.as_mut() {
+            numbers.write(CombatNumber {
+                owner,
+                anchor,
+                amount,
+                crit,
+                color,
+            });
+        }
+        // The authoritative process renders the host; guest numbers travel to their owner.
+        if owner.is_some() {
+            return;
+        }
         if self
             .settings
             .as_deref()

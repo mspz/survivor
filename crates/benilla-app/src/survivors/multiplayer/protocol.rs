@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 18;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +59,8 @@ impl Input {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToServer {
+    ResetMeter,
+    Chest(super::super::shared_chest::Request),
     Join { version: u32, profile: Profile },
     Input(Input),
     Pick { offer: u64, index: usize },
@@ -69,6 +71,12 @@ pub enum ToServer {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Unit {
+    #[serde(default)]
+    pub rank: Option<super::super::enemies::Rank>,
+    #[serde(default)]
+    pub party_player: bool,
+    #[serde(default)]
+    pub static_pickup: bool,
     pub status: Option<super::super::unit_frames::Status>,
     pub guid: u64,
     pub owner: Option<u64>,
@@ -85,6 +93,14 @@ pub struct Unit {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Effect {
+    Number {
+        #[serde(default)]
+        owner: Option<u64>,
+        target: u64,
+        amount: f32,
+        crit: bool,
+        color: u32,
+    },
     Cast {
         caster: u64,
         spell: u32,
@@ -104,22 +120,40 @@ pub enum Effect {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stats {
+    #[serde(default)]
+    pub auras: Vec<super::super::player_auras::Aura>,
+    #[serde(default)]
+    pub healing_meter: super::super::combat_ui::Meter,
+    #[serde(default)]
+    pub taken_meter: super::super::combat_ui::Meter,
+    pub movement_speed: f32,
+    pub meter: super::super::combat_ui::Meter,
     pub earned: u64,
     pub hp: f32,
     pub max_hp: f32,
     pub elapsed: f32,
     pub level: u32,
+    #[serde(default)]
+    pub character_level: u32,
     pub xp: f32,
     pub kills: u32,
     pub dead: bool,
+    #[serde(default)]
+    pub revival: [f32; 2],
+    #[serde(default)]
+    pub coop_revive: bool,
     pub won: bool,
     pub abilities: Vec<(String, u8, f32)>,
     pub passives: Vec<(String, u64)>,
+    #[serde(default)]
+    pub draft_uses: [u8; 3],
     pub offer_id: u64,
     pub choices: Vec<Choice>,
     pub mobility: [f32; 4],
     pub shield: [f32; 2],
     pub immune: f32,
+    #[serde(default)]
+    pub support_bonuses: [f32; 6],
     pub damage_done: f64,
 }
 
@@ -135,6 +169,14 @@ pub enum Choice {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub boss_warnings: Vec<super::super::boss_spells::Warning>,
+    /// Cumulative copper earned on this connection; duplicate snapshots cannot pay twice.
+    pub money_earned: u64,
+    #[serde(default)]
+    pub chest: super::super::shared_chest::Replica,
+    #[serde(default)]
+    pub party: Vec<super::super::combat_ui::PartyRow>,
     pub run_id: u64,
     pub loot: Vec<(u64, String)>,
     pub tick: u64,
@@ -202,6 +244,9 @@ mod tests {
     #[test]
     fn target_status_roundtrips_with_real_health_and_debuff_durations() {
         let unit = Unit {
+            rank: Some(super::super::super::enemies::Rank::Healer),
+            party_player: false,
+            static_pickup: true,
             status: Some(super::super::super::unit_frames::Status {
                 name: "Training Boss".into(),
                 health: 1234.0,
@@ -223,6 +268,8 @@ mod tests {
             fields: vec![],
         };
         let decoded: Unit = serde_json::from_slice(&serde_json::to_vec(&unit).unwrap()).unwrap();
+        assert!(decoded.static_pickup);
+        assert_eq!(decoded.rank, unit.rank);
         let status = decoded.status.unwrap();
         assert_eq!(status.name, "Training Boss");
         assert_eq!(status.health, 1234.0);

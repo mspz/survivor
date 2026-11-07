@@ -282,7 +282,7 @@ mod tests {
                 .count(),
             NODES * 3
         );
-        assert_eq!(world.query::<&Root>().iter(world).count(), 2);
+        assert_eq!(world.query::<&Root>().iter(world).count(), 1);
         assert_eq!(
             world
                 .query::<&Action>()

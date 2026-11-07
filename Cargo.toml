@@ -53,8 +53,26 @@ opt-level = 3
 # Stormwind drops from a pinned 60 fps to ~45; the warm incremental rebuild cost is ~0.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
-# No debuginfo trimming: `debug = "line-tables-only"` measures no recurring win on macOS + sccache.
+# Tests prioritize compilation latency and disk use over game-frame performance.
+# No incremental cache by default; only the large app opts in below.
+# Assertions and overflow checks remain enabled. Use --profile dev for debugger symbols.
+[profile.test]
+opt-level = 0
+debug = 0
+incremental = false
+codegen-units = 256
+lto = "off"
+
+# Level 1 keeps test dependencies reasonably fast without full LLVM optimization.
+[profile.test.package."*"]
+opt-level = 1
+
+# Reuse unchanged queries and codegen units inside the monolithic app between edits.
+# Keep this selective: caching every workspace test/target previously consumed tens of GB.
+[profile.test.package.benilla-app]
+incremental = true
 
 # The shipping build (`--profile ship`): fat LTO measures -1.0 cpu_ms (-5 %) against `release`,
 # which stays the measured profile because fat LTO's link time would tax every iteration.

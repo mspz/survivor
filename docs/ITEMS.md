@@ -1,5 +1,25 @@
 # Equipment and boss loot
 
+All **21 variants per family** unlock at **1, 3, 6, 9, ... 60**, configured in each family's `tiers`
+array in `config/survivors-item-bases.toml`. The highest unlocked tier supplies the base name,
+WoW appearance and icon. Armour, weapons and shields progress from simple styles to elaborate
+endgame styles; rings, necklaces, trinkets and caster focuses also receive tiered icons.
+Shirts and tabards remain cosmetic. All tiers share their family's drop weight and affix pool,
+so adding variants does not make that equipment family more common.
+Equipping a modeled helmet hides styled hair, including helmets with an empty WoW hair mask;
+removing it restores the hairstyle. Facial hair and ears still use the helmet's own masks.
+
+A tier's `base_armour` and `base_damage` describe its power **at its unlock level**. Only the
+remaining levels apply the usual 1.015 scaling; the full item-level multiplier is not applied
+twice. Affixes continue to scale separately. The family ID remains stable, and the rolled name,
+icon, appearance and intrinsic values are saved on each item. Existing saved equipment keeps
+its appearance and stats. Custom tables without `tiers` keep their family appearance and
+standard intrinsic scaling within the item-level cap.
+The former level-100 variants now unlock at 60 with their original intrinsic values, icons
+and appearances preserved. New loot is capped at item level 60; level-59 boss chests produce
+level-60 items so the final variants are obtainable. Ordinary level-59 monsters still drop
+level-59 items. Previously saved items keep their stored values, including older higher-level rolls.
+
 Weapons have intrinsic `base_damage = { min = 6, max = 10 }` ranges in the base TOML, separate
 from affixes. They scale with item level like armour and are saved with the item. Older weapons
 without this field receive defaults by type; starting weapons also have intrinsic damage.
@@ -35,8 +55,9 @@ until a valid drop is saved; the cursor icon is only a visual copy.
 The Bagnon-style bag window has 112 visible slots (14 columns × 8 rows) with 32-pixel cells per page
 and automatically adds pages; loot is never rejected
 because the current page is full. Hover an item for its tooltip.
-The item name uses its rarity colour; type, base armour/damage and primary stats are white,
-and secondary stats are green. Select an item for equip actions and hover for its details. Class
+The item name uses its rarity colour; type, base armour/damage, all prefixes and all suffixes
+are white. Holding Shift adds a divider and equipment comparison, with all green gains before
+all red losses. Select an item for equip actions and hover for its details. Class
 lists and stat explanations are omitted; incompatible items show a red warning instead.
 Character and inventory windows use Classic MPQ artwork for the paper doll, window background,
 border corners/edges, empty bag slots, quickslot frames, red buttons and close buttons.
@@ -44,7 +65,10 @@ border corners/edges, empty bag slots, quickslot frames, red buttons and close b
 Every boss drops one item by default. The loot appears as an Elwynn wooden treasure chest at
 the boss's death position; approach
 within 3 yards to collect it. At the results screen, remaining boss loot is recovered automatically,
-including the final boss's item. Ordinary enemies do not drop equipment. The XP magnet collects
+including the final boss's item. Each ordinary monster also has a fixed **1 in 2,000 (0.05%)**
+chance to drop the same equipment chest, with item level based on that monster's level.
+Magic Find affects the item's quality, not this chest chance. Multiplayer personal loot uses
+the same chance for each player. The XP magnet collects
 XP only. Items still on the floor when abandoning an expedition are left behind.
 
 Loot first chooses its target class: 80% the player class, otherwise uniformly one of the eight other classes. Rarity, a compatible base and compatible affixes are then rolled:

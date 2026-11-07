@@ -14,14 +14,21 @@ pub(super) mod armour;
 pub(super) mod combat;
 mod config;
 mod equipment;
+mod item_level;
+pub(super) mod legendary;
 mod starter;
 mod tooltip;
+mod trade;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::survivors) use trade::TradeAccount;
 pub(super) mod visuals;
 pub(super) mod weapons;
 pub(super) use config::Config;
 pub(super) use equipment::EquipmentType;
 pub(super) use visuals::Appearance;
 const SOURCE: u64 = 0x3000_0000;
+pub(super) const MAX_BASE_BLOCK: f32 = 0.30;
+pub(in crate::survivors) const MAX_ITEM_LEVEL: u32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,19 +94,26 @@ impl Rarity {
             Self::Legendary => Color::srgb(1.0, 0.5, 0.0),
         }
     }
-    fn count(self) -> usize {
+    fn legacy_count(self) -> usize {
         match self {
             Self::Normal => 1,
             Self::Magic => 2,
             Self::Epic => 4,
-            Self::Legendary => 0,
+            Self::Legendary => 4,
+        }
+    }
+    fn affix_limits(self) -> (usize, usize) {
+        match self {
+            Self::Normal => (1, 1),
+            Self::Magic => (2, 2),
+            Self::Epic | Self::Legendary => (4, 3),
         }
     }
     fn primary_count(self) -> usize {
         match self {
             Self::Normal | Self::Magic => 1,
             Self::Epic => 2,
-            Self::Legendary => 0,
+            Self::Legendary => 2,
         }
     }
 }
@@ -134,8 +148,18 @@ pub(super) enum Effect {
     AttackSpeed,
     Life,
     Armour,
+    FireResistance,
+    ColdResistance,
+    LightningResistance,
+    NatureResistance,
+    ArcaneResistance,
+    HolyResistance,
+    ShadowResistance,
+    AllResistance,
     LifeLeech,
     LifeOnKill,
+    LifeOnBlock,
+    LifeOnBlockPercent,
     Regeneration,
     MovementSpeed,
     DamageReduction,
@@ -151,9 +175,43 @@ pub(super) enum Effect {
     PickupRadius,
     Experience,
     Luck,
+    MagicFind,
     Proc,
 }
 impl Effect {
+    fn affix_kind(self) -> AffixKind {
+        if matches!(
+            self,
+            Self::Damage
+                | Self::DotDamage
+                | Self::CritChance
+                | Self::CritMultiplier
+                | Self::CooldownRecovery
+                | Self::Area
+                | Self::Duration
+                | Self::Repeat
+                | Self::Projectiles
+                | Self::Chain
+                | Self::Fork
+                | Self::MeleeTargets
+                | Self::FlatDamage
+                | Self::SpellDamage
+                | Self::AttackSpeed
+                | Self::BossDamage
+                | Self::FullLifeDamage
+                | Self::LowLifeDamage
+                | Self::BleedChance
+                | Self::IgniteChance
+                | Self::ChillChance
+                | Self::KnockbackChance
+                | Self::ArmourPenetration
+                | Self::Proc
+        ) {
+            AffixKind::Prefix
+        } else {
+            AffixKind::Suffix
+        }
+    }
     fn primary(self) -> bool {
         matches!(
             self,
@@ -197,6 +255,9 @@ impl Effect {
         })
     }
     fn discrete(self) -> bool {
+        if self.resistance() {
+            return true;
+        }
         matches!(
             self,
             Self::Stamina
@@ -212,10 +273,17 @@ impl Effect {
                 | Self::FlatDamage
                 | Self::SpellDamage
                 | Self::LifeOnKill
+                | Self::LifeOnBlock
         )
     }
     fn global(self) -> bool {
-        if self == Self::BlockChance {
+        if self.resistance() {
+            return true;
+        }
+        if matches!(
+            self,
+            Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent
+        ) {
             return true;
         }
         matches!(
@@ -234,16 +302,32 @@ impl Effect {
                 | Self::PickupRadius
                 | Self::Experience
                 | Self::Luck
+                | Self::MagicFind
         )
     }
     fn valid_slot(self, slot: SlotKind) -> bool {
         match self {
-            Self::BlockChance => slot == SlotKind::OffHand,
+            Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent => {
+                slot == SlotKind::OffHand
+            }
             Self::FlatDamage | Self::AttackSpeed | Self::LifeLeech => slot.weapon(),
             Self::Luck => matches!(slot, SlotKind::Ring | SlotKind::Neck),
             Self::Proc => slot == SlotKind::Trinket,
             _ => true,
         }
+    }
+    fn resistance(self) -> bool {
+        matches!(
+            self,
+            Self::FireResistance
+                | Self::ColdResistance
+                | Self::LightningResistance
+                | Self::NatureResistance
+                | Self::ArcaneResistance
+                | Self::HolyResistance
+                | Self::ShadowResistance
+                | Self::AllResistance
+        )
     }
 }
 
@@ -290,8 +374,11 @@ impl ProcRoll {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Bonuses {
+    pub resistances: super::resistances::Resistances,
     pub block: f32,
     pub life_on_kill: f32,
+    pub life_on_block: f32,
+    pub life_on_block_percent: f32,
     pub regeneration: f32,
     pub movement: f32,
     pub reduction: f32,
@@ -299,12 +386,23 @@ pub(super) struct Bonuses {
     pub pickup: f32,
     pub experience: f32,
     pub luck: f32,
+    pub magic_find: f32,
 }
 impl Bonuses {
     fn add(&mut self, effect: Effect, value: f32) {
         match effect {
+            Effect::FireResistance => self.resistances.fire += value,
+            Effect::ColdResistance => self.resistances.cold += value,
+            Effect::LightningResistance => self.resistances.lightning += value,
+            Effect::NatureResistance => self.resistances.nature += value,
+            Effect::ArcaneResistance => self.resistances.arcane += value,
+            Effect::HolyResistance => self.resistances.holy += value,
+            Effect::ShadowResistance => self.resistances.shadow += value,
+            Effect::AllResistance => self.resistances.add_all(value),
             Effect::BlockChance => self.block += value,
             Effect::LifeOnKill => self.life_on_kill += value,
+            Effect::LifeOnBlock => self.life_on_block += value,
+            Effect::LifeOnBlockPercent => self.life_on_block_percent += value,
             Effect::Regeneration => self.regeneration += value,
             Effect::MovementSpeed => self.movement += value,
             Effect::DamageReduction => self.reduction += value,
@@ -312,6 +410,7 @@ impl Bonuses {
             Effect::PickupRadius => self.pickup += value,
             Effect::Experience => self.experience += value,
             Effect::Luck => self.luck += value,
+            Effect::MagicFind => self.magic_find += value,
             _ => {}
         }
     }
@@ -332,6 +431,11 @@ pub(super) struct Affix {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Item {
+    /// Zero preserves saved allocations from before prefix/suffix budgets.
+    #[serde(default)]
+    pub affix_rules: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legendary: Option<legendary::Roll>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_damage: Option<weapons::DamageRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,6 +460,16 @@ pub(super) struct Item {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Save {
+    #[serde(default)]
+    copper: u64,
+    #[serde(default)]
+    trade_identity: String,
+    #[serde(default)]
+    trade_sequence: u64,
+    #[serde(default)]
+    pending_deposits: Vec<super::shared_chest::Transfer>,
+    #[serde(default)]
+    received_trades: BTreeSet<String>,
     version: u32,
     #[serde(default)]
     starter_granted: bool,
@@ -372,7 +486,12 @@ struct Save {
 impl Default for Save {
     fn default() -> Self {
         Self {
+            copper: 0,
             version: 1,
+            trade_identity: String::new(),
+            trade_sequence: 0,
+            pending_deposits: vec![],
+            received_trades: default(),
             starter_granted: false,
             titan_grip: false,
             next_id: 1,
@@ -427,6 +546,7 @@ pub(super) struct Inventory {
     pub revision: u64,
     pub notice: String,
     blocked: bool,
+    native_titan_grip: bool,
 }
 impl Default for Inventory {
     fn default() -> Self {
@@ -438,10 +558,30 @@ impl Default for Inventory {
             revision: 0,
             notice: String::new(),
             blocked: false,
+            native_titan_grip: false,
         }
     }
 }
 impl Inventory {
+    pub(in crate::survivors) fn money(&self) -> u64 {
+        self.save.copper
+    }
+    pub(in crate::survivors) fn money_owner(&self) -> Option<u64> {
+        self.character
+    }
+    pub(in crate::survivors) fn add_money(&mut self, amount: u64) -> Result<(), String> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let mut save = self.save.clone();
+        save.copper = save
+            .copper
+            .saturating_add(amount)
+            .min(super::currency::MAX_BALANCE);
+        self.persist(&save)?;
+        self.save = save;
+        Ok(())
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::survivors) fn shared_save(&self) -> Result<String, String> {
         toml::to_string(&self.save).map_err(|e| e.to_string())
@@ -479,6 +619,7 @@ impl Inventory {
             revision: 0,
             notice: String::new(),
             blocked: false,
+            native_titan_grip: false,
         }
     }
     #[cfg(test)]
@@ -522,6 +663,22 @@ impl Inventory {
             .map_err(|e| e.to_string())
     }
     fn commit(&mut self, mut save: Save) -> Result<(), String> {
+        legendary::validate_loadout(&save)?;
+        let previous_permission = self.save.titan_grip;
+        save.titan_grip = self.native_titan_grip || legendary::titan_grip(&save);
+        if previous_permission && !save.titan_grip {
+            if save.equipped.get("Off hand").is_some_and(|id| {
+                save.items
+                    .iter()
+                    .any(|item| item.id == *id && item.equipment_type == EquipmentType::TwoHand)
+            }) || save.equipped.get("Main hand").is_some_and(|id| {
+                save.items
+                    .iter()
+                    .any(|item| item.id == *id && item.equipment_type.two_handed())
+            }) {
+                save.equipped.remove("Off hand");
+            }
+        }
         save.bag_cells = bag_layout(&save);
         self.validate_loadout(&save)?;
         self.persist(&save)?;
@@ -580,7 +737,17 @@ impl Inventory {
         self.revision = self.revision.wrapping_add(1);
     }
     fn decode(text: &str) -> Result<Save, String> {
-        let save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
+        // Identity is the saved unique ID; display names can change or be translated.
+        for item in &mut save.items {
+            if let Some(definition) = item
+                .legendary
+                .as_ref()
+                .and_then(|roll| legendary::definition(roll.unique))
+            {
+                item.name = definition.name.into();
+            }
+        }
         if save.version != 1 || save.next_id == 0 {
             return Err("unsupported inventory".into());
         }
@@ -596,8 +763,11 @@ impl Inventory {
                     .loot_class
                     .is_some_and(|id| !super::data::CLASSES.iter().any(|c| c.id == id))
                 || item.level == 0
-                || item.rarity == Rarity::Legendary
-                || (item.affixes.len() != item.rarity.count() && !starter::is_plain(item))
+                || !legendary::validate_item(item)
+                || item.affix_rules > 1
+                || (item.affix_rules == 0
+                    && item.affixes.len() != item.rarity.legacy_count()
+                    && !starter::is_plain(item))
             {
                 return Err("invalid item".into());
             }
@@ -621,7 +791,23 @@ impl Inventory {
                 kinds[usize::from(a.kind == AffixKind::Suffix)] += 1;
             }
             let primary = item.affixes.iter().filter(|a| a.effect.primary()).count();
-            if primary > 0
+            if item.affix_rules == 1 {
+                let (minimum, cap) = item.rarity.affix_limits();
+                // White items saved before the guaranteed-affix rule remain loadable.
+                let minimum = if item.rarity == Rarity::Normal {
+                    0
+                } else {
+                    minimum
+                };
+                if !(minimum..=cap * 2).contains(&item.affixes.len())
+                    || kinds.iter().any(|&count| count > cap)
+                    || item.affixes.iter().any(|a| a.kind != a.effect.affix_kind())
+                {
+                    return Err("invalid prefix/suffix allocation".into());
+                }
+            }
+            if item.affix_rules == 0
+                && primary > 0
                 && ((primary != item.rarity.primary_count()
                     // Preserve Uncommon rolls saved before the one-primary allocation.
                     && !(item.rarity == Rarity::Magic && primary == 2))
@@ -632,7 +818,8 @@ impl Inventory {
             {
                 return Err("invalid primary allocation".into());
             }
-            if !item.affixes.iter().any(|a| a.effect.primary())
+            if item.affix_rules == 0
+                && !item.affixes.iter().any(|a| a.effect.primary())
                 && ((item.rarity == Rarity::Magic && kinds != [1, 1])
                     || (item.rarity == Rarity::Epic && kinds != [2, 2]))
             {
@@ -660,6 +847,7 @@ impl Inventory {
             }
         }
         save.validate_hands()?;
+        legendary::validate_loadout(&save)?;
         Ok(save)
     }
     pub(in crate::survivors) fn collect(&mut self, mut item: Item) -> Result<(), String> {
@@ -671,6 +859,33 @@ impl Inventory {
             .ok_or("Item identity exhausted")?;
         save.items.push(item);
         self.commit(save)
+    }
+    pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind) -> bool {
+        self.config.gamble_available(slot, self.class)
+    }
+    pub(in crate::survivors) fn gamble(
+        &mut self,
+        slot: SlotKind,
+        level: u32,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let price = super::gambling::price(slot, level);
+        let copper = self
+            .money()
+            .checked_sub(price)
+            .ok_or("Pas assez de monnaie.")?;
+        let mut item = self.config.generate_gamble(level, self.class, slot, rng)?;
+        let mut save = self.save.clone();
+        item.id = save.next_id;
+        save.next_id = save
+            .next_id
+            .checked_add(1)
+            .ok_or("Item identity exhausted")?;
+        save.copper = copper;
+        save.items.push(item.clone());
+        self.commit(save)?;
+        Ok(item)
     }
     pub fn equip(&mut self, id: u64, slot: &str) -> Result<(), String> {
         let item = self.item(id).ok_or("Item missing")?;
@@ -803,11 +1018,49 @@ impl Inventory {
             return;
         }
         let old_max = run.stats().max_hp;
+        run.legendary.weapon_items = self
+            .save
+            .equipped
+            .iter()
+            .filter_map(|(slot, id)| match slot.as_str() {
+                "Main hand" => Some((*id, 0)),
+                "Off hand" => Some((*id, 1)),
+                _ => None,
+            })
+            .collect();
+        run.legendary.levels = self
+            .save
+            .equipped
+            .values()
+            .filter_map(|id| self.item(*id))
+            .filter_map(|item| {
+                item.legendary
+                    .as_ref()
+                    .map(|roll| (roll.unique, item.level))
+            })
+            .collect();
+        run.legendary.equipped = self
+            .save
+            .equipped
+            .iter()
+            .filter_map(|(name, id)| {
+                let item = self.item(*id)?;
+                if !SLOTS
+                    .iter()
+                    .any(|(slot, kind)| slot == name && self.can_equip(item, *kind))
+                {
+                    return None;
+                }
+                item.legendary.clone().map(|roll| (roll.unique, roll))
+            })
+            .collect();
+        legendary::milestones::equip(run);
         let mut modifiers = Vec::new();
         let (mut hp, mut armour) = (0.0, 0.0);
         let mut bonuses = Bonuses::default();
         let mut procs = Vec::new();
         let mut weapons = weapons::Loadout::default();
+        let mut uniques = BTreeMap::new();
         for (name, id) in &self.save.equipped {
             let Some(item) = self.item(*id) else { continue };
             if !SLOTS
@@ -816,7 +1069,10 @@ impl Inventory {
             {
                 continue;
             }
-            bonuses.block += item.base_block;
+            bonuses.block += item.intrinsic_block();
+            if let Some(roll) = &item.legendary {
+                uniques.entry(roll.unique).or_insert_with(|| roll.clone());
+            }
             armour += item.armour();
             weapons.equip(name, item.weapon_damage());
             for (index, a) in item.affixes.iter().enumerate() {
@@ -878,6 +1134,19 @@ impl Inventory {
         bonuses.block = bonuses.block.clamp(0.0, 0.75);
         run.equipment = bonuses;
         combat::equip(run, procs);
+        run.legendary.equipped = uniques;
+        legendary::events::equip(run);
+        legendary::casting::equip(run);
+        legendary::effects::equip(run);
+        if (run.legendary.has(46) || run.legendary.has(279))
+            && !super::talent_runtime::active(run, super::talent_design::Mechanic::Titans)
+        {
+            modifiers.push(Modifier {
+                source: SOURCE,
+                filter: Filter::requiring(Tags::ATTACK),
+                change: Change::IncreasedAttackSpeed(0.25),
+            });
+        }
         run.replace_spell_modifiers(SOURCE, modifiers);
         run.equipment_version = Some(signature);
         let max = run.stats().max_hp;
@@ -890,10 +1159,12 @@ impl Inventory {
 }
 
 pub(super) fn plugin(app: &mut App) {
+    super::currency::plugin(app);
     visuals::plugin(app);
     combat::plugin(app);
     // Also registered by the sound plugin; registering here keeps headless apps working.
     app.init_resource::<Inventory>()
+        .add_message::<ChestOpened>()
         .add_message::<crate::sound::CoinSound>()
         .add_systems(
             Update,
@@ -902,22 +1173,31 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             Update,
-            boss_drops
+            chest_drops
                 .after(super::abilities::apply_hits)
                 .before(super::enemies::drop_loot)
-                .run_if(in_state(Phase::Playing)),
+                .run_if(super::multiplayer::simulating),
         )
         .add_systems(
             Update,
             collect_drops
-                .after(boss_drops)
+                .after(chest_drops)
                 .before(super::hero::hero_vitals)
-                .run_if(|phase: Res<State<Phase>>| {
-                    matches!(*phase.get(), Phase::Playing | Phase::GameOver)
-                }),
+                .run_if(
+                    |phase: Res<State<Phase>>,
+                     role: Option<Res<super::multiplayer::Role>>,
+                     selection: Res<super::Selection>| {
+                        *phase.get() == Phase::GameOver
+                            || (!selection.in_hub
+                                && super::multiplayer::runs_in(
+                                    *phase.get(),
+                                    role.as_deref().copied().unwrap_or_default(),
+                                ))
+                    },
+                ),
         );
 }
-fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {
+pub(super) fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {
     inventory.class = roster
         .current()
         .and_then(|c| super::data::CLASSES.get(c.class))
@@ -926,12 +1206,16 @@ fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<R
         inventory.bind(roster.active)
     }
     if roster.current().is_some_and(|c| c.starter_equipment) {
-        if let Err(error) = inventory.grant_starter() {
+        if let Err(error) = inventory.grant_starter(
+            roster
+                .current()
+                .is_some_and(|c| super::characters::is_test_character(&c.name)),
+        ) {
             inventory.notice = error;
         }
     }
-    let titan = super::talent_runtime::active(&run, super::talent_design::Mechanic::Titans)
-        && inventory.class == 1;
+    inventory.native_titan_grip = run.talent_build[1][18] > 0 && inventory.class == 1;
+    let titan = inventory.native_titan_grip || legendary::titan_grip(&inventory.save);
     if inventory.save.titan_grip != titan {
         let mut save = inventory.save.clone();
         save.titan_grip = titan;
@@ -960,10 +1244,25 @@ fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<R
     inventory.apply(&mut run);
 }
 #[derive(Component)]
-struct ItemDrop(Item);
+pub(super) struct ItemDrop(Item);
+#[derive(Message)]
+pub(super) struct ChestOpened {
+    pub level: u32,
+}
 // Elwynn's small wooden treasure chest: GameObjectDisplayInfo -> Chest01.mdx.
 const BOSS_CHEST_DISPLAY: u32 = 10;
-fn boss_drops(
+pub(in crate::survivors) fn drops_chest(boss: bool, boss_chance: f32, roll: f32) -> bool {
+    roll < if boss { boss_chance } else { 1.0 / 2000.0 }
+}
+pub(in crate::survivors) fn chest_item_level(monster_level: u32, boss: bool) -> u32 {
+    // Campaign bosses end at level 59; their chest must unlock the final level-60 bases.
+    if boss && monster_level >= MAX_ITEM_LEVEL - 1 {
+        MAX_ITEM_LEVEL
+    } else {
+        monster_level.clamp(1, MAX_ITEM_LEVEL)
+    }
+}
+pub(super) fn chest_drops(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
     mut inventory: ResMut<Inventory>,
@@ -971,17 +1270,18 @@ fn boss_drops(
     mut run: ResMut<Run>,
 ) {
     for drop in drops.read() {
-        if !drop.boss
-            || inventory.character.is_none()
+        if inventory.character.is_none()
             || inventory.blocked
-            || rng.f32() >= inventory.config.boss_drop_chance
+            || !drops_chest(drop.boss, inventory.config.boss_drop_chance, rng.f32())
         {
             continue;
         }
-        match inventory
-            .config
-            .generate_for_class(run.level, run.class.id, &mut rng)
-        {
+        match inventory.config.generate_loot(
+            chest_item_level(drop.item_level, drop.boss),
+            run.class.id,
+            run.equipment.magic_find,
+            &mut rng,
+        ) {
             Ok(item) => {
                 let e = super::units::spawn_object(
                     &mut commands,
@@ -999,7 +1299,7 @@ fn boss_drops(
         }
     }
 }
-fn collect_drops(
+pub(super) fn collect_drops(
     mut commands: Commands,
     phase: Res<State<Phase>>,
     mut inventory: ResMut<Inventory>,
@@ -1007,16 +1307,37 @@ fn collect_drops(
     hero: Query<&Transform, With<Hero>>,
     drops: Query<(Entity, &Transform, &ItemDrop)>,
     mut coin: MessageWriter<crate::sound::CoinSound>,
+    players: Option<Res<super::multiplayer::Companions>>,
+    positions: Query<&Transform>,
+    mut opened: Option<MessageWriter<ChestOpened>>,
 ) {
     let hero = hero.iter().next();
+    let guest_positions: Vec<_> = players
+        .as_deref()
+        .into_iter()
+        .flat_map(|p| p.0.values())
+        .filter(|p| p.run.hp > 0.0 && p.run.dead_t.is_none())
+        .filter_map(|p| positions.get(p.entity).ok())
+        .map(|tf| tf.translation)
+        .collect();
     for (e, tf, drop) in &drops {
         if *phase.get() != Phase::GameOver
-            && !hero.is_some_and(|hero| hero.translation.distance(tf.translation) <= 3.0)
+            && !(run.hp > 0.0
+                && run.dead_t.is_none()
+                && hero.is_some_and(|hero| hero.translation.distance(tf.translation) <= 3.0))
+            && !guest_positions
+                .iter()
+                .any(|pos| pos.distance(tf.translation) <= 3.0)
         {
             continue;
         }
         match inventory.collect(drop.0.clone()) {
             Ok(()) => {
+                if let Some(opened) = opened.as_mut() {
+                    opened.write(ChestOpened {
+                        level: drop.0.level,
+                    });
+                }
                 run.banner = Some((format!("Boss loot: {}", drop.0.name), 4.0));
                 coin.write(crate::sound::CoinSound);
                 commands.entity(e).despawn();
@@ -1061,6 +1382,7 @@ mod tests {
             revision: 0,
             notice: String::new(),
             blocked: false,
+            native_titan_grip: false,
         }
     }
     pub(super) fn affix(
@@ -1082,6 +1404,8 @@ mod tests {
     }
     pub(super) fn item(slot: SlotKind, affixes: Vec<Affix>) -> Item {
         Item {
+            affix_rules: 0,
+            legendary: None,
             base_damage: None,
             base_armour: None,
             appearance: None,
@@ -1161,23 +1485,18 @@ mod tests {
         );
     }
     #[test]
-    fn spell_damage_affix_adds_flat_spell_hits_only_and_roundtrips() {
+    fn spell_damage_affix_adds_flat_spell_hits_and_shields_and_roundtrips() {
         let spell_damage = affix(Effect::SpellDamage, 6.0, AffixKind::Prefix, vec![]);
         assert_eq!(spell_damage.description(), "+6 Spell damage");
         let mut inventory = Inventory::fixture(vec![item(SlotKind::Ring, vec![spell_damage])]);
         let mut run = Run::default();
         let fire = super::super::data::ability("fireball");
         let before = run.resolve_spell(fire, 1).dmg;
+        let added_damage = 6.0 * run.balance.multiplier(run.class, fire.key);
         inventory.equip(1, "Ring 1").unwrap();
         inventory.apply(&mut run);
-        assert_eq!(run.resolve_spell(fire, 1).dmg, before + 6.0);
-        for key in [
-            "heroic_strike",
-            "arcane_shot",
-            "rejuvenation",
-            "power_word_shield",
-            "corruption",
-        ] {
+        assert!((run.resolve_spell(fire, 1).dmg - before - added_damage).abs() < 1e-4);
+        for key in ["heroic_strike", "arcane_shot", "rejuvenation", "corruption"] {
             let def = super::super::data::ability(key);
             assert_eq!(
                 run.resolve_spell(def, 1),
@@ -1193,7 +1512,7 @@ mod tests {
                 change: Change::IncreasedDamage(0.5),
             }],
         );
-        assert_eq!(run.resolve_spell(fire, 1).dmg, (before + 6.0) * 1.5);
+        assert!((run.resolve_spell(fire, 1).dmg - (before + added_damage) * 1.5).abs() < 1e-4);
         let saved = toml::to_string(&inventory.save).unwrap();
         assert_eq!(
             Inventory::decode(&saved).unwrap().items[0].affixes[0].effect,
@@ -1210,6 +1529,34 @@ mod tests {
             .affixes
             .iter()
             .any(|a| a.effect == Effect::SpellDamage)));
+    }
+    #[test]
+    fn power_word_shield_scales_with_intelligence_spell_damage_and_holy_equipment() {
+        let mut inventory = Inventory::fixture(vec![item(
+            SlotKind::Ring,
+            vec![
+                affix(Effect::Intelligence, 20.0, AffixKind::Suffix, vec![]),
+                affix(Effect::SpellDamage, 10.0, AffixKind::Prefix, vec![]),
+                affix(
+                    Effect::Damage,
+                    0.5,
+                    AffixKind::Prefix,
+                    vec![config::Tag::Holy],
+                ),
+            ],
+        )]);
+        let mut run = Run {
+            class: &super::super::data::CLASSES[4],
+            ..default()
+        };
+        inventory.equip(1, "Ring 1").unwrap();
+        inventory.apply(&mut run);
+        let shield = super::super::data::ability("power_word_shield");
+        let p = run.resolve_spell(shield, 1);
+        let multiplier = run.balance.multiplier(run.class, shield.key);
+        assert!((p.dmg - (30.0 + 10.0) * 1.7 * multiplier).abs() < 1e-4);
+        assert!(p.tags.contains(Tags::SPELL | Tags::HOLY | Tags::GUARD));
+        assert!(!p.tags.contains(Tags::DAMAGE));
     }
     #[test]
     fn primary_stats_scale_only_the_requested_classes_and_spell_types() {
@@ -1237,7 +1584,6 @@ mod tests {
                 let shield = super::super::data::ability("power_word_shield");
                 let shield_before = run.resolve_spell(shield, 1);
                 inv.apply(&mut run);
-                assert_eq!(run.resolve_spell(shield, 1), shield_before);
                 assert_eq!(
                     run.stats().max_hp,
                     hp + if effect == Effect::Stamina { 20.0 } else { 0.0 }
@@ -1246,6 +1592,12 @@ mod tests {
                     || (effect == Effect::Agility && matches!(class.id, 3 | 4 | 7 | 11));
                 let spells =
                     effect == Effect::Intelligence && matches!(class.id, 2 | 5 | 7 | 8 | 9 | 11);
+                assert!(
+                    (run.resolve_spell(shield, 1).dmg
+                        - shield_before.dmg * if spells { 1.2 } else { 1.0 })
+                    .abs()
+                        < 0.001
+                );
                 for (index, def) in [attack, spell, heal].into_iter().enumerate() {
                     let scale = if (index == 0 && attacks) || (index > 0 && spells) {
                         1.2
@@ -1282,6 +1634,7 @@ mod tests {
             (SlotKind::Waist, "Waist", Effect::PickupRadius, 0.2),
             (SlotKind::MainHand, "Main hand", Effect::LifeOnKill, 5.0),
             (SlotKind::Ring, "Ring 1", Effect::Luck, 0.1),
+            (SlotKind::Ring, "Ring 2", Effect::MagicFind, 0.2),
         ];
         let mut inventory = Inventory::fixture(
             mods.iter()
@@ -1308,6 +1661,7 @@ mod tests {
         assert_eq!(run.stats().regen, 2.0);
         assert_eq!(run.stats().growth, 1.1);
         assert_eq!(run.equipment.luck, 0.1);
+        assert_eq!(run.equipment.magic_find, 0.2);
         assert_eq!(run.equipment.life_on_kill, 5.0);
         assert_eq!(super::super::hero::hurt_hero(&mut run, 40.0), 30.0);
         assert_eq!(run.heal(10.0), 15.0);
@@ -1318,6 +1672,7 @@ mod tests {
         inventory.apply(&mut run);
         assert_eq!(run.stats().regen, base.regen);
         assert_eq!(run.equipment.luck, 0.0);
+        assert_eq!(run.equipment.magic_find, 0.0);
         assert_eq!(run.heal(10.0), 10.0);
     }
     #[test]
@@ -1523,7 +1878,10 @@ mod tests {
         let mut inventory = inventory();
         let mut rng = Rng(123);
         inventory
-            .collect(inventory.config.generate(10, &mut rng).unwrap())
+            .collect(item(
+                SlotKind::Chest,
+                vec![affix(Effect::Stamina, 12.0, AffixKind::Suffix, vec![])],
+            ))
             .unwrap();
         inventory.blocked = true;
         let slot = SLOTS
@@ -1542,7 +1900,7 @@ mod tests {
         assert!(Inventory::decode(&toml::to_string(&save).unwrap()).is_err());
     }
     #[test]
-    fn only_bosses_drop_items_and_pickups_are_saved_once_with_final_loot_recovered() {
+    fn boss_chests_and_pickups_are_saved_once_with_final_loot_recovered() {
         let mut world = World::new();
         world.insert_resource(inventory());
         world.insert_resource(Run::default());
@@ -1550,16 +1908,18 @@ mod tests {
         world.init_resource::<Messages<Loot>>();
         world.init_resource::<Messages<crate::sound::CoinSound>>();
         world.resource_mut::<Messages<Loot>>().write(Loot {
+            item_level: 1,
             pos: Vec3::ZERO,
             xp: 1,
             boss: false,
         });
         world.resource_mut::<Messages<Loot>>().write(Loot {
+            item_level: 9,
             pos: Vec3::X * 100.0,
             xp: 1,
             boss: true,
         });
-        world.run_system_once(boss_drops).unwrap();
+        world.run_system_once(chest_drops).unwrap();
         assert_eq!(world.query::<&ItemDrop>().iter(&world).count(), 1);
         let (drop_entity, position, model) = world
             .query_filtered::<(Entity, &Transform, &crate::net::NetEntity), With<ItemDrop>>()
@@ -1592,5 +1952,136 @@ mod tests {
         world.run_system_once(collect_drops).unwrap();
         assert_eq!(world.resource::<Inventory>().all().len(), 2);
         assert_eq!(world.query::<&ItemDrop>().iter(&world).count(), 0);
+    }
+    #[test]
+    fn ordinary_monster_chests_have_one_in_two_thousand_chance_without_changing_boss_chance() {
+        assert!(drops_chest(false, 0.0, 0.0));
+        assert!(drops_chest(false, 0.0, 0.000499));
+        assert!(!drops_chest(false, 1.0, 0.0005));
+        assert!(!drops_chest(false, 1.0, 0.5));
+        assert!(!drops_chest(true, 0.0, 0.0));
+        assert!(drops_chest(true, 1.0, 0.999));
+        let mut rng = Rng(742);
+        let count = (0..100000)
+            .filter(|_| drops_chest(false, 1.0, rng.f32()))
+            .count();
+        assert!((25..=80).contains(&count), "{count}/100000");
+    }
+    #[test]
+    fn final_boss_chests_reach_the_last_base_tier_at_level_sixty() {
+        assert_eq!(chest_item_level(59, false), 59);
+        assert_eq!(chest_item_level(59, true), 60);
+        assert_eq!(chest_item_level(100, true), 60);
+        assert_eq!(chest_item_level(100, false), 60);
+        let mut inventory = inventory();
+        inventory.config.boss_drop_chance = 1.0;
+        for base in &mut inventory.config.bases {
+            base.weight = if base.id == "sword" { 1.0 } else { 0.0 };
+        }
+        let mut world = World::new();
+        world.insert_resource(inventory);
+        world.insert_resource(Run::default());
+        world.insert_resource(Rng(123));
+        world.init_resource::<Messages<Loot>>();
+        world.write_message(Loot {
+            item_level: 59,
+            pos: Vec3::ZERO,
+            xp: 1,
+            boss: true,
+        });
+        world.run_system_once(chest_drops).unwrap();
+        let item = &world.query::<&ItemDrop>().single(&world).unwrap().0;
+        assert_eq!(item.level, 60);
+        assert_eq!(item.base, "sword");
+        let tier = world
+            .resource::<Inventory>()
+            .config
+            .bases
+            .iter()
+            .find(|b| b.id == "sword")
+            .unwrap()
+            .tiers
+            .last()
+            .unwrap();
+        assert_eq!(item.appearance, tier.appearance);
+        assert_eq!(item.icon, tier.icon);
+        assert_eq!(
+            item.weapon_damage().min,
+            tier.base_damage.unwrap().min.round()
+        );
+    }
+    #[test]
+    fn ordinary_monster_chests_use_the_boss_model_and_monster_item_level() {
+        let seed = (1..100000)
+            .find(|seed| drops_chest(false, 0.0, Rng(*seed).f32()))
+            .unwrap();
+        let mut world = World::new();
+        let mut inventory = inventory();
+        inventory.config.boss_drop_chance = 0.0;
+        world.insert_resource(inventory);
+        world.insert_resource(Run::default());
+        world.insert_resource(Rng(seed));
+        world.init_resource::<Messages<Loot>>();
+        world.write_message(Loot {
+            item_level: 35,
+            pos: Vec3::X * 12.0,
+            xp: 1,
+            boss: false,
+        });
+        world.run_system_once(chest_drops).unwrap();
+        let (drop, transform, model) = world
+            .query::<(&ItemDrop, &Transform, &crate::net::NetEntity)>()
+            .single(&world)
+            .unwrap();
+        assert_eq!(drop.0.level, 35);
+        assert_eq!(transform.translation, Vec3::X * 12.0);
+        assert_eq!(model.display_id, Some(BOSS_CHEST_DISPLAY));
+    }
+}
+#[cfg(test)]
+mod money_tests {
+    use super::*;
+    #[test]
+    fn gambling_charges_and_delivers_together_and_never_spends_on_failure() {
+        let mut inventory = Inventory::fixture(vec![]);
+        let mut rng = Rng(123);
+        assert!(inventory.gamble(SlotKind::Head, 1, &mut rng).is_err());
+        assert!(inventory.all().is_empty());
+        inventory.add_money(10000).unwrap();
+        inventory.blocked = true;
+        assert!(inventory.gamble(SlotKind::Head, 1, &mut rng).is_err());
+        assert_eq!(inventory.money(), 10000);
+        assert!(inventory.all().is_empty());
+        inventory.blocked = false;
+        let item = inventory.gamble(SlotKind::Head, 1, &mut rng).unwrap();
+        assert_eq!(
+            inventory.money(),
+            10000 - super::super::gambling::price(SlotKind::Head, 1)
+        );
+        assert_eq!(inventory.all().len(), 1);
+        assert_eq!(inventory.all()[0].id, item.id);
+        let encoded = toml::to_string(&inventory.save).unwrap();
+        let saved = Inventory::decode(&encoded).unwrap();
+        assert_eq!(saved.copper, inventory.money());
+        assert_eq!(saved.items.len(), 1);
+    }
+    #[test]
+    fn money_survives_saving_supports_legacy_saves_and_failed_writes_are_atomic() {
+        let mut inventory = Inventory::fixture(vec![]);
+        let old = toml::to_string(&inventory.save)
+            .unwrap()
+            .replace("copper = 0\n", "");
+        assert_eq!(Inventory::decode(&old).unwrap().copper, 0);
+        inventory.add_money(12345).unwrap();
+        assert_eq!(inventory.money(), 12345);
+        let encoded = toml::to_string(&inventory.save).unwrap();
+        assert_eq!(Inventory::decode(&encoded).unwrap().copper, 12345);
+        inventory.blocked = true;
+        assert!(inventory.add_money(10).is_err());
+        assert_eq!(inventory.money(), 12345);
+        inventory.blocked = false;
+        inventory.add_money(u64::MAX).unwrap();
+        assert_eq!(inventory.money(), super::super::currency::MAX_BALANCE);
+        assert!(toml::to_string(&inventory.save).is_ok());
     }
 }

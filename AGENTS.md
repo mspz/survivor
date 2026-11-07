@@ -40,6 +40,39 @@ cargo test -p wenilla-realm                # the realm service end to end, mock 
 cargo test --workspace                     # ~320 tests need a 1.12.1 patch chain and fail without one, on pristine upstream too
 ```
 
+### Fast local iteration and disk use
+
+- Run only the tests affected by the current change. On Windows use
+  `powershell -File scripts/test-changed.ps1 --scope resistances --offline`; on other platforms
+  use `python3 scripts/test-changed.py --scope resistances --offline`.
+  Presets: `resistances`, `combat`, `items`, `expeditions`, `talents`. Explicit filters can be combined:
+  `--package benilla-app survivors::resistances:: survivors::items::armour::`.
+- With no filters, the helper infers module filters from uncommitted Rust/config changes.
+  `--path <file>` limits inference to the current edit; `--base <revision>` includes committed
+  changes since a revision. Always review `--plan` first. Module inference is not dependency
+  analysis: add related consumers explicitly when a shared API changes. Shared Survivors
+  lifecycle/stat definitions deliberately select the whole simulation. Build configuration
+  changes, or changes with no inferred scope, require explicit filters or a preset;
+  integration tests still use `cargo test -p <crate> --test <name>`.
+- The helper invokes Cargo once with `--lib --no-run`, then lists and runs the matching tests
+  from the executable Cargo returned. Zero matches fail. Multiple filters do not trigger
+  repeated builds. Filters reduce execution, not compilation of the monolithic test crate.
+- Use `cargo check -p <crate> --lib` for type-only checks. Avoid workspace/all-target checks,
+  rebuilding the game, or repeating broader suites during ordinary iteration without a reason.
+  The full checks remain required for landing changes; `scripts/gates.sh` and CI are unchanged.
+- The `test` profile uses no debuginfo, opt-level 0 for workspace code and 1 for dependencies.
+  Only `benilla-app` enables incremental compilation, so its unchanged code can be reused
+  between edits without retaining caches for every workspace test/target. Do not set
+  `CARGO_INCREMENTAL=1` globally: that overrides the selective policy. Keep the app cache
+  between iterations; clearing it makes the next app build a full compile again.
+  `dev` retains line information; use `CARGO_PROFILE_DEV_DEBUG=2`
+  for full debugger information. Keep one normal test profile rather than varying flags
+  between runs and retaining duplicate artifacts. `play` remains the game-performance profile.
+- Inspect removable compiler caches with
+  `powershell -File scripts/clean-target.ps1 -WhatIf`; omit `-WhatIf` to remove only generated
+  incremental caches in `target/debug` and `target/play`. Executables, dependencies, probes
+  and game data are preserved. Never clean caches between every build: that defeats reuse.
+
 A browser for testing needs WebGPU; the world does not run without it. Linux Chrome needs
 `--enable-unsafe-webgpu`. Without an adapter the client aborts in
 `wgpu::create_bind_group_layout` at world entry: that is the missing adapter, not your change.

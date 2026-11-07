@@ -111,7 +111,8 @@ fn worn_appearances(save: &Save, config: &Config, class: u8) -> [Option<Appearan
         let Some((_, kind)) = SLOTS.iter().find(|(s, _)| *s == name) else {
             continue;
         };
-        let titan = class == 1 && save.titan_grip && item.equipment_type == EquipmentType::TwoHand;
+        let titan = (class == 1 && save.titan_grip || super::legendary::titan_grip(save))
+            && item.equipment_type == EquipmentType::TwoHand;
         if !item.usable(class, *kind) && !(titan && *kind == SlotKind::OffHand) {
             continue;
         }
@@ -407,58 +408,79 @@ mod tests {
         let create = benilla_formats::CharCreateCatalog::load(&mut chain).unwrap();
         let displays = benilla_formats::load_item_display_catalog(&mut chain).unwrap();
         let config = Config::builtin();
-        for base in &config.bases {
-            if matches!(
-                base.slot,
-                SlotKind::Neck | SlotKind::Ring | SlotKind::Trinket
-            ) {
-                assert!(base.appearance.is_none());
-                continue;
-            }
-            let a = base.appearance.expect("Visible base needs an appearance");
-            assert!(a.valid_for(base.slot), "{}", base.id);
-            let display = displays
-                .get(a.display_id)
-                .expect("Real ItemDisplayInfo reference");
-            match base.slot {
-                SlotKind::MainHand | SlotKind::OffHand | SlotKind::Ranged | SlotKind::Head => {
-                    assert!(display.model[0].is_some(), "{}", base.id)
+        for family in &config.bases {
+            for base in std::iter::once(family.clone()).chain(family.tiers.iter().map(|tier| {
+                let mut base = family.clone();
+                base.appearance = tier.appearance.or(family.appearance);
+                base.icon = tier.icon.clone();
+                base
+            })) {
+                assert!(
+                    chain.read_file(&format!("{}.blp", base.icon)).is_ok(),
+                    "{} missing icon {}",
+                    base.id,
+                    base.icon
+                );
+                if matches!(
+                    base.slot,
+                    SlotKind::Neck | SlotKind::Ring | SlotKind::Trinket
+                ) || base.equipment_type == EquipmentType::HeldOffHand
+                    && base.appearance.is_none()
+                {
+                    assert!(base.appearance.is_none());
+                    continue;
                 }
-                SlotKind::Shoulders => {
-                    assert!(display.model.iter().all(Option::is_some), "{}", base.id)
+                let a = base.appearance.expect("Visible base needs an appearance");
+                assert!(a.valid_for(base.slot), "{}", base.id);
+                let display = displays
+                    .get(a.display_id)
+                    .expect("Real ItemDisplayInfo reference");
+                match base.slot {
+                    SlotKind::MainHand | SlotKind::OffHand | SlotKind::Ranged | SlotKind::Head => {
+                        assert!(display.model[0].is_some(), "{}", base.id)
+                    }
+                    SlotKind::Shoulders => {
+                        assert!(display.model.iter().all(Option::is_some), "{}", base.id)
+                    }
+                    SlotKind::Back => assert!(display.model_texture[0].is_some(), "Cape texture"),
+                    _ => assert!(
+                        display.region_textures.iter().any(Option::is_some),
+                        "{}",
+                        base.id
+                    ),
                 }
-                SlotKind::Back => assert!(display.model_texture[0].is_some(), "Cape texture"),
-                _ => assert!(
-                    display.region_textures.iter().any(Option::is_some),
-                    "{}",
-                    base.id
-                ),
-            }
-            let directory = match base.slot {
-                SlotKind::Head => "Head",
-                SlotKind::Shoulders => "Shoulder",
-                SlotKind::OffHand if a.inventory_type == 14 => "Shield",
-                SlotKind::MainHand | SlotKind::OffHand | SlotKind::Ranged => "Weapon",
-                SlotKind::Back => "Cape",
-                _ => "",
-            };
-            for model in display.model.iter().flatten() {
-                if base.slot == SlotKind::Head {
-                    for sex in ["M", "F"] {
-                        let path = format!(
-                            "Item\\ObjectComponents\\Head\\{}_Hu{sex}.m2",
-                            model.trim_end_matches(".m2")
-                        );
+                let directory = match base.slot {
+                    SlotKind::Head => "Head",
+                    SlotKind::Shoulders => "Shoulder",
+                    SlotKind::OffHand if a.inventory_type == 14 => "Shield",
+                    SlotKind::MainHand | SlotKind::OffHand | SlotKind::Ranged => "Weapon",
+                    SlotKind::Back => "Cape",
+                    _ => "",
+                };
+                for model in display.model.iter().flatten() {
+                    if base.slot == SlotKind::Head {
+                        for race in ["Hu", "Or", "Dw", "Ni", "Sc", "Ta", "Gn", "Tr"] {
+                            for sex in ["M", "F"] {
+                                let path = format!(
+                                    "Item\\ObjectComponents\\Head\\{}_{race}{sex}.m2",
+                                    model.trim_end_matches(".m2")
+                                );
+                                assert!(
+                                    chain.read_file(&path).is_ok(),
+                                    "{} missing {path}",
+                                    base.id
+                                );
+                            }
+                        }
+                    } else {
+                        let path = format!("Item\\ObjectComponents\\{directory}\\{model}");
                         assert!(chain.read_file(&path).is_ok(), "{} missing {path}", base.id);
                     }
-                } else {
-                    let path = format!("Item\\ObjectComponents\\{directory}\\{model}");
+                }
+                for texture in display.model_texture.iter().flatten() {
+                    let path = format!("Item\\ObjectComponents\\{directory}\\{texture}.blp");
                     assert!(chain.read_file(&path).is_ok(), "{} missing {path}", base.id);
                 }
-            }
-            for texture in display.model_texture.iter().flatten() {
-                let path = format!("Item\\ObjectComponents\\{directory}\\{texture}.blp");
-                assert!(chain.read_file(&path).is_ok(), "{} missing {path}", base.id);
             }
         }
         for (id, class) in [
@@ -503,6 +525,8 @@ mod tests {
             rolled("mail_chest", 2),
             rolled("staff", 2),
         ]);
+        let sword_display = inv.save.items[0].appearance.unwrap().display_id;
+        let staff_display = inv.save.items[3].appearance.unwrap().display_id;
         inv.class = 2;
         inv.equip(1, "Main hand").unwrap();
         inv.equip(2, "Off hand").unwrap();
@@ -584,7 +608,7 @@ mod tests {
                 .template_cached(entry)
                 .unwrap()
                 .display_info_id,
-            1542
+            sword_display
         );
         assert_ne!(fields.player_visible_item_entry(16), None);
         assert_ne!(fields.player_visible_item_entry(4), None);
@@ -614,7 +638,7 @@ mod tests {
                 .template_cached(entry)
                 .unwrap()
                 .display_info_id,
-            472
+            staff_display
         );
         assert_eq!(fields.player_visible_item_entry(16), None);
         assert_eq!(fields.player_visible_item_entry(4), None);
@@ -654,6 +678,7 @@ mod tests {
         });
         let mut inv = Inventory::fixture(vec![weapon.clone(), weapon]);
         inv.save.titan_grip = true;
+        inv.native_titan_grip = true;
         inv.equip(1, "Main hand").unwrap();
         inv.equip(2, "Off hand").unwrap();
         let worn = worn_appearances(&inv.save, &inv.config, 1);

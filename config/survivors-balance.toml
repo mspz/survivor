@@ -3,13 +3,14 @@
 version = 1
 # Tous les tags correspondants se multiplient avec la classe et le sort.
 [tags]
+buff = 1.0
 attack = 1.0
-spell = 1.2
+spell = 1.4
 melee = 1.0
 projectile = 1.0
 area = 0.5
 chain = 1.0
-dot = 3.0
+dot = 2
 duration = 1.0
 totem = 1.0
 trap = 1.0
@@ -33,6 +34,10 @@ shadow = 1.0
 multiplier = 1.0
 
 [classes.warrior.spells]
+battle_shout = 1.0
+commanding_shout = 1.0
+bloodthirst = 1.0
+revenge = 1.0
 rend = 1.0
 overpower = 1.0
 cleave = 1.0
@@ -46,9 +51,13 @@ mortal_strike = 1.0
 retaliation = 1.0
 
 [classes.paladin]
-multiplier = 1.2
+multiplier = 1.0
 
 [classes.paladin.spells]
+blessing_of_might = 1.0
+devotion_aura = 1.0
+holy_shield = 1.0
+hammer_of_the_righteous = 1.0
 holy_light = 1.0
 seal_of_righteousness = 1.0
 hammer_of_wrath = 1.0
@@ -64,6 +73,10 @@ judgement = 1.0
 multiplier = 1.0
 
 [classes.hunter.spells]
+hunters_mark = 1.0
+aspect_of_the_pack = 1.0
+frost_trap = 1.0
+mongoose_bite = 1.0
 raptor_strike = 1.0
 wing_clip = 1.0
 arcane_shot = 1.0
@@ -75,12 +88,16 @@ concussive_shot = 1.0
 aimed_shot = 1.0
 
 [classes.rogue]
-multiplier = 1.0
+multiplier = 1.5
 
 [classes.rogue.spells]
+slice_and_dice = 1.0
+smoke_bomb = 1.0
+fan_of_knives = 1.0
+garrote = 1.0
 backstab = 1.0
 hemorrhage = 1.0
-sinister_strike = 1.0
+sinister_strike = 1.2
 eviscerate = 1.0
 blade_flurry = 1.0
 rupture = 1.0
@@ -88,9 +105,13 @@ gouge = 1.0
 kidney_shot = 1.0
 
 [classes.priest]
-multiplier = 1.0
+multiplier = 1.1
 
 [classes.priest.spells]
+prayer_of_mending = 1.0
+wand_attack = 1.0
+devouring_plague = 1.0
+penance = 1.0
 mind_flay = 1.0
 renew = 1.0
 smite = 1.0
@@ -102,9 +123,14 @@ psychic_scream = 1.0
 power_word_shield = 1.0
 
 [classes.shaman]
-multiplier = 1.0
+multiplier = 1.1
 
 [classes.shaman.spells]
+strength_of_earth_totem = 1.0
+healing_stream_totem = 1.0
+totemic_recall = 1.0
+earthbind_totem = 1.0
+lava_lash = 1.0
 stormstrike = 1.0
 lesser_healing_wave = 1.0
 lightning_bolt = 1.0
@@ -117,12 +143,16 @@ magma_totem = 1.0
 lightning_shield = 1.0
 
 [classes.mage]
-multiplier = 1.0
+multiplier = 1.2
 
 [classes.mage.spells]
+arcane_intellect = 1.0
+frost_guardian = 1.0
+living_bomb = 1.0
+ice_armor = 1.0
 scorch = 1.0
 ice_barrier = 1.0
-frostbolt = 1.0
+frostbolt = 1.2
 fireball = 1.0
 arcane_missiles = 1.0
 frost_nova = 1.0
@@ -135,9 +165,13 @@ blast_wave = 1.0
 pyroblast = 1.0
 
 [classes.warlock]
-multiplier = 1.0
+multiplier = 1.1
 
 [classes.warlock.spells]
+curse_of_elements = 1.0
+demon_armor = 1.0
+seed_of_corruption = 1.0
+soul_burn = 1.0
 drain_life = 1.0
 siphon_life = 1.0
 shadow_bolt = 1.0
@@ -151,13 +185,22 @@ searing_pain = 1.0
 shadowburn = 1.0
 
 [classes.druid]
-multiplier = 1.0
+multiplier = 1.2
 
 [classes.druid.spells]
+mangle = 1.0
+rip = 1.0
+ferocious_bite = 1.0
+savage_roar = 1.0
+barkskin = 1.0
+mark_of_the_wild = 1.0
+stampeding_roar = 1.0
+rake = 1.0
+efflorescence = 1.0
 claw = 1.0
 swipe = 1.0
 regrowth = 1.0
-wrath = 1.0
+wrath = 1.2
 moonfire = 1.0
 starfire = 1.0
 hurricane = 1.0

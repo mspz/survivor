@@ -4,6 +4,8 @@ use super::*;
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(PostUpdate, forms::sync.run_if(multiplayer::authoritative));
     app.init_resource::<Run>()
+        .init_resource::<boss_spells::Warnings>()
+        .init_resource::<support_spells::Debuffs>()
         .init_resource::<talents::Account>()
         .init_resource::<abilities::PendingHits>()
         .init_resource::<enemies::Spawner>()
@@ -14,6 +16,7 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_message::<abilities::Hit>()
         .add_message::<enemies::Loot>()
+        .add_message::<healing::Credit>()
         .init_resource::<Rng>()
         .init_resource::<session::Sessions>()
         .init_resource::<session::ServerInput>()
@@ -39,31 +42,39 @@ pub(super) fn plugin(app: &mut App) {
             (
                 enemies::spawn_enemies,
                 training::tick,
-                enemies::scale_enemies,
+                (enemies::scale_enemies, boss_spells::tick, special_mobs::tick).chain(),
                 enemies::move_enemies,
                 talent_runtime::tick,
+                items::legendary::events::tick,
+                items::legendary::periodic::tick_world,
+                items::legendary::effects::tick,
                 abilities::cast_abilities,
+                items::legendary::movement::tick,
                 abilities::tick_areas,
+                items::legendary::casting::tick,
                 abilities::apply_hits,
                 talent_runtime::support,
                 enemies::tick_marks,
                 enemies::drop_loot,
                 enemies::collect_gems,
                 hero::hero_vitals,
+                healing::credit,
+                revival::tick,
             )
                 .chain()
                 .after(WorldStage::Input)
-                .run_if(in_state(Phase::Playing))
+                .run_if(multiplayer::simulating)
                 .run_if(multiplayer::authoritative)
                 // Entering a battleground raises its loading screen: the run waits behind it.
                 .run_if(|l: Res<crate::loading_screen::LoadingScreen>| !l.covering()),
         )
         .add_systems(
             Update,
-            (enemies::reap_dead, enemies::still_gems)
+            enemies::reap_dead
                 .after(WorldStage::Input)
                 .run_if(multiplayer::authoritative),
         )
+        .add_systems(Update, enemies::still_gems.after(WorldStage::Input))
         .add_systems(
             OnEnter(Phase::Playing),
             (unpause, talents::prepare).run_if(multiplayer::authoritative),
@@ -115,7 +126,11 @@ pub(super) struct Owned {
 /// The hero's derived numbers, from the base and the passives.
 #[derive(Clone, Copy)]
 pub(super) struct Stats {
+    pub attack_power: f32,
+    pub spell_power: f32,
+    pub attack_speed: f32,
     pub might: f32,
+    pub level_damage: f32,
     pub max_hp: f32,
     pub speed: f32,
     pub regen: f32,
@@ -124,6 +139,8 @@ pub(super) struct Stats {
     pub magnet: f32,
     pub growth: f32,
     pub armor: f32,
+    pub resistances: resistances::Resistances,
+    pub damage_reduction: f32,
     pub crit: f32,
 }
 
@@ -134,11 +151,19 @@ pub(super) const BASE_MAGNET: f32 = 4.5;
 /// One run's state.
 #[derive(Resource)]
 pub(super) struct Run {
+    pub(super) draft_uses: [u8; 3],
+    pub(super) banished_cards: std::collections::HashSet<(bool, &'static str)>,
+    pub(super) support: super::support_spells::Runtime,
+    pub(super) extra_spells: super::extra_spells::Runtime,
     pub owner: Option<u64>,
     pub(super) balance: balance::Config,
     pub(super) expeditions: expedition_config::Config,
     pub(super) expedition_map: usize,
+    pub(super) expedition_players: usize,
     pub meter: combat_ui::Meter,
+    pub healing_meter: combat_ui::Meter,
+    pub taken_meter: combat_ui::Meter,
+    pub taken_source: &'static str,
     pub spell_modifiers: spell_engine::Modifiers,
     pub(super) equipment_version: Option<(Option<u64>, u64)>,
     pub(super) equipment_hp: f32,
@@ -151,6 +176,8 @@ pub(super) struct Run {
     pub(super) recasts: spell_engine::Recasts,
     pub(super) talent_build: [[u8; talents::NODES]; 3],
     pub(super) account_credited: u64,
+    pub(super) meta_level: u32,
+    pub(super) meta_kill_penalty: u64,
     pub class: &'static ClassDef,
     pub race: u8,
     pub elapsed: f32,
@@ -167,11 +194,17 @@ pub(super) struct Run {
     pub shield_t: f32,
     pub immune_t: f32,
     pub thorns: f32,
+    pub thorns_dot: Option<spell_engine::PeriodicSnapshot>,
     pub thorns_t: f32,
     pub thorns_spell: u32,
     pub heal_rate: f32,
     pub heal_t: f32,
+    pub heal_credit: Option<(Option<u64>, &'static str)>,
+    pub heal_triggered: bool,
     pub(super) talent_runtime: talent_runtime::Runtime,
+    pub(super) proc_runtime: super::procs::Runtime,
+    pub(super) healer_buffs: healer_buffs::State,
+    pub(super) legendary: items::legendary::Runtime,
     /// The class mobility's cooldown and running effect.
     pub(super) mobile: mobility::MobilityState,
     pub pending_levels: u32,
@@ -182,6 +215,7 @@ pub(super) struct Run {
     pub won: bool,
     /// Seconds since the hero fell, while the death plays out.
     pub dead_t: Option<f32>,
+    pub(super) revival: revival::State,
     pub next_guid: u64,
     pub damage_done: f64,
     /// Bumped whenever abilities or passives change, so the HUD rebuilds the icon rows once.
@@ -193,11 +227,19 @@ pub(super) struct Run {
 impl Default for Run {
     fn default() -> Self {
         Self {
+            support: default(),
+            draft_uses: [5; 3],
+            banished_cards: default(),
+            extra_spells: default(),
             owner: None,
             balance: balance::Config::default(),
             expeditions: expedition_config::Config::default(),
             expedition_map: data::CAMPAIGN[0],
+            expedition_players: 1,
             meter: combat_ui::Meter::default(),
+            healing_meter: default(),
+            taken_meter: default(),
+            taken_source: "Damage taken",
             spell_modifiers: spell_engine::Modifiers::default(),
             equipment_version: None,
             equipment_hp: 0.0,
@@ -209,6 +251,8 @@ impl Default for Run {
             recasts: spell_engine::Recasts::default(),
             talent_build: [[0; talents::NODES]; 3],
             account_credited: 0,
+            meta_level: 1,
+            meta_kill_penalty: 0,
             class: &data::CLASSES[0],
             race: 0,
             elapsed: 0.0,
@@ -224,11 +268,17 @@ impl Default for Run {
             shield_t: 0.0,
             immune_t: 0.0,
             thorns: 0.0,
+            thorns_dot: None,
             thorns_t: 0.0,
             thorns_spell: 0,
             heal_rate: 0.0,
             heal_t: 0.0,
+            heal_credit: None,
+            heal_triggered: false,
             talent_runtime: default(),
+            proc_runtime: default(),
+            healer_buffs: default(),
+            legendary: default(),
             mobile: mobility::MobilityState::default(),
             pending_levels: 0,
             next_passive: false,
@@ -236,6 +286,7 @@ impl Default for Run {
             rings: 0,
             won: false,
             dead_t: None,
+            revival: default(),
             next_guid: 1,
             damage_done: 0.0,
             version: 0,
@@ -249,9 +300,17 @@ impl Run {
         self.resolve_spell_with_weapon_roll(def, level, 0.5)
     }
     pub fn stats(&self) -> Stats {
+        let (level_health, level_damage) = level_stats::bonuses(self.level, self.meta_level);
         let mut s = Stats {
+            attack_power: self.support.power(self.elapsed, "battle_shout")
+                + self.support.power(self.elapsed, "blessing_of_might")
+                + self.support.power(self.elapsed, "strength_of_earth_totem")
+                + self.support.power(self.elapsed, "savage_roar"),
+            spell_power: self.support.power(self.elapsed, "arcane_intellect"),
+            attack_speed: self.support.power(self.elapsed, "slice_and_dice"),
             might: 1.0,
-            max_hp: BASE_HP + self.equipment_hp,
+            level_damage,
+            max_hp: BASE_HP + self.equipment_hp + level_health,
             speed: BASE_SPEED,
             regen: 0.0,
             haste: 0.0,
@@ -259,6 +318,8 @@ impl Run {
             magnet: BASE_MAGNET,
             growth: 1.0,
             armor: self.equipment_armour,
+            resistances: self.equipment.resistances,
+            damage_reduction: 0.0,
             crit: 0.05,
         };
         // Tanky classes start tougher, cloth starts quicker.
@@ -279,6 +340,8 @@ impl Run {
             };
             let v = per_level * level as f32;
             match stat {
+                Stat::AllResistance => s.resistances.add_all(v),
+                Stat::DamageReduction => s.damage_reduction += v,
                 Stat::Might => s.might += v,
                 Stat::MaxHp => s.max_hp *= 1.0 + v,
                 Stat::Speed => s.speed *= 1.0 + v,
@@ -292,6 +355,16 @@ impl Run {
             }
         }
         talents::apply_stats(self, &mut s);
+        s.speed *= 1.0 + self.healer_buffs.bonuses.speed;
+        s.resistances.add_all(self.healer_buffs.bonuses.resistance);
+        s.armor += self.support.power(self.elapsed, "devotion_aura")
+            + self.support.power(self.elapsed, "mark_of_the_wild")
+            + self.support.power(self.elapsed, "demon_armor");
+        s.resistances
+            .add_all(self.support.power(self.elapsed, "mark_of_the_wild") * 0.25);
+        s.speed *= 1.0
+            + self.support.power(self.elapsed, "aspect_of_the_pack")
+            + self.support.power(self.elapsed, "stampeding_roar");
         s
     }
 
@@ -308,11 +381,22 @@ impl Run {
         self.next_guid
     }
     pub fn heal(&mut self, amount: f32) -> f32 {
+        let healed = self.recover(amount);
+        self.healing_meter
+            .record_hit("self_healing", self.elapsed, healed, false, false);
+        healed
+    }
+    /// Incoming healing; the caster owns its meter attribution.
+    pub fn recover(&mut self, amount: f32) -> f32 {
         if self.hp <= 0.0 || self.dead_t.is_some() || !amount.is_finite() {
             return 0.0;
         }
-        let recovered = (amount.max(0.0) * (1.0 + self.equipment.healing).max(0.0))
-            .min((self.stats().max_hp - self.hp).max(0.0));
+        let recovered = (amount.max(0.0)
+            * (1.0
+                + self.equipment.healing
+                + self.support.power(self.elapsed, "demon_armor") / 400.0)
+                .max(0.0))
+        .min((self.stats().max_hp - self.hp).max(0.0));
         self.hp += recovered;
         recovered
     }
@@ -353,8 +437,12 @@ impl Rng {
     }
 }
 
-pub(super) fn pause(mut time: ResMut<Time<Virtual>>) {
-    time.pause();
+pub(super) fn pause(mut time: ResMut<Time<Virtual>>, role: Option<Res<multiplayer::Role>>) {
+    if role.is_some_and(|r| *r != multiplayer::Role::Solo) {
+        time.unpause();
+    } else {
+        time.pause();
+    }
 }
 
 pub(super) fn unpause(mut time: ResMut<Time<Virtual>>) {
@@ -385,6 +473,7 @@ pub(super) fn reset_run(
     selection.sheet_open = false;
     selection.bags_open = false;
     selection.ui_captured = false;
+    selection.pointer_captured = false;
     selection.in_hub = true;
     selection.talents_open = false;
     // The preview hero is respawned for the look still picked.

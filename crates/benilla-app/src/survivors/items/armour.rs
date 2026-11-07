@@ -31,9 +31,7 @@ pub(super) fn base_for(kind: EquipmentType, slot: SlotKind) -> f32 {
 }
 
 pub(super) fn scaled_base(base: f32, level: u32) -> f32 {
-    (base * (1.0 + 0.02 * level.saturating_sub(1) as f32))
-        .round()
-        .min(1.0e6)
+    (base * super::item_level::factor(level)).round().min(1.0e6)
 }
 
 impl Item {
@@ -49,8 +47,25 @@ impl Item {
 
 impl crate::survivors::Run {
     pub(in crate::survivors) fn damage_reduction(&self) -> f32 {
-        1.0 - (1.0 - reduction(self.stats().armor))
+        self.damage_reduction_tagged(crate::survivors::spell_engine::Tags::PHYSICAL)
+    }
+
+    pub(in crate::survivors) fn damage_reduction_tagged(
+        &self,
+        tags: crate::survivors::spell_engine::Tags,
+    ) -> f32 {
+        let stats = self.stats();
+        let armour = if tags.contains(crate::survivors::spell_engine::Tags::PHYSICAL) {
+            reduction(stats.armor)
+        } else {
+            0.0
+        };
+        1.0 - (1.0 - armour)
+            * (1.0 - stats.damage_reduction.clamp(0.0, 0.75))
+            * (1.0 - stats.resistances.reduction(tags))
             * (1.0 - self.equipment.reduction.clamp(0.0, 0.75))
+            * (1.0 - super::legendary::events::reduction(self))
+            * (1.0 - self.healer_buffs.bonuses.reduction)
     }
 }
 

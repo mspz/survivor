@@ -15,6 +15,7 @@ use super::minimap::{self, MiniMap};
 use super::{Owned, Phase, Rng, Run, Selection, Stats};
 
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.0);
+const SILVER: Color = Color::srgb(0.78, 0.82, 0.88);
 /// The mobility button's edge, an action button's 36 units.
 const MOBILITY_SIZE: f32 = 40.0;
 const EDGE: Color = Color::srgb(0.55, 0.45, 0.25);
@@ -66,6 +67,43 @@ pub(super) struct SweepUiMaterial {
 
 #[cfg(test)]
 mod passive_offer_tests {
+    #[test]
+    fn specialized_upgrade_cards_keep_the_same_compact_stat_deltas_as_ordinary_ranks() {
+        let mut run = run("fireball");
+        for rank in 1..=5 {
+            run.abilities[0].level = rank;
+            let card = describe_card(Choice::Upgrade(0), &run, None);
+            assert!(card.tag.starts_with("Upgrade | Rank"));
+            assert!(
+                card.desc.lines().all(|line| line.contains("»")),
+                "{}",
+                card.desc
+            );
+            assert!(!card.desc.contains("Specialize:"));
+            assert!(!card.desc.contains("Choose your"));
+        }
+    }
+    #[test]
+    fn passive_cards_show_compact_cumulative_before_after_values() {
+        let mut run = run("fireball");
+        for passive in data::PASSIVES {
+            let new = describe_card(Choice::NewPassive(passive), &run, None);
+            assert!(new.desc.contains("»"), "{}", passive.key);
+            assert!(new.desc.lines().count() <= 2, "{}", passive.key);
+            assert!(!new.desc.contains("Applies to:"));
+            assert!(!new.tag.contains("Unlimited"));
+        }
+        let buff = data::PASSIVES
+            .iter()
+            .find(|p| p.key == "buff_effect")
+            .unwrap();
+        run.passives.push((buff, 2));
+        let card = describe_card(Choice::NumericPassive(buff, 3), &run, None);
+        assert!(card.desc.contains("+10% » +25%"));
+        assert!(card.tag.contains("2 » 5"));
+        let upgraded = describe_card(Choice::UpPassive(0), &run, None);
+        assert!(upgraded.desc.contains("+10% » +15%"));
+    }
     use super::*;
     fn only_passives(allowed: &[&str]) -> super::super::reward_config::Config {
         let mut text =
@@ -202,9 +240,10 @@ mod passive_offer_tests {
             .pool
             .iter()
             .take(data::MAX_ABILITIES)
-            .map(|key| Owned {
+            .enumerate()
+            .map(|(i, key)| Owned {
                 def: data::ability(key),
-                level: data::MAX_ABILITY_LEVEL,
+                level: [6, 5, 5, 3, 3, 3][i],
                 cd: 0.0,
             })
             .collect();
@@ -242,6 +281,37 @@ mod passive_offer_tests {
         assert!(choices.iter().all(|c| matches!(c, Choice::NewAbility(_))));
     }
     #[test]
+    fn specialization_caps_remove_offers_and_reject_stale_upgrade_cards() {
+        let mut run = maxed_run();
+        run.pending_levels = 1;
+        assert!(!choice_pool(&run)
+            .iter()
+            .any(|c| matches!(c, Choice::Upgrade(_))));
+        let mut offer = Offer {
+            choices: vec![Choice::Upgrade(3)],
+            ..default()
+        };
+        pick(
+            0,
+            &mut run,
+            &mut offer,
+            &mut Rng::default(),
+            &mut NextState::default(),
+        );
+        assert_eq!(run.abilities[3].level, 3);
+        assert_eq!(run.pending_levels, 1);
+        offer.choices = vec![Choice::Upgrade(1)];
+        pick(
+            0,
+            &mut run,
+            &mut offer,
+            &mut Rng::default(),
+            &mut NextState::default(),
+        );
+        assert_eq!(run.abilities[1].level, 5);
+        assert_eq!(run.pending_levels, 1);
+    }
+    #[test]
     fn last_active_upgrade_is_offered_then_both_turns_use_passives() {
         let mut run = maxed_run();
         run.abilities[0].level -= 1;
@@ -252,8 +322,11 @@ mod passive_offer_tests {
             choices: choices_for(&run, &mut rng, &config),
             config,
         };
-        assert_eq!(offer.choices.len(), 1);
-        assert!(matches!(offer.choices[0], Choice::Upgrade(0)));
+        assert_eq!(offer.choices.len(), 3);
+        assert!(offer
+            .choices
+            .iter()
+            .all(|c| matches!(c, Choice::Upgrade(0..=2))));
         for _ in 0..2 {
             pick(0, &mut run, &mut offer, &mut rng, &mut NextState::default());
             assert_eq!(offer.choices.len(), 3);
@@ -332,6 +405,40 @@ mod passive_offer_tests {
         assert!(
             draw_weighted_reward(&mut buckets, 0.1, 0.0, [0.0, 1.0, 0.0, 0.0], |_| 1.0).is_none()
         );
+    }
+    #[test]
+    fn buff_effect_card_exists_in_every_rarity_and_accumulates_its_advertised_power() {
+        let mut run = run("battle_shout");
+        let p = data::PASSIVES
+            .iter()
+            .find(|p| p.key == "buff_effect")
+            .unwrap();
+        let buckets = reward_buckets(&run);
+        for (i, bucket) in buckets.iter().enumerate() {
+            assert!(bucket.iter().any(|c|matches!(c,Choice::NumericPassive(def,strength) if def.key==p.key && usize::from(*strength)==i+1)));
+        }
+        let mut total = 0;
+        for strength in 1..=4 {
+            let mut offer = Offer {
+                choices: vec![Choice::NumericPassive(p, strength)],
+                ..default()
+            };
+            pick(
+                0,
+                &mut run,
+                &mut offer,
+                &mut Rng::default(),
+                &mut NextState::default(),
+            );
+            total += strength;
+            let buff = run.resolve_spell(data::ability("battle_shout"), 1);
+            assert!((buff.buff_effect - 0.05 * f32::from(total)).abs() < 0.001);
+            assert_eq!(
+                run.resolve_spell(data::ability("fireball"), 1).buff_effect,
+                0.0
+            );
+        }
+        assert!(super::super::passives::eligible(p, &run));
     }
     #[test]
     fn numeric_rewards_exist_at_every_rarity_and_accumulate_the_advertised_power() {
@@ -463,7 +570,8 @@ mod passive_offer_tests {
         let card = describe_card(Choice::UpPassive(0), &run, None);
         assert!(card.ranks.is_none());
         assert!(card.tag.contains("300") && card.tag.contains("301"));
-        assert!(card.tag.contains("Unlimited"));
+        assert!(!card.tag.contains("Unlimited"));
+        assert!(card.desc.contains("»"));
     }
     #[test]
     fn more_than_six_different_passives_can_be_owned() {
@@ -476,6 +584,7 @@ mod passive_offer_tests {
         }
         assert_eq!(run.passives.len(), 6);
         assert!(keys(&run).contains(&"fire"));
+        let before = run.resolve_spell(data::ability("fireball"), 1).dmg;
         let p = data::PASSIVES.iter().find(|p| p.key == "fire").unwrap();
         let mut offer = Offer {
             choices: vec![Choice::NewPassive(p)],
@@ -489,7 +598,7 @@ mod passive_offer_tests {
             &mut NextState::default(),
         );
         assert_eq!(run.passives.len(), 7);
-        assert!(run.resolve_spell(data::ability("fireball"), 1).dmg > 20.0);
+        assert!(run.resolve_spell(data::ability("fireball"), 1).dmg > before);
     }
 
     #[test]
@@ -532,7 +641,7 @@ mod passive_offer_tests {
         let entries = [
             Choice::NewPassive(passive("wisdom")),
             Choice::NewPassive(passive("fire")),
-            Choice::Upgrade(0),
+            Choice::NumericPassive(passive("wisdom"), 3),
             Choice::NewPassive(passive("projectiles")),
         ];
         for size in [1, 17] {
@@ -697,6 +806,7 @@ mod tooltip_tests;
 
 #[derive(Component, Clone, Copy, PartialEq)]
 pub(super) enum UiAction {
+    Codex,
     Options,
     Resume,
     MainMenu,
@@ -716,6 +826,16 @@ pub(super) enum Choice {
     Heal,
 }
 impl Choice {
+    pub(super) fn card_key(self, run: &Run) -> (bool, &'static str) {
+        match self {
+            Self::NewAbility(d) => (true, d.key),
+            Self::Upgrade(i) => (true, run.abilities[i].def.key),
+            Self::NumericPassive(p, _) | Self::NewPassive(p) => (false, p.key),
+            Self::UpPassive(i) => (false, run.passives[i].0.key),
+            Self::Heal => (false, "__recovery"),
+        }
+    }
+
     pub(super) fn is_active(self) -> bool {
         matches!(self, Self::NewAbility(_) | Self::Upgrade(_))
     }
@@ -806,6 +926,9 @@ pub(super) fn spell_name(
     spell: u32,
     fallback: &str,
 ) -> String {
+    if let Some(name) = super::extra_spells::name(fallback) {
+        return name.to_owned();
+    }
     spells
         .and_then(|s| s.catalog.get(spell))
         .map(|d| d.name.clone())
@@ -840,15 +963,14 @@ pub(super) fn setup_hud(
             Visibility::Hidden,
         ))
         .with_children(|root| {
-            // `MainMenuExpBar`, 1024×13 at the bottom centre. The reference stacks it on the
-            // 40-unit action bar; with no action bar here it rests on the screen's edge.
+            // Run XP sits above the run information, clear of the bottom menu.
             root.spawn((
                 XpBar,
                 Interaction::default(),
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Percent(50.0),
-                    bottom: Val::Px(0.0),
+                    top: Val::Px(0.0),
                     margin: UiRect::left(Val::Px(-512.0)),
                     width: Val::Px(1024.0),
                     height: Val::Px(13.0),
@@ -997,7 +1119,10 @@ pub(super) fn setup_hud(
             });
             root.spawn(Node {
                 width: Val::Percent(100.0),
-                padding: UiRect::all(Val::Px(10.0)),
+                padding: UiRect {
+                    top: Val::Px(24.0),
+                    ..UiRect::all(Val::Px(10.0))
+                },
                 justify_content: JustifyContent::SpaceBetween,
                 align_items: AlignItems::FlexStart,
                 ..default()
@@ -1167,6 +1292,29 @@ pub(super) fn setup_hud(
                     ..default()
                 },
             ));
+            root.spawn(Node {
+                column_gap: Val::Px(16.0),
+                ..default()
+            })
+            .with_children(|bar| {
+                for (index, label) in [(3, "Reroll"), (4, "Skip"), (8, "Banish")] {
+                    bar.spawn((
+                        Button,
+                        super::cards::DraftButton(index),
+                        Node {
+                            padding: UiRect::all(Val::Px(12.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.15, 0.12, 0.08)),
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            super::cards::DraftLabel(index),
+                            text_bundle(f, label, 18.0, GOLD),
+                        ));
+                    });
+                }
+            });
             root.spawn(centered(
                 f,
                 "Click a card, or use your card-selection keys",
@@ -1208,8 +1356,9 @@ pub(super) fn setup_hud(
                 root.spawn(centered(f, "Game Menu", 26.0, GOLD));
                 for (label, action) in [
                     ("Options", UiAction::Options),
+                    ("Codex", UiAction::Codex),
                     ("Resume", UiAction::Resume),
-                    ("Return to Stormwind", UiAction::MainMenu),
+                    ("Return to Hub", UiAction::MainMenu),
                     ("Character selection", UiAction::Logout),
                     ("Quit game", UiAction::Quit),
                 ] {
@@ -1286,7 +1435,7 @@ pub(super) fn setup_hud(
             super::combat_ui::skin::button_sized(
                 root,
                 f,
-                "Return to Stormwind",
+                "Return to Hub",
                 UiAction::MainMenu,
                 260.0,
                 42.0,
@@ -1384,8 +1533,8 @@ pub(super) fn start_run(run: &mut Run, selection: &mut Selection) -> bool {
 
 fn choice_pool(run: &Run) -> Vec<Choice> {
     let mut pool: Vec<Choice> = Vec::new();
-    for (i, o) in run.abilities.iter().enumerate() {
-        if o.level < data::MAX_ABILITY_LEVEL {
+    for i in 0..run.abilities.len() {
+        if super::specialization::can_upgrade(run, i) {
             pool.push(Choice::Upgrade(i));
         }
     }
@@ -1416,6 +1565,7 @@ fn choice_pool(run: &Run) -> Vec<Choice> {
             }
         }
     }
+    pool.retain(|choice| !run.banished_cards.contains(&choice.card_key(run)));
     pool
 }
 
@@ -1528,6 +1678,42 @@ pub(super) fn pick(
     rng: &mut Rng,
     next: &mut NextState<Phase>,
 ) {
+    // Indices 3/4 reroll/skip; 5..=7 banish a card, also over the network.
+    if i >= 3 {
+        if run.pending_levels == 0 || offer.choices.is_empty() {
+            return;
+        }
+        let action = match i {
+            3 => 0,
+            4 => 2,
+            5..=7 => 1,
+            _ => return,
+        };
+        if run.draft_uses[action] == 0 {
+            return;
+        }
+        if action == 1 {
+            let Some(choice) = offer.choices.get(i - 5).copied() else {
+                return;
+            };
+            if matches!(choice, Choice::Heal) {
+                return;
+            }
+            run.banished_cards.insert(choice.card_key(run));
+        }
+        run.draft_uses[action] -= 1;
+        if action == 2 {
+            run.next_passive = !run.next_passive;
+            run.pending_levels = run.pending_levels.saturating_sub(1);
+        }
+        if run.pending_levels > 0 {
+            offer.choices = choices_for(run, rng, &offer.config);
+        } else {
+            offer.choices.clear();
+            next.set(Phase::Playing);
+        }
+        return;
+    }
     let Some(&choice) = offer.choices.get(i) else {
         return;
     };
@@ -1548,7 +1734,13 @@ pub(super) fn pick(
             level: 1,
             cd: 0.3,
         }),
-        Choice::Upgrade(k) => run.abilities[k].level += 1,
+        Choice::Upgrade(k) => {
+            if !super::specialization::can_upgrade(run, k) {
+                offer.choices = choices_for(run, rng, &offer.config);
+                return;
+            }
+            run.abilities[k].level += 1;
+        }
         Choice::NewPassive(p) => run.passives.push((p, 1)),
         Choice::UpPassive(k) => run.passives[k].1 = run.passives[k].1.saturating_add(1),
         Choice::Heal => run.hp = run.stats().max_hp,
@@ -1615,10 +1807,11 @@ pub(super) fn keys(
     phase: Res<State<Phase>>,
     settings: Res<super::options::Settings>,
     panel: Res<super::options::Panel>,
+    codex: Option<Res<super::codex::Panel>>,
     mut selection: ResMut<Selection>,
     mut next: ResMut<NextState<Phase>>,
 ) {
-    if panel.open {
+    if panel.open || codex.as_ref().is_some_and(|c| c.open) {
         return;
     }
     match phase.get() {
@@ -1706,13 +1899,12 @@ pub(super) fn describe_card(
             CardText {
                 spell: p.spell,
                 name: p.name.into(),
-                tag: format!("+{strength} power | Unlimited stacks"),
-                tag_color: new,
-                desc: format!(
-                    "Gain: {}\nTotal after pick: {}",
-                    passive_effect_text(p, u64::from(strength)),
-                    passive_effect_text(p, total.saturating_add(u64::from(strength)))
+                tag: format!(
+                    "Passive | Stacks {total} » {}",
+                    total.saturating_add(u64::from(strength))
                 ),
+                tag_color: new,
+                desc: passive_card_delta(p, total, total.saturating_add(u64::from(strength))),
                 ranks: None,
             }
         }
@@ -1721,10 +1913,15 @@ pub(super) fn describe_card(
             CardText {
                 spell: def.spell,
                 name: spell_name(spells, def.spell, def.key),
-                tag: "New spell".into(),
+                tag: "New spell | Base cap 3".into(),
                 tag_color: new,
-                desc: format!("{}.", ability_body(def, &c)),
-                ranks: Some((0, data::MAX_ABILITY_LEVEL)),
+                desc: if def.kind == Kind::Buff {
+                    super::support_spells::tooltip(def.key, 1, &c)
+                        .unwrap_or_else(|| ability_body(def, &c))
+                } else {
+                    format!("{}.", ability_body(def, &c))
+                },
+                ranks: Some((0, 3)),
             }
         }
         Choice::Upgrade(k) => {
@@ -1736,6 +1933,14 @@ pub(super) fn describe_card(
             );
             // What actually changes, as before → after.
             let mut lines = Vec::new();
+            lines.extend(effect_changes(a.effect, b.effect));
+            if super::support_spells::magnitude(o.def.key, 1) > 0.0 {
+                lines.push(format!(
+                    "Bonus {} » {}",
+                    super::support_spells::power_label(o.def.key, o.level, a.buff_effect),
+                    super::support_spells::power_label(o.def.key, next, b.buff_effect)
+                ));
+            }
             let (da, db) = if a.dmg > 0.0 {
                 (a.dmg, b.dmg)
             } else {
@@ -1763,18 +1968,24 @@ pub(super) fn describe_card(
             CardText {
                 spell: o.def.spell,
                 name: spell_name(spells, o.def.spell, o.def.key),
-                tag: format!("Rank {} » {next}", o.level),
-                tag_color: Color::WHITE,
+                tag: format!("Upgrade | Rank {} » {next}", o.level),
+                tag_color: if next == 6 {
+                    GOLD
+                } else if next >= 4 {
+                    SILVER
+                } else {
+                    Color::WHITE
+                },
                 desc: lines.join("\n"),
-                ranks: Some((o.level, data::MAX_ABILITY_LEVEL)),
+                ranks: Some((o.level, super::specialization::rank_cap(next))),
             }
         }
         Choice::NewPassive(p) => CardText {
             spell: p.spell,
             name: p.name.into(),
-            tag: "New passive | Unlimited stacks".into(),
+            tag: "New passive | Stacks 0 » 1".into(),
             tag_color: new,
-            desc: passive_effect_text(p, 1),
+            desc: passive_card_delta(p, 0, 1),
             ranks: None,
         },
         Choice::UpPassive(k) => {
@@ -1782,13 +1993,9 @@ pub(super) fn describe_card(
             CardText {
                 spell: p.spell,
                 name: p.name.into(),
-                tag: format!("Stacks {level} » {} | Unlimited", level.saturating_add(1)),
+                tag: format!("Upgrade | Stacks {level} » {}", level.saturating_add(1)),
                 tag_color: Color::WHITE,
-                desc: format!(
-                    "{}\nNext: {}",
-                    passive_effect_text(p, level),
-                    passive_effect_text(p, level.saturating_add(1))
-                ),
+                desc: passive_card_delta(p, level, level.saturating_add(1)),
                 ranks: None,
             }
         }
@@ -1867,7 +2074,9 @@ pub(super) fn refresh_hud(
         run.banner = None;
     }
     // The picker owns the screen: an announcement waits until it closes.
-    let banner = if *phase.get() == Phase::LevelUp {
+    let banner = if let Some(revival) = super::revival::hint(&run) {
+        revival
+    } else if *phase.get() == Phase::LevelUp {
         String::new()
     } else {
         banner
@@ -1939,20 +2148,29 @@ pub(super) fn refresh_hud(
                     TipFor::Ability(i) => Some(*i),
                     _ => None,
                 };
+                let specialized = ability.is_some() && level >= 4;
                 row.spawn((
                     Node {
                         width: Val::Px(size),
                         height: Val::Px(size),
                         flex_shrink: 0.0,
-                        border: UiRect::all(Val::Px(1.0)),
+                        border: UiRect::all(Val::Px(if specialized { 2.0 } else { 1.0 })),
                         ..default()
                     },
-                    BorderColor::all(EDGE),
+                    BorderColor::all(if specialized {
+                        if level >= 6 {
+                            GOLD
+                        } else {
+                            SILVER
+                        }
+                    } else {
+                        EDGE
+                    }),
                     Interaction::default(),
                     tip,
                 ))
                 .with_children(|slot| {
-                    slot.spawn(icon(spell, size - 2.0));
+                    slot.spawn(icon(spell, size - if specialized { 4.0 } else { 2.0 }));
                     // The cooldown sweep sits over the icon, under the level text.
                     if let Some(i) = ability {
                         let handle = sweeps.add(SweepUiMaterial { sweep: 0.0 });
@@ -2101,7 +2319,10 @@ pub(super) fn toggle_training_spells(
             TipFor::Ability(index) if *interaction != Interaction::None => Some(*index),
             _ => None,
         });
-        if let Some(key) = hovered.and_then(|i| run.abilities.get(i)).map(|o| o.def.key) {
+        if let Some(key) = hovered
+            .and_then(|i| run.abilities.get(i))
+            .map(|o| o.def.key)
+        {
             let enabled = !run.disabled_spells.insert(key);
             if enabled {
                 run.disabled_spells.remove(key);
@@ -2329,21 +2550,69 @@ fn effect_text(effect: Effect) -> Option<String> {
     })
 }
 
+fn effect_changes(before: Effect, after: Effect) -> Vec<String> {
+    let mut lines = Vec::new();
+    let (name, a, b, ta, tb) = match (before, after) {
+        (Effect::Slow(a, ta), Effect::Slow(b, tb)) => ("Slow", Some(a), Some(b), ta, tb),
+        (Effect::Weaken(a, ta), Effect::Weaken(b, tb)) => {
+            ("Enemy damage reduction", Some(a), Some(b), ta, tb)
+        }
+        (Effect::Root(a), Effect::Root(b)) => ("Root duration", None, None, a, b),
+        (Effect::Stun(a), Effect::Stun(b)) => ("Stun duration", None, None, a, b),
+        (Effect::Fear(a), Effect::Fear(b)) => ("Fear duration", None, None, a, b),
+        _ => return lines,
+    };
+    if let (Some(a), Some(b)) = (a, b) {
+        if (a - b).abs() > 0.0001 {
+            lines.push(format!("{name} {} » {}", pct(1.0 - a), pct(1.0 - b)));
+        }
+    }
+    if (ta - tb).abs() > 0.01 {
+        lines.push(format!(
+            "{} {}s » {}s",
+            if a.is_some() { "Debuff duration" } else { name },
+            num(ta),
+            num(tb)
+        ));
+    }
+    lines
+}
+
 /// What an ability does at these numbers, in the voice of a spell description.
 fn ability_body(def: &AbilityDef, c: &Cast) -> String {
+    if let Some(text) = super::extra_spells::description(def.key) {
+        let mut values = Vec::new();
+        if c.dmg > 0.0 {
+            let label = match def.key {
+                "efflorescence" => "total healing per ally",
+                "holy_shield" => "damage per block",
+                "penance" => "damage per strike",
+                _ => "damage",
+            };
+            values.push(format!("{} {label}", num(c.dmg)));
+        }
+        if c.dot > 0.0 {
+            values.push(format!("{} damage/sec", num(c.dot)));
+        }
+        if c.radius > 0.0 {
+            values.push(format!("{} yd radius", num(c.radius)));
+        }
+        if c.duration > 0.0 {
+            values.push(format!("{} sec duration", num(c.duration)));
+        }
+        return format!("{text} {}.", values.join(", "));
+    }
     let d = num(c.dmg);
     let burst = def.duration <= 0.0;
     let mut s = match def.kind {
+        Kind::Buff => super::support_spells::description(def.key).unwrap_or("Strengthens nearby allies").to_owned(),
         Kind::Bolt | Kind::Strike | Kind::Melee => {
-            let toughest = matches!(def.key, "pyroblast" | "aimed_shot" | "exorcism" | "starfire");
             let melee = def.kind == Kind::Melee;
-            let who = match (toughest, melee, c.count) {
-                (true, _, 1) => "the toughest enemy in range".to_string(),
-                (true, _, n) => format!("the {n} toughest enemies in range"),
-                (false, true, 1) => "the closest enemy".into(),
-                (false, true, n) => format!("the {n} closest enemies"),
-                (false, false, 1) => "the nearest enemy".into(),
-                (false, false, n) => format!("the {n} nearest enemies"),
+            let who = match (melee, c.count) {
+                (true, 1) => "the closest enemy".into(),
+                (true, n) => format!("the {n} closest enemies"),
+                (false, 1) => "the enemy with the lowest remaining health in range".into(),
+                (false, n) => format!("the {n} enemies with the lowest remaining health in range"),
             };
             let mut s = format!("{} {who} for {d} damage", if melee { "Strikes" } else { "Hits" });
             if c.radius > 0.0 && !melee {
@@ -2366,12 +2635,12 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
             }
         }
         Kind::Chain => format!(
-            "Strikes the nearest enemy for {d} damage, then jumps to {} more within {} yd of each other, 15% weaker with every jump",
+            "Strikes the enemy with the lowest remaining health in range for {d} damage, then jumps to {} more within {} yd of each other, 15% weaker with every jump",
             c.count,
             num(c.radius)
         ),
         Kind::Dot => format!(
-            "Afflicts {} enemies in range with {} damage every second for {} sec",
+            "Afflicts the {} enemies with the lowest remaining health in range with {} damage every second for {} sec",
             c.count,
             num(c.dot),
             num(c.duration)
@@ -2396,7 +2665,10 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
             "When enemies close in, deals {d} damage to every attacker for {} sec",
             num(c.duration)
         ),
-        Kind::Heal => format!("Below 85% health, heals you for {d} over {} sec", num(c.duration)),
+        Kind::Heal => {
+            let target = format!("Heals you or the living ally with the lowest health percentage within {} yd for {d}", num(c.range));
+            if c.duration > 0.0 { format!("{target} over {} sec", num(c.duration)) } else { target }
+        },
         Kind::Totem if def.key == "magma_totem" => format!(
             "Drops a totem for {} sec that burns every enemy within {} yd for {d} damage every 2 sec",
             num(c.duration),
@@ -2405,7 +2677,7 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
         Kind::Totem => format!(
             "Drops a totem for {} sec that hits the nearest enemy within {} yd for {d} damage every second",
             num(c.duration),
-            num(def.range)
+            num(c.range)
         ),
     };
     // Areas that tick carry no over-time part; a burst leaves a 5 second one.
@@ -2418,7 +2690,7 @@ fn ability_body(def: &AbilityDef, c: &Cast) -> String {
             num(secs)
         );
     }
-    if let Some(e) = effect_text(def.effect) {
+    if let Some(e) = effect_text(c.effect) {
         s += ", ";
         s += &e;
     }
@@ -2434,6 +2706,7 @@ fn next_rank(def: &AbilityDef, now: &Cast, next: &Cast) -> String {
         _ => "damage",
     };
     let mut gains = Vec::new();
+    gains.extend(effect_changes(now.effect, next.effect));
     if next.dmg > 0.0 && def.kind != Kind::Dot && def.kind != Kind::Immune {
         gains.push(format!("{} {what}", num(next.dmg)));
     }
@@ -2451,10 +2724,10 @@ fn next_rank(def: &AbilityDef, now: &Cast, next: &Cast) -> String {
             _ => format!("{} targets", next.count),
         });
     }
-    if next.radius > 0.0 {
+    if next.radius != now.radius {
         gains.push(format!("{} yd", num(next.radius)));
     }
-    if next.duration > 0.0 {
+    if next.duration != now.duration {
         gains.push(format!("{} sec", num(next.duration)));
     }
     gains.push(format!("{} sec cooldown", num(next.cooldown)));
@@ -2482,15 +2755,23 @@ fn proc_tip(proc: super::procs::ViewSpell) -> Vec<TipLine> {
 fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) -> Vec<TipLine> {
     let def = o.def;
     let now = run.resolve_spell(def, o.level);
+    let support_description = super::support_spells::tooltip(def.key, o.level, &now);
     let mut lines = vec![
         TipLine::new(spell_name(spells, def.spell, def.key), Color::WHITE)
             .header()
-            .right(format!("Rank {}", o.level), TIP_GREY),
+            .right(
+                format!(
+                    "Rank {}/{}",
+                    o.level,
+                    super::specialization::rank_cap(o.level)
+                ),
+                TIP_GREY,
+            ),
     ];
     let range = match def.kind {
-        Kind::Melee => Some("Melee Range".to_string()),
+        Kind::Melee => Some(format!("Melee · {} yd range", num(now.range))),
         Kind::Bolt | Kind::Strike | Kind::Chain | Kind::Dot | Kind::Ground | Kind::Totem => {
-            Some(format!("{} yd range", num(def.range)))
+            Some(format!("{} yd range", num(now.range)))
         }
         _ => None,
     };
@@ -2504,7 +2785,17 @@ fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) 
         TipLine::new("Instant", Color::WHITE)
             .right(format!("{} sec cooldown", num(now.cooldown)), Color::WHITE),
     );
-    lines.push(TipLine::new(ability_body(def, &now), GOLD));
+    lines.push(TipLine::new(
+        if def.kind == Kind::Buff {
+            support_description.unwrap_or_else(|| ability_body(def, &now))
+        } else {
+            ability_body(def, &now)
+        },
+        GOLD,
+    ));
+    if let Some(buff) = super::healer_buffs::tooltip(run, def, o.level) {
+        lines.push(TipLine::new(buff, GOLD));
+    }
     if now.chains > 0 {
         lines.push(TipLine::new(
             format!("{} additional jumps", now.chains),
@@ -2536,12 +2827,38 @@ fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) 
             DIM,
         ));
     }
-    if o.level < data::MAX_ABILITY_LEVEL {
+    if o.level >= 6 {
+        lines.push(TipLine::new(
+            super::specialization::signature_text(def).trim_start_matches("Signature: "),
+            GOLD,
+        ));
+    }
+    let index = run
+        .abilities
+        .iter()
+        .position(|owned| std::ptr::eq(owned, o));
+    if index.is_some_and(|i| super::specialization::can_upgrade(run, i)) {
         let next = run.resolve_spell(def, o.level + 1);
         lines.push(TipLine::new("Next rank:", Color::WHITE));
         lines.push(TipLine::new(next_rank(def, &now, &next), GOLD));
+        if super::support_spells::magnitude(def.key, 1) > 0.0 {
+            lines.push(TipLine::new(
+                format!(
+                    "Bonus: {}",
+                    super::support_spells::power_label(def.key, o.level + 1, next.buff_effect)
+                ),
+                GOLD,
+            ));
+        }
     } else {
-        lines.push(TipLine::new("Highest rank", DIM));
+        lines.push(TipLine::new(
+            if o.level >= 6 {
+                "Maximum rank"
+            } else {
+                "Rank limit reached"
+            },
+            DIM,
+        ));
     }
     lines
 }
@@ -2550,6 +2867,8 @@ fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) 
 /// A stat's short name, for the card's before » after line.
 fn stat_label(stat: Stat) -> &'static str {
     match stat {
+        Stat::AllResistance => "All elemental resistances",
+        Stat::DamageReduction => "Damage taken reduction",
         Stat::Might => "All damage",
         Stat::MaxHp => "Maximum health",
         Stat::Speed => "Movement speed",
@@ -2565,6 +2884,11 @@ fn stat_label(stat: Stat) -> &'static str {
 
 fn passive_text(stat: Stat, v: f32) -> String {
     match stat {
+        Stat::AllResistance => format!(
+            "Adds {} percentage points to every elemental resistance.",
+            num(v)
+        ),
+        Stat::DamageReduction => format!("Reduces all damage taken by {}.", pct(v)),
         Stat::Might => format!("Increases all damage you deal by {}.", pct(v)),
         Stat::MaxHp => format!("Increases your maximum health by {}.", pct(v)),
         Stat::Speed => format!("Increases your movement speed by {}.", pct(v)),
@@ -2581,6 +2905,20 @@ fn passive_text(stat: Stat, v: f32) -> String {
 /// The hero's total for the stat a passive raises, every source counted.
 fn stat_total(stat: Stat, s: &Stats) -> String {
     match stat {
+        Stat::AllResistance => format!(
+            "Minimum elemental resistance: {}%",
+            num(s
+                .resistances
+                .entries()
+                .iter()
+                .map(|(_, _, v)| *v)
+                .fold(75.0, f32::min)
+                .clamp(0.0, 75.0))
+        ),
+        Stat::DamageReduction => format!(
+            "Damage taken reduction: {}",
+            pct(s.damage_reduction.clamp(0.0, 0.75))
+        ),
         Stat::Might => format!("Damage dealt: {}", pct(s.might)),
         Stat::MaxHp => format!("Maximum health: {}", num(s.max_hp)),
         Stat::Speed => format!("Movement speed: {} yd per second", num(s.speed)),
@@ -2598,7 +2936,42 @@ fn stat_total(stat: Stat, s: &Stats) -> String {
     }
 }
 
-fn passive_effect_text(p: &PassiveDef, rank: u64) -> String {
+/// The picker shows only this passive's cumulative bonus, not a second tooltip.
+fn passive_card_delta(p: &PassiveDef, before: u64, after: u64) -> String {
+    match p.effect {
+        data::PassiveEffect::Stat(stat, amount) => {
+            let value = |rank| {
+                let v = amount * rank as f32;
+                if matches!(stat, Stat::Armor | Stat::Regen) {
+                    format!("+{}", num(v))
+                } else {
+                    format!("+{}", pct(v))
+                }
+            };
+            format!("{} {} » {}", stat_label(stat), value(before), value(after))
+        }
+        data::PassiveEffect::Modifier(filter, change) => {
+            // Engine descriptions consistently start with the numeric bonus, followed by its label.
+            let a = change.scaled(before).description();
+            let b = change.scaled(after).description();
+            let (old, _) = a.split_once(' ').unwrap_or((&a, ""));
+            let (new, label) = b.split_once(' ').unwrap_or((&b, ""));
+            let mut label = label.to_owned();
+            if let Some(first) = label.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            let scope = filter.all.labels();
+            let line = format!("{label} {old} » {new}");
+            if scope.is_empty() {
+                line
+            } else {
+                format!("{line}\n{scope}")
+            }
+        }
+    }
+}
+
+pub(super) fn passive_effect_text(p: &PassiveDef, rank: u64) -> String {
     match p.effect {
         data::PassiveEffect::Stat(stat, amount) => format!(
             "{}: {}",
@@ -2692,7 +3065,7 @@ fn spawn_tooltip(
     (root.id(), body)
 }
 
-/// Hovering a build icon raises its `GameTooltip` under the icon, every number from the current
+/// Hovering a build icon anchors its tooltip above bottom-screen icons, with values from the current
 /// rank and stats, and what the next rank brings.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn icon_tooltip(
@@ -2710,7 +3083,8 @@ pub(super) fn icon_tooltip(
         &ComputedNode,
         &bevy::ui::UiGlobalTransform,
     )>,
-    mut frames: Query<(&mut Node, &mut Visibility), With<GameTooltip>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut frames: Query<(&mut Node, &mut Visibility, &mut UiTransform), With<GameTooltip>>,
     mut built: Local<Option<(Entity, Entity)>>,
     mut shown: Local<Option<(TipFor, Vec<TipLine>)>>,
 ) {
@@ -2723,7 +3097,7 @@ pub(super) fn icon_tooltip(
         ));
         return;
     };
-    let Ok((mut node, mut vis)) = frames.get_mut(frame) else {
+    let Ok((mut node, mut vis, mut transform)) = frames.get_mut(frame) else {
         *built = None;
         *shown = None;
         return;
@@ -2741,10 +3115,20 @@ pub(super) fn icon_tooltip(
     };
     // Physical pixels to the 768-unit canvas the `Val`s are on.
     let inv = computed.inverse_scale_factor;
+    let height = windows
+        .single()
+        .map_or(768.0, |window| window.physical_height() as f32 * inv);
+    let above = matches!(tip, TipFor::Mobility) || at.translation.y * inv > height * 0.5;
     let (left, top) = (
         Val::Px((at.translation.x - computed.size().x / 2.0) * inv),
-        Val::Px((at.translation.y + computed.size().y / 2.0) * inv + 4.0),
+        Val::Px(if above {
+            (at.translation.y - computed.size().y / 2.0) * inv - 8.0
+        } else {
+            (at.translation.y + computed.size().y / 2.0) * inv + 4.0
+        }),
     );
+    // A percentage translation uses the tooltip's own height, including wrapped live text.
+    transform.translation = Val2::percent(0.0, if above { -100.0 } else { 0.0 });
     if node.left != left || node.top != top {
         node.left = left;
         node.top = top;
@@ -2873,5 +3257,67 @@ pub(super) fn show_panels(
     }
     for root in &mut roots.p4() {
         set(root, p == Phase::GameOver);
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    #[test]
+    fn banish_removes_every_rarity_and_resets_next_run() {
+        let mut run = Run {
+            pending_levels: 1,
+            ..default()
+        };
+        let passive = data::PASSIVES
+            .iter()
+            .find(|p| {
+                !super::super::passives::legendary(p) && super::super::passives::eligible(p, &run)
+            })
+            .unwrap();
+        let mut offer = Offer {
+            choices: vec![Choice::NumericPassive(passive, 3)],
+            ..default()
+        };
+        pick(
+            5,
+            &mut run,
+            &mut offer,
+            &mut Rng(42),
+            &mut NextState::Unchanged,
+        );
+        assert_eq!(run.draft_uses, [5, 4, 5]);
+        assert_eq!(run.pending_levels, 1);
+        assert!(!choice_pool(&run)
+            .iter()
+            .any(|c| c.card_key(&run) == (false, passive.key)));
+        assert!(Run::default().banished_cards.is_empty());
+        assert_eq!(Run::default().draft_uses, [5; 3]);
+    }
+
+    #[test]
+    fn rerolls_and_skips_are_limited_and_skip_grants_no_reward() {
+        let mut run = Run {
+            pending_levels: 6,
+            ..default()
+        };
+        let mut offer = Offer {
+            choices: vec![Choice::Heal],
+            ..default()
+        };
+        let mut rng = Rng(42);
+        let mut next = NextState::Unchanged;
+        for _ in 0..6 {
+            pick(3, &mut run, &mut offer, &mut rng, &mut next);
+        }
+        assert_eq!(run.draft_uses, [0, 5, 5]);
+        assert_eq!(run.pending_levels, 6);
+        for _ in 0..6 {
+            pick(4, &mut run, &mut offer, &mut rng, &mut next);
+        }
+        assert_eq!(run.draft_uses, [0, 5, 0]);
+        assert_eq!(run.pending_levels, 1);
+        assert!(run.abilities.is_empty() && run.passives.is_empty());
     }
 }

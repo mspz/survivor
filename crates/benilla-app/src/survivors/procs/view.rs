@@ -163,7 +163,7 @@ pub(in crate::survivors) fn views(run: &Run) -> Vec<ViewSpell> {
                         1,
                         "Healing per second, per 100 ally maximum health",
                     ),
-                    "proc_ally_buff" => (0.15, 0., 0., 12., 1, "Damage and attack speed bonus"),
+                    "proc_ally_buff" => (0., 0., 0., 12., 1, ""),
                     "proc_holy_heal" => (0., 0., 0., 12., 1, ""),
                     _ => (0., 0., 0., 0., 1, ""),
                 };
@@ -171,6 +171,9 @@ pub(in crate::survivors) fn views(run: &Run) -> Vec<ViewSpell> {
                 lines.push(basis.to_owned());
             }
             let p = super::resolve(run, def.key, damage, dot, duration, radius, count);
+            if let Some(buff) = crate::survivors::healer_buffs::aura_tooltip(run, def.key) {
+                lines.push(buff);
+            }
             if def.key == "proc_holy_heal" {
                 for (enabled, amount, label) in [
                     (

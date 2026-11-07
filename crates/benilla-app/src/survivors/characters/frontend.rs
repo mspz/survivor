@@ -5,11 +5,71 @@ use crate::glue::{
     widgets::{Hilight, LockHighlight},
 };
 use bevy::ui_render::ui_material::MaterialNode;
+use bevy::window::PrimaryWindow;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn creation_spell_tooltip_shows_effects_and_disappears_after_hover_or_menu_exit() {
+        let mut app = App::new();
+        app.insert_resource(State::new(Phase::Menu))
+            .insert_resource(Selection {
+                class: Some(4),
+                ..default()
+            })
+            .insert_resource(hud::HudFont(Handle::default()))
+            .add_systems(Update, spell_hover);
+        let icon = app
+            .world_mut()
+            .spawn((
+                Interaction::Hovered,
+                CreationSpell(
+                    "Power Word: Shield".into(),
+                    data::ability("power_word_shield"),
+                ),
+            ))
+            .id();
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(
+            world
+                .query_filtered::<Entity, With<CreationTooltip>>()
+                .iter(world)
+                .count(),
+            1
+        );
+        assert!(world
+            .query::<&Text>()
+            .iter(world)
+            .any(|t| t.0.contains("Absorbs")));
+        assert!(world
+            .query::<&Text>()
+            .iter(world)
+            .any(|t| t.0.contains("Recharge")));
+        world.entity_mut(icon).insert(Interaction::None);
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(
+            world
+                .query_filtered::<Entity, With<CreationTooltip>>()
+                .iter(world)
+                .count(),
+            0
+        );
+        world.entity_mut(icon).insert(Interaction::Hovered);
+        world.insert_resource(State::new(Phase::Hub));
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(
+            world
+                .query_filtered::<Entity, With<CreationTooltip>>()
+                .iter(world)
+                .count(),
+            0
+        );
+    }
 
     #[test]
     fn textured_menu_buttons_keep_their_actions_without_plain_background_components() {
@@ -107,12 +167,7 @@ pub(super) fn menu(
                         20.0,
                         hud::GOLD_TONE,
                     ));
-                    ui.spawn(label(
-                        font,
-                        "Stormwind City",
-                        14.0,
-                        Color::srgb(0.7, 0.7, 0.7),
-                    ));
+                    ui.spawn(label(font, "Hub", 14.0, Color::srgb(0.7, 0.7, 0.7)));
                     if roster.creating {
                         ui.spawn(label(
                             font,
@@ -216,7 +271,7 @@ pub(super) fn menu(
                                     ));
                                     row.spawn(label(
                                         font,
-                                        "Stormwind City",
+                                        "Hub",
                                         13.0,
                                         Color::srgb(0.65, 0.65, 0.65),
                                     ));
@@ -243,42 +298,115 @@ pub(super) fn menu(
                     GlobalZIndex(455),
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(viewport.x * 0.5 - 140.0),
+                        left: Val::Px(viewport.x * 0.5 - 152.0),
                         bottom: Val::Px(20.0),
-                        width: Val::Px(280.0),
+                        width: Val::Px(304.0),
                         align_items: AlignItems::Center,
                         flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(10.0),
+                        row_gap: Val::Px(8.0),
                         ..default()
                     },
                 ))
                 .with_children(|ui| {
                     ui.spawn((
-                        label(font, &character.name, 26.0, hud::GOLD_TONE),
-                        TextShadow::default(),
+                        label(font, &character.name, 24.0, hud::GOLD_TONE),
+                        TextShadow {
+                            offset: Vec2::new(1.0, 2.0),
+                            color: Color::BLACK,
+                        },
                     ));
-                    skin::button_sized(
-                        ui,
-                        font,
-                        "Entrer dans le monde",
-                        Click::Enter,
-                        240.0,
-                        44.0,
-                        19.0,
-                        false,
-                    );
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        skin::button(ui, font, "Créer un salon", Click::HostLobby, 240.0);
-                        skin::button(ui, font, "Rejoindre un salon", Click::JoinLobby, 240.0);
-                    }
                     ui.spawn(Node {
-                        column_gap: Val::Px(8.0),
+                        width: Val::Percent(100.0),
+                        padding: UiRect::all(Val::Px(16.0)),
+                        align_items: AlignItems::Center,
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(8.0),
+                        ..default()
+                    })
+                    .with_children(|actions| {
+                        skin::backdrop(actions);
+                        skin::button_sized(
+                            actions,
+                            font,
+                            "Entrer dans le monde",
+                            Click::Enter,
+                            272.0,
+                            42.0,
+                            17.0,
+                            false,
+                        );
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            actions.spawn((
+                                BackgroundColor(hud::GOLD_TONE.with_alpha(0.22)),
+                                Node {
+                                    width: Val::Percent(90.0),
+                                    height: Val::Px(1.0),
+                                    margin: UiRect::vertical(Val::Px(3.0)),
+                                    ..default()
+                                },
+                            ));
+                            actions.spawn(label(
+                                font,
+                                "MULTIJOUEUR",
+                                11.0,
+                                Color::srgb(0.7, 0.64, 0.48),
+                            ));
+                            actions
+                                .spawn(Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(6.0),
+                                    ..default()
+                                })
+                                .with_children(|lobby| {
+                                    skin::button_sized(
+                                        lobby,
+                                        font,
+                                        "Créer un salon",
+                                        Click::HostLobby,
+                                        272.0,
+                                        34.0,
+                                        14.0,
+                                        false,
+                                    );
+                                    skin::button_sized(
+                                        lobby,
+                                        font,
+                                        "Rejoindre un salon",
+                                        Click::JoinLobby,
+                                        272.0,
+                                        34.0,
+                                        14.0,
+                                        false,
+                                    );
+                                });
+                        }
+                    });
+                    ui.spawn(Node {
+                        column_gap: Val::Px(10.0),
                         ..default()
                     })
                     .with_children(|arrows| {
-                        skin::button(arrows, font, "<", Click::Rotate(-0.35), 32.0);
-                        skin::button(arrows, font, ">", Click::Rotate(0.35), 32.0);
+                        skin::button_sized(
+                            arrows,
+                            font,
+                            "<",
+                            Click::Rotate(-0.35),
+                            38.0,
+                            28.0,
+                            16.0,
+                            false,
+                        );
+                        skin::button_sized(
+                            arrows,
+                            font,
+                            ">",
+                            Click::Rotate(0.35),
+                            38.0,
+                            28.0,
+                            16.0,
+                            false,
+                        );
                     });
                 });
             if !roster.blocked {
@@ -300,23 +428,122 @@ pub(super) fn menu(
 }
 
 #[derive(Component)]
-pub(super) struct CreationSpell(String);
+pub(super) struct CreationSpell(String, &'static data::AbilityDef);
 #[derive(Component)]
 pub(super) struct SpellHover;
+#[derive(Component)]
+pub(super) struct CreationTooltip;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spell_hover(
+    mut commands: Commands,
+    font: Option<Res<hud::HudFont>>,
+    phase: Res<State<Phase>>,
+    selection: Res<Selection>,
+    spells: Option<Res<crate::ui_action::Spells>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    scale: Option<Res<UiScale>>,
     icons: Query<(&Interaction, &CreationSpell)>,
     mut captions: Query<&mut Text, With<SpellHover>>,
+    roots: Query<Entity, With<CreationTooltip>>,
+    mut cached: Local<Option<(usize, &'static str, Vec<String>)>>,
 ) {
-    let name = icons
+    let hovered = icons
         .iter()
         .find(|(interaction, _)| **interaction != Interaction::None)
-        .map_or("", |(_, spell)| spell.0.as_str());
+        .map(|(_, spell)| spell);
+    let name = hovered.map_or("", |spell| spell.0.as_str());
     for mut caption in &mut captions {
         if caption.0 != name {
             caption.0 = name.to_owned();
         }
     }
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
+    if *phase.get() != Phase::Menu {
+        *cached = None;
+        return;
+    }
+    let (Some(spell), Some(font), Some(class)) = (hovered, font, selection.class) else {
+        *cached = None;
+        return;
+    };
+    let Some(class_def) = data::CLASSES.get(class) else {
+        return;
+    };
+    if cached
+        .as_ref()
+        .is_none_or(|(c, key, _)| *c != class || *key != spell.1.key)
+    {
+        let reference = Run {
+            class: class_def,
+            ..default()
+        };
+        let p = reference.resolve_spell(spell.1, 1);
+        let card = hud::describe_card(
+            hud::Choice::NewAbility(spell.1),
+            &reference,
+            spells.as_deref(),
+        );
+        *cached = Some((
+            class,
+            spell.1.key,
+            vec![
+                class_def.name.into(),
+                p.tags.labels(),
+                card.desc,
+                format!("Recharge : {:.1} s · Rang 1", p.cooldown),
+            ],
+        ));
+    }
+    let lines = &cached.as_ref().unwrap().2;
+    let inv = scale.as_deref().map_or(1.0, |s| s.0).max(0.01);
+    let (viewport, cursor) =
+        windows
+            .single()
+            .map_or((Vec2::new(1280.0, 768.0), Vec2::new(850.0, 250.0)), |w| {
+                (
+                    Vec2::new(w.width(), w.height()) / inv,
+                    w.cursor_position().unwrap_or_default() / inv,
+                )
+            });
+    let height = 55.0
+        + lines
+            .iter()
+            .map(|l| (l.chars().count() / 40 + 1 + l.matches('\n').count()) as f32 * 18.0)
+            .sum::<f32>();
+    let x = if cursor.x + 360.0 > viewport.x {
+        cursor.x - 350.0
+    } else {
+        cursor.x + 16.0
+    };
+    commands
+        .spawn((
+            CreationTooltip,
+            GlobalZIndex(800),
+            bevy::ui::FocusPolicy::Pass,
+            BackgroundColor(Color::srgb(0.02, 0.025, 0.04)),
+            BorderColor::all(hud::GOLD_TONE),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(x.max(4.0)),
+                top: Val::Px((cursor.y + 16.0).min((viewport.y - height - 8.0).max(4.0))),
+                width: Val::Px(330.0),
+                max_height: Val::Vh(90.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(7.0),
+                ..default()
+            },
+        ))
+        .with_children(|tip| {
+            tip.spawn(label(&font.0, name, 18.0, hud::GOLD_TONE));
+            for line in lines {
+                tip.spawn(label(&font.0, line, 14.0, Color::WHITE));
+            }
+        });
 }
 
 fn spell_window(
@@ -370,7 +597,7 @@ fn spell_window(
                         .and_then(|display| display.icon.as_deref())
                         .unwrap_or("Interface\\Icons\\INV_Misc_QuestionMark");
                     grid.spawn((
-                        CreationSpell(name),
+                        CreationSpell(name, def),
                         Button,
                         Node {
                             width: Val::Px(52.0),

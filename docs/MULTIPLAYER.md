@@ -77,9 +77,47 @@ ancien clic ne peut pas appliquer une deuxième récompense.
 
 Les ennemis ciblent le joueur vivant le plus proche. La mort de l'hôte ne termine
 pas la partie tant qu'un invité est vivant. Une nouvelle expédition réinitialise
-les personnages de la session. Les pauses et les changements de carte décidés
-par l'hôte concernent tout le groupe ; un invité ne peut pas mettre le serveur
-en pause en ouvrant son interface.
+les personnages de la session. Les changements de carte décidés par l'hôte
+concernent tout le groupe. En multijoueur, aucun joueur ne peut mettre la partie
+en pause : menus, inventaire, talents et choix de récompense laissent le combat
+continuer. Le solo conserve sa pause habituelle.
+
+Un personnage ayant des récompenses de niveau à choisir est invulnérable jusqu'à
+la validation du dernier choix. Cette protection est individuelle, gérée par
+l'hôte pour chaque joueur, et ne consomme ni bouclier ni charge de blocage.
+Les monstres, boss compris, ignorent également ce personnage et ses provocations
+pendant ce choix. Ils ciblent un autre joueur disponible ou restent sur place.
+Pendant ce temps, ce personnage ne lance plus de sorts et ses dégâts sont neutralisés,
+y compris ceux des effets périodiques déjà posés. Les autres joueurs restent actifs.
+
+L'XP ramassée est partagée avec tous les joueurs connectés, sans division et sans
+limite de distance, y compris les personnages morts en attente de résurrection.
+Chaque personnage conserve ses bonus personnels d'XP. Les gemmes d'XP restent
+fixes et sont ramassées immédiatement à portée d'aimant ; leurs animations et
+particules sont désactivées sur l'hôte et les invités.
+Les viandes et les aimants sont également ramassés immédiatement à portée,
+sans trajet d'attraction vers le personnage.
+
+Le compteur de combat propose Damage, Healing done, Damage taken et Party DPS.
+Les soins excluent le surplus et restent attribués au soigneur, y compris les soins
+sur la durée. Les dégâts reçus comptent les PV effectivement perdus après absorption.
+Party DPS affiche chaque joueur avec son DPS sur cinq secondes et son total de dégâts.
+Les barres et leur classement suivent les totaux cumulés ; les taux DPS/HPS/DTPS
+restent calculés sur cinq secondes. Le bouton Reset efface les compteurs de tous
+les onglets pour le groupe entier, sans modifier les statistiques de progression
+de l'expédition. Un invité peut également demander cette remise à zéro à l'hôte.
+Les barres de vie du groupe sont à gauche ; cliquer dessus sélectionne le personnage.
+Le bandeau de connexion est compact, centré en bas en ville, et masqué en expédition.
+Les apparitions de monstres sont réparties autour des joueurs vivants, hôte et
+invités. Les vagues en cercle sont réparties entre eux et les boss alternent
+leur point d'apparition. Le budget global et le plafond de monstres restent communs.
+
+Chaque joueur ouvre et modifie ses propres options. Les mises à jour de l'hôte
+ne referment pas ses menus et ne remplacent pas ses préférences. Les nombres
+flottants sont réservés à leur propriétaire : chaque joueur voit ses propres
+dégâts, y compris ses DoT, ainsi que ses soins et les coups qu'il reçoit. Les
+DoT de plusieurs joueurs ne sont jamais additionnés dans un même nombre.
+Chacun conserve ses propres filtres, indépendamment de ceux de l'hôte.
 
 Les sauvegardes appartiennent aux clients, comme en solo. L'invité transmet son
 équipement, ses rolls, ses talents, son XP de personnage et son apparence à la
@@ -92,12 +130,15 @@ talents ou de la provenance des objets : la session est prévue entre amis.
 à l'hôte. À réception, les statistiques du personnage concerné sont recalculées,
 sans redémarrer la partie ni ses cooldowns en cours. Les anciens bonus sont
 remplacés et les PV courants sont plafonnés si le maximum diminue. Les champs de
-vie répliqués sont actualisés dès la réception, même pendant une pause de l'hôte.
+vie répliqués sont actualisés dès la réception, même lorsque l'hôte ouvre un menu.
 
 L'XP de personnage, les victoires de zone et les objets gagnés en coopération sont
 enregistrés sur le client dans les mêmes fichiers `benilla-config/characters/`
-qu'en solo. Chaque invité reçoit ses propres rolls de butin de boss, déposés dans
-son inventaire local. Les reçus cumulés d'XP et les identifiants de butin évitent
+qu'en solo. L'hôte ou un invité vivant peut ramasser un coffre à moins de trois
+yards. Chaque coffre ramassé donne une pièce à chaque joueur connecté, avec un
+roll adapté à sa classe et à sa découverte magique ; les invités la reçoivent
+dans leur inventaire local. Le butin est attribué à l'ouverture du coffre,
+sans nouveau tirage de chance de drop. Les reçus cumulés d'XP et les identifiants de butin évitent
 de créditer deux fois un paquet reçu à nouveau. Le client n'accuse réception d'un
 objet qu'après son enregistrement ; l'hôte le conserve dans ses messages en
 attente jusque-là. Les sauvegardes locales restent utilisables en solo et lors
@@ -109,6 +150,23 @@ migration d'hôte ni de reprise automatique. Le menu permet de rejoindre
 à nouveau, avec un nouvel identifiant, une nouvelle partie et sa sauvegarde locale.
 Changer de personnage termine la connexion afin de ne pas mélanger les fichiers
 de deux personnages.
+
+## Coffre partagé à Hurlevent
+
+Le coffre se trouve près du point d'arrivée à Hurlevent. À moins de cinq yards,
+le bouton **Ouvrir le coffre partagé** apparaît. Cliquer sur un objet du sac le
+dépose ; cliquer sur un objet du coffre le récupère. Le survol affiche ses
+caractéristiques. Les objets équipés doivent d'abord être retirés.
+
+Tous les membres du salon utilisent le coffre de l'hôte. Son contenu est conservé
+dans `benilla-config/shared-chest.toml` chez l'hôte, entre les sessions. Le solo
+permet également de déplacer des objets entre ses personnages.
+
+Les transferts gardent les statistiques et apparences des objets. Les dépôts en
+attente restent dans la sauvegarde du déposant ; les retraits sont réservés à
+leur destinataire jusqu'à leur sauvegarde dans son inventaire. Une reconnexion
+au même hôte avec le même personnage reprend les transferts interrompus. Un
+transfert en attente ne peut pas être rejoué dans le coffre d'un autre hôte.
 
 ## Transport et rendu
 
@@ -126,10 +184,14 @@ orientations, états de mouvement et champs de jeu de toutes les unités. Les
 événements de sorts, impacts et attaques sont également transmis. Le client
 reconstruit ses propres entités et utilise le pipeline existant de rendu et
 d'animation ; aucun identifiant d'entité Bevy ne traverse le réseau. Les positions
-sont interpolées sur 100 ms, les téléportations sont appliquées directement.
+sont interpolées sur 100 ms pour les autres unités. Le déplacement et le saut
+du personnage local sont prédits à chaque frame, avec les mêmes règles que
+l'hôte et la vitesse qu'il transmet. À réception d'un état, les mouvements non
+acquittés sont rejoués et les petites corrections sont lissées. Les téléportations,
+changements de zone et changements d'état de mort réinitialisent cette prédiction.
 
-Cette première version utilise des états complets, sans prédiction locale ni
-compression/différentiel. La latence se ressent donc sur le personnage invité.
+Le combat et les compétences de mobilité restent validés par l'hôte. Les états
+complets ne sont pas encore compressés ni envoyés sous forme différentielle.
 Le transport navigateur et le serveur dédié sans renderer ne font pas partie de
 ce mode natif hébergé par un joueur.
 
@@ -142,7 +204,8 @@ cargo test -p benilla-app --lib survivors::multiplayer
 
 Les tests couvrent le protocole, le transport TCP sur boucle locale, deux invités
 déplacés indépendamment par les règles existantes, la reconstruction des avatars,
-la déconnexion et le rejet des anciennes offres de récompense. Ils ne remplacent
+la prédiction sans nouvel état réseau, les menus sans pause, les filtres de
+nombres de combat, la déconnexion et le rejet des anciennes offres de récompense. Ils ne remplacent
 pas une vérification visuelle avec les données du jeu et plusieurs fenêtres.
 
 ## Unit-frame status

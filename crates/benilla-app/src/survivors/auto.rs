@@ -203,8 +203,12 @@ pub(super) fn drive(
                     }
                 }
                 if auto.late {
-                    for o in &mut run.abilities {
-                        o.level = data::MAX_ABILITY_LEVEL;
+                    for (i, o) in run.abilities.iter_mut().enumerate() {
+                        o.level = match i {
+                            0 => 6,
+                            1 | 2 => 5,
+                            _ => 3,
+                        };
                     }
                     run.elapsed = data::VICTORY_SECS * 2.0 / 3.0;
                     run.bosses = 3;

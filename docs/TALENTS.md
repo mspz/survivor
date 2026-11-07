@@ -104,7 +104,11 @@ Les degats periodiques, copies et propagations conservent leur calcul initial ;
 ils ne reappliquent pas les multiplicateurs a chaque tick ou rebond.
 Les choix de cartes tiennent aussi compte des sorts internes appris.
 Les effets permanents n'expirent pas et les bonus de duree concernent les effets
-temporaires. Les chaines de procs de talent ne peuvent pas boucler sur un jalon deja visite.
+temporaires. Aucun proc ne peut declencher un autre proc, quelle que soit sa source
+(talent, objet, legendaire ou renvoi de degats), y compris via ses DoT ou ses kills.
+Chaque proc possede un delai minimal de 0,5 seconde avant CDR ; les delais deja
+plus longs sont conserves et beneficient aussi de la CDR. Les procs de zone issus
+du meme sort parent ne peuvent toucher chaque ennemi qu'une fois par effet.
 Les explosions de mort ont une base plafonnee a 300 avant les bonus compatibles.
 La portee de base des soins et buffs de groupe est de 12 metres avant les bonus de zone.
 
