@@ -137,7 +137,7 @@ mod tests {
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_plugins(boss_spells::plugin);
+    app.add_plugins((boss_spells::plugin, super::enemy_visuals::plugin));
     app.add_message::<units::CombatNumber>()
         .init_resource::<session::LocalSession>()
         .add_plugins(grade::plugin)
@@ -159,6 +159,7 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<hero::AimPoint>()
         .init_resource::<hud::Offer>()
         .init_resource::<cards::PendingPick>()
+        .init_resource::<cards::BanishMode>()
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<hud::SweepUiMaterial>::default())
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<fill::FillMaterial>::default())
         .add_systems(Startup, hud::setup_hud)
@@ -189,6 +190,7 @@ pub(super) fn plugin(app: &mut App) {
                 menu::menu_clicks,
                 menu::refresh_menu_ui.before(crate::glue::GlueVisuals),
                 cards::deal_cards,
+                cards::draft_controls,
                 cards::choose_card,
                 cards::animate_cards,
                 hud::refresh_hud,

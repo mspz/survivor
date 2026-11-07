@@ -1502,6 +1502,97 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    fn elites_reduce_direct_and_periodic_damage_after_zone_and_elemental_defenses() {
+        let (mut world, targets) = legendary_world("fireball", 6, &[3.0]);
+        let config = include_str!("../../../../config/survivors-expeditions.toml");
+        let mut config: toml::Value = toml::from_str(config).unwrap();
+        for key in ["monster_resistance_per_level", "boss_resistance_per_level"] {
+            config[key]["fire"] = toml::Value::Float(10.0);
+        }
+        config["zones"].as_array_mut().unwrap()[5]["damage_reduction"] = toml::Value::Float(0.5);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.equipped.clear();
+            run.expeditions =
+                super::super::expedition_config::Config::parse(&toml::to_string(&config).unwrap())
+                    .unwrap();
+            run.expedition_map = data::CAMPAIGN[5];
+        }
+        world.entity_mut(targets[0]).insert(enemies::Rank::Elite);
+        let level = world.get::<Enemy>(targets[0]).unwrap().def.level;
+        let mut hit = Hit::direct("fireball", targets[0], 100.0, false);
+        hit.tags = Some(engine::Tags::FIRE | engine::Tags::DAMAGE);
+        world.write_message(hit);
+        world
+            .get_mut::<Enemy>(targets[0])
+            .unwrap()
+            .dots
+            .push(enemies::Dot {
+                item_source: None,
+                meta: Default::default(),
+                origin: Origin::Skill,
+                owner: None,
+                skill: "fireball",
+                meter_source: None,
+                tags: Some(engine::Tags::FIRE | engine::Tags::DOT | engine::Tags::DAMAGE),
+                dps: 100.0,
+                left: 5.0,
+                tick: 0.0,
+            });
+        world.run_system_once(apply_hits).unwrap();
+        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5 * 0.8;
+        let actual = 1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp;
+        assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn protection_reduces_direct_and_periodic_damage_multiplicatively_with_elite_defenses() {
+        let (mut world, targets) = legendary_world("fireball", 6, &[3.0]);
+        let config = include_str!("../../../../config/survivors-expeditions.toml");
+        let mut config: toml::Value = toml::from_str(config).unwrap();
+        for key in ["monster_resistance_per_level", "boss_resistance_per_level"] {
+            config[key]["fire"] = toml::Value::Float(10.0);
+        }
+        config["zones"].as_array_mut().unwrap()[5]["damage_reduction"] = toml::Value::Float(0.5);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.equipped.clear();
+            run.expeditions =
+                super::super::expedition_config::Config::parse(&toml::to_string(&config).unwrap())
+                    .unwrap();
+            run.expedition_map = data::CAMPAIGN[5];
+        }
+        world.entity_mut(targets[0]).insert((
+            enemies::Rank::Elite,
+            super::super::special_mobs::Protection(0.25),
+        ));
+        let level = world.get::<Enemy>(targets[0]).unwrap().def.level;
+        let mut hit = Hit::direct("fireball", targets[0], 100.0, false);
+        hit.tags = Some(engine::Tags::FIRE | engine::Tags::DAMAGE);
+        world.write_message(hit);
+        world
+            .get_mut::<Enemy>(targets[0])
+            .unwrap()
+            .dots
+            .push(enemies::Dot {
+                item_source: None,
+                meta: Default::default(),
+                origin: Origin::Skill,
+                owner: None,
+                skill: "fireball",
+                meter_source: None,
+                tags: Some(engine::Tags::FIRE | engine::Tags::DOT | engine::Tags::DAMAGE),
+                dps: 100.0,
+                left: 5.0,
+                tick: 0.0,
+            });
+        world.run_system_once(apply_hits).unwrap();
+        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5 * 0.8 * 0.75;
+        let actual = 1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp;
+        assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+    }
+
+    #[test]
     fn legendary_projectile_keeps_its_physical_school_after_unequipping_conversion() {
         let (mut world, targets) = legendary_world("fireball", 96, &[3.0]);
         world.run_system_once(cast_abilities).unwrap();
@@ -3699,6 +3790,8 @@ pub(super) fn tick_areas(
 /// Land every hit due: damage and its number, the over-time part, crowd control, the marks, and
 /// death with its loot.
 pub(super) fn apply_hits(
+    ranks: Query<&super::enemies::Rank>,
+    protection: Query<&super::special_mobs::Protection>,
     mut commands: Commands,
     time: Res<Time>,
     mut run: ResMut<Run>,
@@ -4085,8 +4178,19 @@ pub(super) fn apply_hits(
         let resistance =
             expedition_defenses.resistances(en.def.level, en.boss, super::training::actor(en.def));
         let raw = raw * (1.0 - resistance.reduction(tags));
+        let protection_multiplier = 1.0 - protection.get(e).map_or(0.0, |p| p.0);
+        let elite_multiplier = if ranks
+            .get(e)
+            .is_ok_and(|r| *r == super::enemies::Rank::Elite)
+        {
+            1.0 - expedition_defenses.elites.damage_reduction
+        } else {
+            1.0
+        };
         let dmg = engine::damage_on_target(raw, en.hp, en.max_hp, en.boss, h.effect)
-            * (1.0 - final_reduction);
+            * (1.0 - final_reduction)
+            * elite_multiplier
+            * protection_multiplier;
         if dmg > 0.0 {
             let immortal = super::training::dummy(&en);
             let effective = if immortal {
@@ -4354,6 +4458,15 @@ pub(super) fn apply_hits(
             boss,
             super::training::actor(en.def),
         );
+        let protection_multiplier = 1.0 - protection.get(e).map_or(0.0, |p| p.0);
+        let elite_multiplier = if ranks
+            .get(e)
+            .is_ok_and(|r| *r == super::enemies::Rank::Elite)
+        {
+            1.0 - expedition_defenses.elites.damage_reduction
+        } else {
+            1.0
+        };
         for d in &mut en.dots {
             d.left -= dt;
             d.tick -= dt;
@@ -4401,7 +4514,9 @@ pub(super) fn apply_hits(
                             )
                         })
                         * (1.0 - resistance.reduction(tags))
-                        * (1.0 - final_reduction);
+                        * (1.0 - final_reduction)
+                        * elite_multiplier
+                        * protection_multiplier;
                 dealt += amount;
                 *periodic_numbers.entry(d.owner).or_default() += amount;
                 let effective = if immortal {

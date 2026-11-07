@@ -44,19 +44,55 @@ pub(super) struct Enemy {
     pub dead: bool,
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Rank {
     Normal,
     Elite,
+    Sprinter,
+    Explosive,
+    Healer,
+    Protector,
     Boss,
 }
-const ELITE_CHANCE: f32 = 0.02;
-fn roll_rank(roll: f32) -> Rank {
-    if roll < ELITE_CHANCE {
-        Rank::Elite
-    } else {
-        Rank::Normal
+fn roll_rank(roll: f32, config: &super::expedition_config::Config, map: usize) -> Rank {
+    let zone = data::CAMPAIGN
+        .iter()
+        .position(|&m| m == map)
+        .map_or(0, |i| i + 1);
+    let mut threshold = 0.0;
+    for (rank, chance, first_zone) in [
+        (Rank::Elite, config.elites.chance, config.elites.first_zone),
+        (
+            Rank::Sprinter,
+            config.sprinters.chance,
+            config.sprinters.first_zone,
+        ),
+        (
+            Rank::Explosive,
+            config.explosives.chance,
+            config.explosives.first_zone,
+        ),
+        (
+            Rank::Healer,
+            config.healers.chance,
+            config.healers.first_zone,
+        ),
+        (
+            Rank::Protector,
+            config.protectors.chance,
+            config.protectors.first_zone,
+        ),
+    ] {
+        if zone < first_zone {
+            continue;
+        }
+        // Locked variants leave their probability to normal monsters, not to other variants.
+        threshold += chance;
+        if roll < threshold {
+            return rank;
+        }
     }
+    Rank::Normal
 }
 
 #[derive(Component)]
@@ -188,7 +224,7 @@ pub(super) fn spawn_mob(
     let rank = if super::training::actor(def) {
         Rank::Normal
     } else {
-        roll_rank(rng.f32())
+        roll_rank(rng.f32(), &run.expeditions, run.expedition_map)
     };
     spawn_rank(commands, run, def, pos, hero, rank)
 }
@@ -216,7 +252,7 @@ fn spawn_rank(
     let size_multiplier = if boss {
         2.0
     } else if elite {
-        1.25
+        run.expeditions.elites.size_multiplier
     } else {
         1.0
     };
@@ -241,17 +277,29 @@ fn spawn_rank(
     } else {
         run.expeditions.party_health(run.expedition_players)
     };
-    let hp = base_health * scale * party * if elite { 6.0 } else { 1.0 };
+    let hp = base_health
+        * scale
+        * party
+        * if elite {
+            run.expeditions.elites.health_multiplier
+        } else {
+            1.0
+        };
     commands.entity(e).insert((
         Enemy {
             def,
             hp,
             max_hp: hp,
-            speed: def.speed,
+            speed: def.speed
+                * if rank == Rank::Sprinter {
+                    run.expeditions.sprinters.speed_multiplier
+                } else {
+                    1.0
+                },
             damage: base_damage * scale,
             radius: radius_for(def) * size_multiplier,
             xp: if elite {
-                def.xp.saturating_mul(3)
+                def.xp.saturating_mul(run.expeditions.elites.xp_multiplier)
             } else {
                 def.xp
             },
@@ -274,6 +322,18 @@ fn spawn_rank(
         commands
             .entity(e)
             .insert(super::unit_frames::Label(format!("{} · Élite", def.name)));
+    }
+    let special_label = match rank {
+        Rank::Explosive => Some("Explosif"),
+        Rank::Healer => Some("Soigneur"),
+        Rank::Protector => Some("Protecteur"),
+        _ => None,
+    };
+    if let Some(label) = special_label {
+        commands.entity(e).insert((
+            super::special_mobs::Special::default(),
+            super::unit_frames::Label(format!("{} - {label}", def.name)),
+        ));
     }
     if !training {
         commands.entity(e).insert(ExpeditionScaling {
@@ -980,18 +1040,133 @@ mod elite_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     #[test]
+    fn variants_unlock_across_the_campaign_and_accumulate_without_changing_their_chances() {
+        let config = super::super::expedition_config::Config::default();
+        let variants = [
+            (Rank::Elite, 2, 200),
+            (Rank::Sprinter, 3, 300),
+            (Rank::Explosive, 4, 300),
+            (Rank::Healer, 5, 200),
+            (Rank::Protector, 6, 200),
+        ];
+        for (index, &map) in data::CAMPAIGN.iter().enumerate() {
+            let mut special_total = 0;
+            for &(rank, first_zone, frequency) in &variants {
+                let expected = if index + 1 >= first_zone {
+                    frequency
+                } else {
+                    0
+                };
+                let actual = (0..10_000)
+                    .filter(|i| roll_rank((*i as f32 + 0.5) / 10_000.0, &config, map) == rank)
+                    .count();
+                assert_eq!(actual, expected, "zone {}: {rank:?}", index + 1);
+                special_total += actual;
+            }
+            let normals = (0..10_000)
+                .filter(|i| roll_rank((*i as f32 + 0.5) / 10_000.0, &config, map) == Rank::Normal)
+                .count();
+            assert_eq!(normals + special_total, 10_000);
+        }
+    }
+
+    #[test]
+    fn spawning_uses_the_current_expedition_and_configured_introduction() {
+        let mut world = World::new();
+        let mut run = Run::default();
+        run.expeditions.elites.chance = 1.0;
+        run.expeditions.sprinters.chance = 0.0;
+        run.expeditions.explosives.chance = 0.0;
+        run.expeditions.healers.chance = 0.0;
+        run.expeditions.protectors.chance = 0.0;
+        run.expeditions.elites.first_zone = 4;
+        world.insert_resource(run);
+        world.insert_resource(Rng(42));
+        for (zone, expected) in [
+            (0, Rank::Normal),
+            (2, Rank::Normal),
+            (3, Rank::Elite),
+            (5, Rank::Elite),
+        ] {
+            world.resource_mut::<Run>().expedition_map = data::CAMPAIGN[zone];
+            let entity = world
+                .run_system_once(
+                    |mut commands: Commands, mut run: ResMut<Run>, mut rng: ResMut<Rng>| {
+                        let def = &data::roster(run.expedition_map).enemies[0];
+                        spawn_mob(
+                            &mut commands,
+                            &mut run,
+                            &mut rng,
+                            def,
+                            Vec3::ZERO,
+                            Vec3::ZERO,
+                        )
+                    },
+                )
+                .unwrap();
+            assert_eq!(*world.get::<Rank>(entity).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn special_spawn_frequencies_are_disjoint_and_configurable() {
+        let mut config = super::super::expedition_config::Config::default();
+        for (rank, count) in [
+            (Rank::Elite, 200),
+            (Rank::Sprinter, 300),
+            (Rank::Explosive, 300),
+            (Rank::Healer, 200),
+            (Rank::Protector, 200),
+            (Rank::Normal, 8800),
+        ] {
+            assert_eq!(
+                (0..10_000)
+                    .filter(
+                        |i| roll_rank((*i as f32 + 0.5) / 10_000.0, &config, data::CAMPAIGN[5])
+                            == rank
+                    )
+                    .count(),
+                count
+            );
+        }
+        config.elites.chance = 0.0;
+        config.sprinters.chance = 0.0;
+        config.explosives.chance = 0.0;
+        config.healers.chance = 0.0;
+        config.protectors.chance = 1.0;
+        assert_eq!(roll_rank(0.99, &config, data::CAMPAIGN[5]), Rank::Protector);
+    }
+    #[test]
     fn two_percent_of_regular_spawn_rolls_are_elite() {
-        assert_eq!(roll_rank(0.0), Rank::Elite);
-        assert_eq!(roll_rank(0.02), Rank::Normal);
+        let config = super::super::expedition_config::Config::default();
+        assert_eq!(roll_rank(0.0, &config, data::CAMPAIGN[5]), Rank::Elite);
+        assert_eq!(roll_rank(0.02, &config, data::CAMPAIGN[5]), Rank::Sprinter);
         assert_eq!(
             (0..10_000)
-                .filter(|i| roll_rank(*i as f32 / 10_000.0) == Rank::Elite)
+                .filter(
+                    |i| roll_rank(*i as f32 / 10_000.0, &config, data::CAMPAIGN[5]) == Rank::Elite
+                )
                 .count(),
             200
         );
     }
     #[test]
-    fn elites_have_six_times_health_and_triple_xp_without_boss_damage_or_rewards() {
+    fn three_percent_of_spawns_are_sprinters_and_variants_never_overlap() {
+        let config = super::super::expedition_config::Config::default();
+        assert_eq!(
+            (0..10_000)
+                .filter(
+                    |i| roll_rank(*i as f32 / 10_000.0, &config, data::CAMPAIGN[5])
+                        == Rank::Sprinter
+                )
+                .count(),
+            300
+        );
+        assert_eq!(roll_rank(0.05, &config, data::CAMPAIGN[5]), Rank::Explosive);
+        assert_eq!(roll_rank(0.15, &config, data::CAMPAIGN[5]), Rank::Normal);
+    }
+    #[test]
+    fn elites_have_ten_times_health_and_triple_xp_without_boss_damage_or_rewards() {
         let mut world = World::new();
         world.insert_resource(Run {
             elapsed: 120.0,
@@ -1001,7 +1176,7 @@ mod elite_tests {
         world
             .run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
                 let def = &data::roster(run.expedition_map).enemies[0];
-                for rank in [Rank::Normal, Rank::Elite, Rank::Boss] {
+                for rank in [Rank::Normal, Rank::Elite, Rank::Sprinter, Rank::Boss] {
                     spawn_rank(&mut commands, &mut run, def, Vec3::ZERO, Vec3::ZERO, rank);
                 }
             })
@@ -1020,13 +1195,23 @@ mod elite_tests {
             .iter(&world)
             .find(|(r, ..)| **r == Rank::Elite)
             .unwrap();
-        assert_eq!(elite.max_hp, normal.max_hp * 6.0);
+        assert_eq!(elite.max_hp, normal.max_hp * 10.0);
         assert_eq!(elite.hp, elite.max_hp);
         assert_eq!(elite.damage, normal.damage);
         assert_eq!(elite.speed, normal.speed);
         assert_eq!(elite.xp, normal.xp * 3);
         assert!(!elite.boss);
-        assert!((elite_model.scale - normal_model.scale * 1.25).abs() < 0.001);
+        assert!((elite_model.scale - normal_model.scale * 1.5).abs() < 0.001);
+        let (_, sprinter, sprinter_model, _) = query
+            .iter(&world)
+            .find(|(r, ..)| **r == Rank::Sprinter)
+            .unwrap();
+        assert_eq!(sprinter.max_hp, normal.max_hp);
+        assert_eq!(sprinter.speed, normal.speed * 3.0);
+        assert_eq!(sprinter.damage, normal.damage);
+        assert_eq!(sprinter.xp, normal.xp);
+        assert_eq!(sprinter_model.scale, normal_model.scale);
+        assert!(!sprinter.boss);
         assert!(label.unwrap().0.ends_with("Élite"));
         assert!(
             query

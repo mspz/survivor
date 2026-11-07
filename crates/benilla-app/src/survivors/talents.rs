@@ -294,8 +294,7 @@ impl Account {
         out.xp = values
             .next()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0)
-            .min(threshold(60));
+            .unwrap_or(0);
         // Version 4 refunds earlier layouts while preserving character experience.
         if version != Some("v4") {
             return out;
@@ -317,6 +316,10 @@ impl Account {
         out
     }
 
+    /// Lifetime XP includes post-60 paragon progression; character level and talent budget stay capped.
+    pub fn gain_xp(&mut self, gained: u64) {
+        self.xp = self.xp.saturating_add(gained);
+    }
     pub fn rank(&self, class: usize, tree: usize, node: usize) -> u8 {
         self.builds[class][tree][node]
     }
@@ -476,7 +479,7 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
         return;
     }
     run.account_credited = total;
-    account.xp = account.xp.saturating_add(gained).min(threshold(60));
+    account.gain_xp(gained);
     run.set_global_level(level(account.xp));
     account.last_reward = total;
     account.save();
@@ -485,6 +488,24 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn post_cap_xp_survives_save_loading_without_extra_talent_points_or_character_levels() {
+        let cap = threshold(60);
+        let mut account = Account::from_save(&format!("v4 {}", cap - 25));
+        account.gain_xp(150);
+        assert_eq!(account.xp, cap + 125);
+        assert_eq!(super::super::paragon::progress(account.xp).level, 1);
+        assert_eq!(super::super::paragon::progress(account.xp).xp, 25);
+        let restored = Account::from_save(&format!("v4 {}", account.xp));
+        assert_eq!(restored.xp, account.xp);
+        assert_eq!(restored.available(0), 59);
+        let mut run = Run::default();
+        restored.apply(0, &mut run);
+        assert_eq!(run.meta_level, 60);
+        account.gain_xp(u64::MAX);
+        assert_eq!(account.xp, u64::MAX);
+        assert_eq!(account.available(0), 59);
+    }
     #[test]
     fn ignite_accepts_every_fire_tagged_damage_spell_including_attacks_and_hidden_spells() {
         let mut account = Account::fresh();

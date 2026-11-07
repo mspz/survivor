@@ -298,42 +298,115 @@ pub(super) fn menu(
                     GlobalZIndex(455),
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(viewport.x * 0.5 - 140.0),
+                        left: Val::Px(viewport.x * 0.5 - 152.0),
                         bottom: Val::Px(20.0),
-                        width: Val::Px(280.0),
+                        width: Val::Px(304.0),
                         align_items: AlignItems::Center,
                         flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(10.0),
+                        row_gap: Val::Px(8.0),
                         ..default()
                     },
                 ))
                 .with_children(|ui| {
                     ui.spawn((
-                        label(font, &character.name, 26.0, hud::GOLD_TONE),
-                        TextShadow::default(),
+                        label(font, &character.name, 24.0, hud::GOLD_TONE),
+                        TextShadow {
+                            offset: Vec2::new(1.0, 2.0),
+                            color: Color::BLACK,
+                        },
                     ));
-                    skin::button_sized(
-                        ui,
-                        font,
-                        "Entrer dans le monde",
-                        Click::Enter,
-                        240.0,
-                        44.0,
-                        19.0,
-                        false,
-                    );
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        skin::button(ui, font, "Créer un salon", Click::HostLobby, 240.0);
-                        skin::button(ui, font, "Rejoindre un salon", Click::JoinLobby, 240.0);
-                    }
                     ui.spawn(Node {
-                        column_gap: Val::Px(8.0),
+                        width: Val::Percent(100.0),
+                        padding: UiRect::all(Val::Px(16.0)),
+                        align_items: AlignItems::Center,
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(8.0),
+                        ..default()
+                    })
+                    .with_children(|actions| {
+                        skin::backdrop(actions);
+                        skin::button_sized(
+                            actions,
+                            font,
+                            "Entrer dans le monde",
+                            Click::Enter,
+                            272.0,
+                            42.0,
+                            17.0,
+                            false,
+                        );
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            actions.spawn((
+                                BackgroundColor(hud::GOLD_TONE.with_alpha(0.22)),
+                                Node {
+                                    width: Val::Percent(90.0),
+                                    height: Val::Px(1.0),
+                                    margin: UiRect::vertical(Val::Px(3.0)),
+                                    ..default()
+                                },
+                            ));
+                            actions.spawn(label(
+                                font,
+                                "MULTIJOUEUR",
+                                11.0,
+                                Color::srgb(0.7, 0.64, 0.48),
+                            ));
+                            actions
+                                .spawn(Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(6.0),
+                                    ..default()
+                                })
+                                .with_children(|lobby| {
+                                    skin::button_sized(
+                                        lobby,
+                                        font,
+                                        "Créer un salon",
+                                        Click::HostLobby,
+                                        272.0,
+                                        34.0,
+                                        14.0,
+                                        false,
+                                    );
+                                    skin::button_sized(
+                                        lobby,
+                                        font,
+                                        "Rejoindre un salon",
+                                        Click::JoinLobby,
+                                        272.0,
+                                        34.0,
+                                        14.0,
+                                        false,
+                                    );
+                                });
+                        }
+                    });
+                    ui.spawn(Node {
+                        column_gap: Val::Px(10.0),
                         ..default()
                     })
                     .with_children(|arrows| {
-                        skin::button(arrows, font, "<", Click::Rotate(-0.35), 32.0);
-                        skin::button(arrows, font, ">", Click::Rotate(0.35), 32.0);
+                        skin::button_sized(
+                            arrows,
+                            font,
+                            "<",
+                            Click::Rotate(-0.35),
+                            38.0,
+                            28.0,
+                            16.0,
+                            false,
+                        );
+                        skin::button_sized(
+                            arrows,
+                            font,
+                            ">",
+                            Click::Rotate(0.35),
+                            38.0,
+                            28.0,
+                            16.0,
+                            false,
+                        );
                     });
                 });
             if !roster.blocked {

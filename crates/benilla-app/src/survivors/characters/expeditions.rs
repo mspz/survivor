@@ -2,9 +2,66 @@
 use super::*;
 const MUTED: Color = Color::srgb(0.62, 0.61, 0.57);
 const EDGE: Color = Color::srgb(0.29, 0.25, 0.17);
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub(in crate::survivors) struct View {
     pub scroll: f32,
+    pub open: [bool; 3],
+}
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            scroll: 0.0,
+            open: [true, false, false],
+        }
+    }
+}
+#[derive(Component)]
+pub(super) struct GroupHeader(usize);
+pub(super) fn toggle(
+    phase: Res<State<Phase>>,
+    roster: Res<Roster>,
+    mut view: ResMut<View>,
+    buttons: Query<(&Interaction, &GroupHeader), Changed<Interaction>>,
+) {
+    if *phase.get() != Phase::Hub || !roster.expeditions {
+        return;
+    }
+    for (interaction, group) in &buttons {
+        if *interaction == Interaction::Pressed {
+            view.open[group.0] = !view.open[group.0];
+            view.scroll = 0.0;
+        }
+    }
+}
+fn group(
+    ui: &mut ChildSpawnerCommands,
+    font: &Handle<Font>,
+    index: usize,
+    title: &str,
+    open: bool,
+) {
+    ui.spawn((
+        Button,
+        GroupHeader(index),
+        BackgroundColor(Color::srgb(0.12, 0.095, 0.055)),
+        BorderColor::all(EDGE),
+        Node {
+            width: Val::Percent(100.0),
+            min_height: Val::Px(40.0),
+            flex_shrink: 0.0,
+            padding: UiRect::all(Val::Px(10.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+    ))
+    .with_children(|header| {
+        header.spawn(label(
+            font,
+            format!("{} {title}", if open { "[-]" } else { "[+]" }),
+            16.0,
+            hud::GOLD_TONE,
+        ));
+    });
 }
 #[derive(Component)]
 pub(super) struct Destination {
@@ -273,6 +330,7 @@ pub(super) fn draw(
     selection: &Selection,
     viewport: Vec2,
     scroll: f32,
+    open: [bool; 3],
 ) {
     let width = (viewport.x - 32.0).clamp(240.0, 980.0);
     let height = (viewport.y - 32.0).clamp(300.0, 650.0);
@@ -363,23 +421,48 @@ pub(super) fn draw(
                                     },
                                 ))
                                 .with_children(|list| {
-                                    if selection.test_character {
-                                        list.spawn(label(font, "PRACTICE", 11.0, MUTED));
-                                        row(list, font, selection, data::TRAINING_MAP, None);
+                                    group(list, font, 0, "Expéditions", open[0]);
+                                    if open[0] {
+                                        if selection.test_character {
+                                            list.spawn(label(font, "PRACTICE", 11.0, MUTED));
+                                            row(list, font, selection, data::TRAINING_MAP, None);
+                                        }
+                                        list.spawn((
+                                            label(font, "CAMPAIGN", 11.0, MUTED),
+                                            Node {
+                                                margin: UiRect::top(Val::Px(
+                                                    if selection.test_character {
+                                                        12.0
+                                                    } else {
+                                                        0.0
+                                                    },
+                                                )),
+                                                ..default()
+                                            },
+                                        ));
+                                        for (rank, index) in
+                                            progression::zone_order().into_iter().enumerate()
+                                        {
+                                            row(list, font, selection, index, Some(rank + 1));
+                                        }
                                     }
-                                    list.spawn((
-                                        label(font, "CAMPAIGN", 11.0, MUTED),
-                                        Node {
-                                            margin: UiRect::top(Val::Px(
-                                                if selection.test_character { 12.0 } else { 0.0 },
-                                            )),
-                                            ..default()
-                                        },
-                                    ));
-                                    for (rank, index) in
-                                        progression::zone_order().into_iter().enumerate()
-                                    {
-                                        row(list, font, selection, index, Some(rank + 1));
+                                    group(list, font, 1, "Donjons", open[1]);
+                                    if open[1] {
+                                        list.spawn(label(
+                                            font,
+                                            "Aucun donjon disponible.",
+                                            13.0,
+                                            MUTED,
+                                        ));
+                                    }
+                                    group(list, font, 2, "Raids", open[2]);
+                                    if open[2] {
+                                        list.spawn(label(
+                                            font,
+                                            "Aucun raid disponible.",
+                                            13.0,
+                                            MUTED,
+                                        ));
                                     }
                                 });
                                 left.spawn(label(

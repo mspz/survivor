@@ -96,7 +96,6 @@ impl Roster {
                 || !(1..=8).contains(&c.race)
                 || c.sex > 1
                 || c.display == 0
-                || c.xp > talents::threshold(60)
                 || ids.contains(&c.id)
                 || names.contains(&c.name.to_lowercase())
             {
@@ -105,7 +104,7 @@ impl Roster {
             ids.push(c.id);
             names.push(c.name.to_lowercase());
             if is_test_character(&c.name) {
-                c.xp = talents::threshold(60);
+                c.xp = c.xp.max(talents::threshold(60));
             }
         }
         Ok(save)
@@ -237,6 +236,19 @@ fn valid_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn roster_preserves_paragon_xp_for_normal_and_test_characters_independently() {
+        let mut roster = roster();
+        let xp = talents::threshold(60) + 125;
+        roster.save.characters[0].xp = xp;
+        roster.save.characters[0].name = "TEST_Paragon".into();
+        let loaded = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(loaded.characters[0].xp, xp);
+        assert_eq!(loaded.characters[1].xp, 0);
+        roster.save.characters[0].name = "Arthas".into();
+        let loaded = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(loaded.characters[0].xp, xp);
+    }
     #[test]
     fn test_prefix_is_typable_and_grants_level_sixty_and_the_private_expedition() {
         let mut roster = roster();
@@ -472,7 +484,10 @@ mod tests {
                 ..default()
             })
             .init_resource::<talents::Account>()
-            .insert_resource(expeditions::View { scroll: 171.0 })
+            .insert_resource(expeditions::View {
+                scroll: 171.0,
+                ..default()
+            })
             .insert_resource(hud::HudFont(Handle::default()))
             .add_systems(Update, (render, expeditions::hover).chain());
         app.world_mut()
@@ -631,6 +646,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(Startup, boot)
         .add_systems(Update, scroll.before(input))
         .add_systems(Update, expeditions::hover.after(render))
+        .add_systems(Update, expeditions::toggle.before(render).after(input))
         .add_systems(Update, frontend::spell_hover.after(render))
         .add_systems(
             Update,
@@ -985,7 +1001,7 @@ pub(super) fn activate_selected(
         .ok_or("Choisissez ou créez un personnage.")?;
     *account = talents::Account::load_character(c.id);
     account.xp = account.xp.max(if is_test_character(&c.name) {
-        talents::threshold(60)
+        c.xp.max(talents::threshold(60))
     } else {
         c.xp
     });
@@ -1119,6 +1135,7 @@ pub(super) fn render(
         spells.is_some(),
         art.as_ref().is_some_and(|a| a.select_highlight.is_some())
     );
+    let stamp = format!("{stamp} {:?}", expeditions.as_ref().map(|view| view.open));
     if *cache == stamp {
         return;
     }
@@ -1167,5 +1184,8 @@ pub(super) fn render(
         &selection,
         viewport,
         expeditions.as_ref().map_or(0.0, |v| v.scroll),
+        expeditions
+            .as_ref()
+            .map_or([true, false, false], |v| v.open),
     );
 }

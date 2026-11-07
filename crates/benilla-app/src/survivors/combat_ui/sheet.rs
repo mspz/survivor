@@ -5,7 +5,7 @@ use super::super::{
 };
 use super::*;
 mod stats;
-pub(super) const HEIGHT: f32 = 548.0;
+pub(super) const HEIGHT: f32 = 592.0;
 const FRAME_HEIGHT: f32 = 532.0;
 #[derive(Component)]
 pub(super) struct Root;
@@ -13,6 +13,12 @@ pub(super) struct Root;
 struct StatsText(usize);
 #[derive(Component)]
 struct CharacterTitle;
+#[derive(Component)]
+struct EquipmentLevel;
+#[derive(Component)]
+struct ParagonLabel;
+#[derive(Component)]
+struct ParagonFill;
 #[derive(Component)]
 struct SkillTitle;
 #[derive(Component)]
@@ -113,7 +119,8 @@ fn slot(
 pub(super) fn plugin(app: &mut App) {
     app.add_message::<bevy::input::mouse::MouseWheel>()
         .add_systems(Update, stats::scroll)
-        .add_systems(Update, stats::tooltip.after(refresh));
+        .add_systems(Update, stats::tooltip.after(refresh))
+        .add_systems(Update, refresh_paragon.after(refresh));
     app.add_systems(
         Update,
         (render, refresh)
@@ -172,84 +179,100 @@ pub(super) fn render(
         return;
     }
     let f = &font.0;
-    let panel_height = FRAME_HEIGHT;
+    let panel_height = FRAME_HEIGHT - 74.0;
     commands
         .spawn((
             Root,
             GlobalZIndex(575),
+            BackgroundColor(Color::srgb(0.018, 0.016, 0.014)),
+            BorderColor::all(Color::srgb(0.36, 0.32, 0.24)),
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(view.sheet.x),
                 top: Val::Px(view.sheet.y),
                 width: Val::Px(824.0),
                 height: Val::Px(HEIGHT),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
         ))
         .with_children(|root| {
+            skin::backdrop(root);
             root.spawn((
-                BackgroundColor(Color::BLACK),
-                rect(0.0, 0.0, 440.0, FRAME_HEIGHT),
+                BackgroundColor(Color::srgb(0.055, 0.045, 0.028)),
+                BorderColor::all(Color::srgb(0.3, 0.26, 0.17)),
+                Node {
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..rect(10.0, 10.0, 804.0, 62.0)
+                },
+            ));
+            skin::close(root, Click::CloseSheet, 784.0, 16.0);
+            root.spawn((
+                BackgroundColor(Color::srgb(0.025, 0.035, 0.075)),
+                rect(12.0, 550.0, 800.0, 30.0),
+            ))
+            .with_children(|panel| {
+                skin::backdrop(panel);
+                panel.spawn((
+                    ParagonLabel,
+                    text(f, "Parangon", 13.0, Color::srgb(0.45, 0.75, 1.0)),
+                    rect(12.0, 5.0, 310.0, 20.0),
+                ));
+                panel
+                    .spawn((
+                        BackgroundColor(Color::srgb(0.08, 0.1, 0.16)),
+                        BorderColor::all(Color::srgb(0.38, 0.44, 0.57)),
+                        Node {
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..rect(332.0, 8.0, 454.0, 14.0)
+                        },
+                    ))
+                    .with_children(|bar| {
+                        bar.spawn((
+                            ParagonFill,
+                            BackgroundColor(Color::srgb(0.2, 0.5, 1.0)),
+                            Node {
+                                width: Val::Percent(0.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                        ));
+                    });
+            });
+            root.spawn((
+                BackgroundColor(Color::srgb(0.025, 0.023, 0.02)),
+                rect(12.0, 74.0, 424.0, FRAME_HEIGHT - 74.0),
             ))
             .with_children(|frame| {
-                for (path, x, y, w, h) in [
-                    (
-                        "Interface\\PaperDollInfoFrame\\UI-Character-General-TopLeft",
-                        0.0,
-                        0.0,
-                        294.0,
-                        294.0,
-                    ),
-                    (
-                        "Interface\\PaperDollInfoFrame\\UI-Character-General-TopRight",
-                        294.0,
-                        0.0,
-                        147.0,
-                        294.0,
-                    ),
-                    (
-                        "Interface\\PaperDollInfoFrame\\UI-Character-General-BottomLeft",
-                        0.0,
-                        294.0,
-                        294.0,
-                        FRAME_HEIGHT - 294.0,
-                    ),
-                    (
-                        "Interface\\PaperDollInfoFrame\\UI-Character-General-BottomRight",
-                        294.0,
-                        294.0,
-                        147.0,
-                        FRAME_HEIGHT - 294.0,
-                    ),
-                ] {
-                    art(frame, path, rect(x, y, w, h));
-                }
                 frame
                     .spawn((
                         Button,
                         DragTitle(Pane::Sheet),
-                        rect(75.0, 14.0, 320.0, 46.0),
+                        rect(64.0, -60.0, 680.0, 50.0),
                     ))
                     .with_children(|header| {
                         header.spawn((
                             CharacterTitle,
-                            text(f, "Character", 15.0, Color::WHITE),
+                            text(f, "Character", 17.0, GOLD),
                             Node {
                                 padding: UiRect::all(Val::Px(6.0)),
                                 ..default()
                             },
                         ));
                     });
-                skin::close(frame, Click::CloseSheet, 400.0, 8.0);
                 frame.spawn((
                     ImageNode::default(),
                     hud::SpellIcon(data::ability(run.class.start).spell),
-                    rect(12.0, 8.0, 53.0, 53.0),
+                    rect(4.0, -60.0, 52.0, 52.0),
                 ));
                 frame
                     .spawn((
+                        BorderColor::all(Color::srgb(0.28, 0.26, 0.22)),
                         BackgroundColor(Color::srgb(0.025, 0.022, 0.018)),
-                        rect(77.0, 90.0, 270.0, 348.0),
+                        Node {
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..rect(62.0, 8.0, 294.0, 354.0)
+                        },
                     ))
                     .with_children(|body| {
                         if let Some(image) = &target.image {
@@ -270,8 +293,8 @@ pub(super) fn render(
                         frame,
                         name,
                         kind,
-                        23.0,
-                        86.0 + i as f32 * 44.0,
+                        8.0,
+                        10.0 + i as f32 * 44.0,
                         inventory.as_ref().and_then(|inv| inv.equipped(name)),
                     );
                 }
@@ -280,8 +303,8 @@ pub(super) fn render(
                         frame,
                         name,
                         kind,
-                        363.0,
-                        86.0 + i as f32 * 44.0,
+                        372.0,
+                        10.0 + i as f32 * 44.0,
                         inventory.as_ref().and_then(|inv| inv.equipped(name)),
                     );
                 }
@@ -297,15 +320,15 @@ pub(super) fn render(
                         frame,
                         name,
                         kind,
-                        145.0 + i as f32 * 48.0,
-                        446.0,
+                        140.0 + i as f32 * 48.0,
+                        374.0,
                         inventory.as_ref().and_then(|inv| inv.equipped(name)),
                     );
                 }
                 frame
                     .spawn(Node {
                         column_gap: Val::Px(6.0),
-                        ..rect(135.0, 69.0, 170.0, 24.0)
+                        ..rect(160.0, 332.0, 120.0, 24.0)
                     })
                     .with_children(|ui| {
                         button(ui, f, Click::Rotate(-0.4), "<", 35.0);
@@ -314,7 +337,7 @@ pub(super) fn render(
                 frame.spawn((
                     SlotHint,
                     text(f, "Equipment", 12.0, GREY),
-                    rect(42.0, 491.0, 360.0, 20.0),
+                    rect(24.0, 422.0, 376.0, 20.0),
                 ));
                 if view.rune_page {
                     if let Some(runes) = runes.as_deref() {
@@ -331,7 +354,7 @@ pub(super) fn render(
                         .spawn((
                             Button,
                             Click::SheetPage(page),
-                            rect(35.0 + i as f32 * 120.0, 516.0, 126.0, 30.0),
+                            rect(18.0 + i as f32 * 128.0, 444.0, 126.0, 30.0),
                         ))
                         .with_children(|tab| {
                             skin::art(
@@ -345,27 +368,25 @@ pub(super) fn render(
                                 [0.0, 1.0, 0.0, if active { 0.75 } else { 1.0 }],
                             );
                             tab.spawn((
-                                text(
-                                    f,
-                                    label,
-                                    14.0,
-                                    if active { Color::WHITE } else { GREY },
-                                ),
+                                text(f, label, 14.0, if active { Color::WHITE } else { GREY }),
                                 rect(16.0, if active { 6.0 } else { 4.0 }, 100.0, 22.0),
                             ));
                         });
                 }
             });
-            root.spawn(rect(448.0, 0.0, 376.0, panel_height))
-                .with_children(|panel| {
-                    skin::frame(panel, 376.0, panel_height);
-                    skin::close(panel, Click::CloseSheet, 340.0, 6.0);
-                    panel.spawn((
-                        text(f, "Statistics", 18.0, GOLD),
-                        rect(18.0, 12.0, 290.0, 26.0),
-                    ));
-                    stats::draw(panel, f, &run, &view);
-                });
+            root.spawn((
+                BackgroundColor(Color::srgb(0.025, 0.022, 0.018)),
+                rect(440.0, 74.0, 372.0, panel_height),
+            ))
+            .with_children(|panel| {
+                skin::frame(panel, 372.0, panel_height);
+                panel.spawn((
+                    EquipmentLevel,
+                    text(f, "Niveau moyen équipé", 15.0, GOLD),
+                    rect(18.0, 12.0, 290.0, 26.0),
+                ));
+                stats::draw(panel, f, &run, &view, panel_height);
+            });
         });
 }
 /// The Runes tab: the equipped rune in full over the paper doll, then the account's slots
@@ -380,14 +401,14 @@ fn rune_page(
         .spawn((
             Interaction::default(),
             bevy::ui::FocusPolicy::Block,
-            BackgroundColor(Color::srgba(0.02, 0.015, 0.01, 0.97)),
+            BackgroundColor(Color::srgb(0.02, 0.015, 0.01)),
             Node {
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 row_gap: Val::Px(4.0),
                 padding: UiRect::all(Val::Px(10.0)),
                 overflow: Overflow::clip(),
-                ..rect(22.0, 72.0, 392.0, 440.0)
+                ..rect(8.0, 8.0, 408.0, 436.0)
             },
         ))
         .with_children(|page| {
@@ -600,6 +621,35 @@ pub(super) fn spell_stats(run: &Run, index: usize) -> String {
     }
     rows.join("\n")
 }
+fn refresh_paragon(
+    account: Res<talents::Account>,
+    mut labels: Query<&mut Text, With<ParagonLabel>>,
+    mut fills: Query<&mut Node, With<ParagonFill>>,
+) {
+    let active = talents::level(account.xp) == 60;
+    let progress = super::super::paragon::progress(account.xp);
+    let label = if active {
+        format!(
+            "Parangon {}  -  {} / {} XP",
+            progress.level, progress.xp, progress.needed
+        )
+    } else {
+        "Parangon - disponible au niveau 60".to_owned()
+    };
+    for mut text in &mut labels {
+        if text.0 != label {
+            text.0 = label.clone();
+        }
+    }
+    for mut node in &mut fills {
+        node.width = Val::Percent(if active {
+            (progress.xp as f64 / progress.needed as f64 * 100.0) as f32
+        } else {
+            0.0
+        });
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn refresh(
     run: Res<Run>,
@@ -613,6 +663,7 @@ fn refresh(
         Query<&mut Text, With<CharacterTitle>>,
         Query<&mut Text, With<SkillTitle>>,
         Query<&mut Text, With<SlotHint>>,
+        Query<&mut Text, With<EquipmentLevel>>,
     )>,
     slots: Query<(&Interaction, &Slot)>,
     inventory: Option<Res<super::super::items::Inventory>>,
@@ -645,12 +696,23 @@ fn refresh(
             .get(usize::from(category.0))
             .and_then(|rows| rows.get(category.1))
             .map_or("", String::as_str);
+        let value = if let Some((label, number)) = value.split_once(':') {
+            if category.2 {
+                number.trim().to_owned()
+            } else {
+                format!("{label}:")
+            }
+        } else if category.2 {
+            String::new()
+        } else {
+            value.to_owned()
+        };
         if text.0 != value {
-            text.0 = value.to_owned();
+            text.0 = value;
         }
     }
     let title = format!(
-        "{}\nLevel {} {}",
+        "{}\nNiveau {} - {}",
         roster.current().map_or("Adventurer", |c| c.name.as_str()),
         talents::level(account.xp),
         run.class.name
@@ -672,6 +734,27 @@ fn refresh(
         if text.0 != title {
             text.0 = title.clone();
         }
+    }
+    let equipped: Vec<_> = inventory
+        .as_deref()
+        .map(|inventory| {
+            super::super::items::SLOTS
+                .iter()
+                .filter_map(|(slot, _)| inventory.equipped(slot))
+                .collect()
+        })
+        .unwrap_or_default();
+    let average = if equipped.is_empty() {
+        0.0
+    } else {
+        equipped
+            .iter()
+            .map(|item| f64::from(item.level))
+            .sum::<f64>()
+            / equipped.len() as f64
+    };
+    for mut text in &mut texts.p5() {
+        text.0 = format!("Niveau moyen équipé : {average:.1}");
     }
     let hint = slots
         .iter()
@@ -724,6 +807,21 @@ mod tests {
             ],
             ..default()
         }
+    }
+    #[test]
+    fn character_sheet_paragon_bar_unlocks_at_sixty_and_updates_live() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.insert_resource(talents::Account::fresh());
+        let label = world.spawn((ParagonLabel, Text::new(""))).id();
+        let fill = world.spawn((ParagonFill, Node::default())).id();
+        world.run_system_once(refresh_paragon).unwrap();
+        assert!(world.get::<Text>(label).unwrap().0.contains("niveau 60"));
+        world.resource_mut::<talents::Account>().xp = talents::threshold(60) + 125;
+        world.run_system_once(refresh_paragon).unwrap();
+        assert!(world.get::<Text>(label).unwrap().0.contains("Parangon 1"));
+        assert!(world.get::<Text>(label).unwrap().0.contains("25 / 200 XP"));
+        assert_eq!(world.get::<Node>(fill).unwrap().width, Val::Percent(12.5));
     }
     #[test]
     fn learned_proc_icons_are_selectable_in_spells_and_show_the_same_live_values_as_the_hud() {

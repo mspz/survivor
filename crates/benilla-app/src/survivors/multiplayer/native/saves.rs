@@ -275,10 +275,7 @@ pub(super) fn persist(
     if gained > 0 {
         if let Some(mut account) = world.get_resource_mut::<game::talents::Account>() {
             if account.character.is_some() {
-                account.xp = account
-                    .xp
-                    .saturating_add(gained)
-                    .min(game::talents::threshold(60));
+                account.gain_xp(gained);
                 account.last_reward = snapshot.stats.earned;
                 account.save();
             }
@@ -393,5 +390,20 @@ mod tests {
         world.resource_mut::<game::talents::Account>().character = Some(2);
         persist(&mut world, &mut Receipts::default(), &snapshot, Some(1));
         assert_eq!(world.resource::<game::talents::Account>().xp, 525);
+        // A later XP receipt crosses level 60 once and carries the surplus into paragon.
+        let cap = game::talents::threshold(60);
+        {
+            let mut account = world.resource_mut::<game::talents::Account>();
+            account.character = Some(1);
+            account.xp = cap - 25;
+        }
+        let mut post_cap = snapshot.clone();
+        post_cap.stats.earned += 200;
+        persist(&mut world, &mut receipts, &post_cap, Some(1));
+        persist(&mut world, &mut receipts, &post_cap, Some(1));
+        let account = world.resource::<game::talents::Account>();
+        assert_eq!(account.xp, cap + 175);
+        assert_eq!(game::paragon::progress(account.xp).level, 1);
+        assert_eq!(account.available(0), 59);
     }
 }

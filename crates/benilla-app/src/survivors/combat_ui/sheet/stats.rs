@@ -7,7 +7,7 @@ use bevy::{
 };
 
 #[derive(Component)]
-pub(super) struct CategoryText(pub u8, pub usize);
+pub(super) struct CategoryText(pub u8, pub usize, pub bool);
 #[derive(Component)]
 pub(super) struct StatLine;
 #[derive(Component)]
@@ -15,12 +15,12 @@ pub(super) struct StatTooltip;
 #[derive(Component)]
 pub(super) struct StatScroll;
 const CATEGORIES: [&str; 6] = [
-    "Primary stats",
-    "Defense",
-    "Offense",
-    "Recovery",
-    "Utility",
-    "Spells",
+    "Attributs",
+    "Défense",
+    "Offensive",
+    "Récupération",
+    "Utilitaire",
+    "Sorts",
 ];
 
 pub(super) fn primary(inventory: Option<&Inventory>) -> [f32; 4] {
@@ -79,7 +79,13 @@ pub(super) fn category_text(
     }
 }
 
-pub(super) fn draw(panel: &mut ChildSpawnerCommands, font: &Handle<Font>, run: &Run, view: &View) {
+pub(super) fn draw(
+    panel: &mut ChildSpawnerCommands,
+    font: &Handle<Font>,
+    run: &Run,
+    view: &View,
+    height: f32,
+) {
     panel
         .spawn((
             StatScroll,
@@ -90,7 +96,7 @@ pub(super) fn draw(panel: &mut ChildSpawnerCommands, font: &Handle<Font>, run: &
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
                 overflow: Overflow::scroll_y(),
-                ..rect(16.0, 45.0, 344.0, FRAME_HEIGHT - 65.0)
+                ..rect(16.0, 45.0, 340.0, height - 65.0)
             },
         ))
         .with_children(|list| {
@@ -99,16 +105,21 @@ pub(super) fn draw(panel: &mut ChildSpawnerCommands, font: &Handle<Font>, run: &
                 list.spawn((
                     Button,
                     Click::ToggleStats(category as u8),
+                    BackgroundColor(Color::srgb(0.07, 0.06, 0.04)),
+                    BorderColor::all(Color::srgb(0.32, 0.28, 0.19)),
                     Node {
+                        border: UiRect::all(Val::Px(1.0)),
+                        padding: UiRect::axes(Val::Px(9.0), Val::Px(5.0)),
                         width: Val::Percent(100.0),
-                        min_height: Val::Px(25.0),
+                        min_height: Val::Px(31.0),
                         justify_content: JustifyContent::SpaceBetween,
                         align_items: AlignItems::Center,
                         ..default()
                     },
                 ))
                 .with_children(|header| {
-                    header.spawn(text(font, *name, 16.0, GOLD));
+                    skin::backdrop(header);
+                    header.spawn(text(font, *name, 14.0, GOLD));
                     header.spawn(text(font, if collapsed { "+" } else { "-" }, 16.0, GOLD));
                 });
                 if collapsed {
@@ -193,17 +204,49 @@ pub(super) fn draw(panel: &mut ChildSpawnerCommands, font: &Handle<Font>, run: &
                             .lines()
                             .enumerate()
                         {
+                            let (label, value) = line.split_once(':').unwrap_or((line, ""));
                             list.spawn((
-                                CategoryText(category as u8, index),
-                                StatLine,
-                                Interaction::default(),
-                                text(font, line, 13.0, Color::WHITE),
+                                BackgroundColor(if index % 2 == 0 {
+                                    Color::srgb(0.045, 0.041, 0.033)
+                                } else {
+                                    Color::srgb(0.025, 0.023, 0.02)
+                                }),
                                 Node {
                                     width: Val::Percent(100.0),
+                                    min_height: Val::Px(22.0),
                                     flex_shrink: 0.0,
+                                    padding: UiRect::axes(Val::Px(7.0), Val::Px(3.0)),
                                     ..default()
                                 },
-                            ));
+                            ))
+                            .with_children(|row| {
+                                row.spawn((
+                                    CategoryText(category as u8, index, false),
+                                    StatLine,
+                                    Interaction::default(),
+                                    text(
+                                        font,
+                                        format!("{label}:"),
+                                        12.0,
+                                        Color::srgb(0.82, 0.73, 0.5),
+                                    ),
+                                    Node {
+                                        width: Val::Percent(48.0),
+                                        flex_shrink: 0.0,
+                                        ..default()
+                                    },
+                                ));
+                                row.spawn((
+                                    CategoryText(category as u8, index, true),
+                                    text(font, value.trim(), 12.0, Color::srgb(0.95, 0.93, 0.86)),
+                                    TextLayout::new_with_justify(Justify::Right),
+                                    Node {
+                                        width: Val::Percent(52.0),
+                                        flex_shrink: 0.0,
+                                        ..default()
+                                    },
+                                ));
+                            });
                         }
                     });
                 }

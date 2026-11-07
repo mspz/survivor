@@ -42,7 +42,7 @@ pub(super) fn plugin(app: &mut App) {
             (
                 enemies::spawn_enemies,
                 training::tick,
-                (enemies::scale_enemies, boss_spells::tick).chain(),
+                (enemies::scale_enemies, boss_spells::tick, special_mobs::tick).chain(),
                 enemies::move_enemies,
                 talent_runtime::tick,
                 items::legendary::events::tick,
@@ -151,6 +151,8 @@ pub(super) const BASE_MAGNET: f32 = 4.5;
 /// One run's state.
 #[derive(Resource)]
 pub(super) struct Run {
+    pub(super) draft_uses: [u8; 3],
+    pub(super) banished_cards: std::collections::HashSet<(bool, &'static str)>,
     pub(super) support: super::support_spells::Runtime,
     pub(super) extra_spells: super::extra_spells::Runtime,
     pub owner: Option<u64>,
@@ -226,6 +228,8 @@ impl Default for Run {
     fn default() -> Self {
         Self {
             support: default(),
+            draft_uses: [5; 3],
+            banished_cards: default(),
             extra_spells: default(),
             owner: None,
             balance: balance::Config::default(),

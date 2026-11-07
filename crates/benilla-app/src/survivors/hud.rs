@@ -826,6 +826,16 @@ pub(super) enum Choice {
     Heal,
 }
 impl Choice {
+    pub(super) fn card_key(self, run: &Run) -> (bool, &'static str) {
+        match self {
+            Self::NewAbility(d) => (true, d.key),
+            Self::Upgrade(i) => (true, run.abilities[i].def.key),
+            Self::NumericPassive(p, _) | Self::NewPassive(p) => (false, p.key),
+            Self::UpPassive(i) => (false, run.passives[i].0.key),
+            Self::Heal => (false, "__recovery"),
+        }
+    }
+
     pub(super) fn is_active(self) -> bool {
         matches!(self, Self::NewAbility(_) | Self::Upgrade(_))
     }
@@ -1282,6 +1292,29 @@ pub(super) fn setup_hud(
                     ..default()
                 },
             ));
+            root.spawn(Node {
+                column_gap: Val::Px(16.0),
+                ..default()
+            })
+            .with_children(|bar| {
+                for (index, label) in [(3, "Reroll"), (4, "Skip"), (8, "Banish")] {
+                    bar.spawn((
+                        Button,
+                        super::cards::DraftButton(index),
+                        Node {
+                            padding: UiRect::all(Val::Px(12.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.15, 0.12, 0.08)),
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            super::cards::DraftLabel(index),
+                            text_bundle(f, label, 18.0, GOLD),
+                        ));
+                    });
+                }
+            });
             root.spawn(centered(
                 f,
                 "Click a card, or use your card-selection keys",
@@ -1532,6 +1565,7 @@ fn choice_pool(run: &Run) -> Vec<Choice> {
             }
         }
     }
+    pool.retain(|choice| !run.banished_cards.contains(&choice.card_key(run)));
     pool
 }
 
@@ -1644,6 +1678,42 @@ pub(super) fn pick(
     rng: &mut Rng,
     next: &mut NextState<Phase>,
 ) {
+    // Indices 3/4 reroll/skip; 5..=7 banish a card, also over the network.
+    if i >= 3 {
+        if run.pending_levels == 0 || offer.choices.is_empty() {
+            return;
+        }
+        let action = match i {
+            3 => 0,
+            4 => 2,
+            5..=7 => 1,
+            _ => return,
+        };
+        if run.draft_uses[action] == 0 {
+            return;
+        }
+        if action == 1 {
+            let Some(choice) = offer.choices.get(i - 5).copied() else {
+                return;
+            };
+            if matches!(choice, Choice::Heal) {
+                return;
+            }
+            run.banished_cards.insert(choice.card_key(run));
+        }
+        run.draft_uses[action] -= 1;
+        if action == 2 {
+            run.next_passive = !run.next_passive;
+            run.pending_levels = run.pending_levels.saturating_sub(1);
+        }
+        if run.pending_levels > 0 {
+            offer.choices = choices_for(run, rng, &offer.config);
+        } else {
+            offer.choices.clear();
+            next.set(Phase::Playing);
+        }
+        return;
+    }
     let Some(&choice) = offer.choices.get(i) else {
         return;
     };
@@ -2995,7 +3065,7 @@ fn spawn_tooltip(
     (root.id(), body)
 }
 
-/// Hovering a build icon raises its `GameTooltip` under the icon, every number from the current
+/// Hovering a build icon anchors its tooltip above bottom-screen icons, with values from the current
 /// rank and stats, and what the next rank brings.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn icon_tooltip(
@@ -3013,7 +3083,8 @@ pub(super) fn icon_tooltip(
         &ComputedNode,
         &bevy::ui::UiGlobalTransform,
     )>,
-    mut frames: Query<(&mut Node, &mut Visibility), With<GameTooltip>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut frames: Query<(&mut Node, &mut Visibility, &mut UiTransform), With<GameTooltip>>,
     mut built: Local<Option<(Entity, Entity)>>,
     mut shown: Local<Option<(TipFor, Vec<TipLine>)>>,
 ) {
@@ -3026,7 +3097,7 @@ pub(super) fn icon_tooltip(
         ));
         return;
     };
-    let Ok((mut node, mut vis)) = frames.get_mut(frame) else {
+    let Ok((mut node, mut vis, mut transform)) = frames.get_mut(frame) else {
         *built = None;
         *shown = None;
         return;
@@ -3044,10 +3115,20 @@ pub(super) fn icon_tooltip(
     };
     // Physical pixels to the 768-unit canvas the `Val`s are on.
     let inv = computed.inverse_scale_factor;
+    let height = windows
+        .single()
+        .map_or(768.0, |window| window.physical_height() as f32 * inv);
+    let above = matches!(tip, TipFor::Mobility) || at.translation.y * inv > height * 0.5;
     let (left, top) = (
         Val::Px((at.translation.x - computed.size().x / 2.0) * inv),
-        Val::Px((at.translation.y + computed.size().y / 2.0) * inv + 4.0),
+        Val::Px(if above {
+            (at.translation.y - computed.size().y / 2.0) * inv - 8.0
+        } else {
+            (at.translation.y + computed.size().y / 2.0) * inv + 4.0
+        }),
     );
+    // A percentage translation uses the tooltip's own height, including wrapped live text.
+    transform.translation = Val2::percent(0.0, if above { -100.0 } else { 0.0 });
     if node.left != left || node.top != top {
         node.left = left;
         node.top = top;
@@ -3176,5 +3257,67 @@ pub(super) fn show_panels(
     }
     for root in &mut roots.p4() {
         set(root, p == Phase::GameOver);
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    #[test]
+    fn banish_removes_every_rarity_and_resets_next_run() {
+        let mut run = Run {
+            pending_levels: 1,
+            ..default()
+        };
+        let passive = data::PASSIVES
+            .iter()
+            .find(|p| {
+                !super::super::passives::legendary(p) && super::super::passives::eligible(p, &run)
+            })
+            .unwrap();
+        let mut offer = Offer {
+            choices: vec![Choice::NumericPassive(passive, 3)],
+            ..default()
+        };
+        pick(
+            5,
+            &mut run,
+            &mut offer,
+            &mut Rng(42),
+            &mut NextState::Unchanged,
+        );
+        assert_eq!(run.draft_uses, [5, 4, 5]);
+        assert_eq!(run.pending_levels, 1);
+        assert!(!choice_pool(&run)
+            .iter()
+            .any(|c| c.card_key(&run) == (false, passive.key)));
+        assert!(Run::default().banished_cards.is_empty());
+        assert_eq!(Run::default().draft_uses, [5; 3]);
+    }
+
+    #[test]
+    fn rerolls_and_skips_are_limited_and_skip_grants_no_reward() {
+        let mut run = Run {
+            pending_levels: 6,
+            ..default()
+        };
+        let mut offer = Offer {
+            choices: vec![Choice::Heal],
+            ..default()
+        };
+        let mut rng = Rng(42);
+        let mut next = NextState::Unchanged;
+        for _ in 0..6 {
+            pick(3, &mut run, &mut offer, &mut rng, &mut next);
+        }
+        assert_eq!(run.draft_uses, [0, 5, 5]);
+        assert_eq!(run.pending_levels, 6);
+        for _ in 0..6 {
+            pick(4, &mut run, &mut offer, &mut rng, &mut next);
+        }
+        assert_eq!(run.draft_uses, [0, 5, 0]);
+        assert_eq!(run.pending_levels, 1);
+        assert!(run.abilities.is_empty() && run.passives.is_empty());
     }
 }

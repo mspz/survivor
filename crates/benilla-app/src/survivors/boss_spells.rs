@@ -77,10 +77,13 @@ pub(super) struct Warning {
     pub direction: [f32; 3],
     pub mortars: Vec<[f32; 3]>,
     pub elapsed: f32,
+    /// Optional circular footprint: radius and windup seconds for monster death explosions.
+    #[serde(default)]
+    pub circle: Option<[f32; 2]>,
 }
 impl Warning {
     pub fn progress(&self) -> f32 {
-        (self.elapsed / self.spell.windup()).clamp(0.0, 1.0)
+        (self.elapsed / self.circle.map_or(self.spell.windup(), |c| c[1])).clamp(0.0, 1.0)
     }
     fn new(spell: Spell, origin: Vec3, targets: &[Player], rng: &mut Rng) -> Self {
         let nearest = targets
@@ -116,9 +119,13 @@ impl Warning {
             direction: direction.to_array(),
             mortars,
             elapsed: 0.0,
+            circle: None,
         }
     }
-    fn contains(&self, pos: Vec3, radius: f32) -> bool {
+    pub(super) fn contains(&self, pos: Vec3, radius: f32) -> bool {
+        if let Some([area, _]) = self.circle {
+            return flat(pos - Vec3::from_array(self.origin)).length() <= area + radius;
+        }
         let delta = flat(pos - Vec3::from_array(self.origin));
         let distance = delta.length();
         match self.spell {
@@ -472,6 +479,7 @@ mod tests {
             direction: Vec3::X.to_array(),
             mortars: vec![[8.0, 0.0, 3.0]],
             elapsed: 0.0,
+            circle: None,
         };
         assert!(w.contains(Vec3::X * 8.0, HERO_RADIUS));
         assert!(!w.contains(Vec3::NEG_X * 8.0, HERO_RADIUS));
@@ -589,6 +597,7 @@ mod tests {
             direction: Vec3::X.to_array(),
             mortars: vec![[5.0, 6.0, 7.0]],
             elapsed: 1.0,
+            circle: None,
         };
         let decoded: Warning = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
         assert_eq!(decoded.progress(), 0.5);

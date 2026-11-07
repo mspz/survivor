@@ -158,6 +158,54 @@ pub(super) struct Rays;
 #[derive(Resource, Default)]
 pub(super) struct PendingPick(Option<(usize, f32)>);
 
+#[derive(Component)]
+pub(super) struct DraftButton(pub usize);
+#[derive(Component)]
+pub(super) struct DraftLabel(pub usize);
+#[derive(Resource, Default)]
+pub(super) struct BanishMode(bool);
+
+pub(super) fn draft_controls(
+    phase: Res<State<Phase>>,
+    run: Res<Run>,
+    buttons: Query<(&DraftButton, &Interaction), Changed<Interaction>>,
+    mut labels: Query<(&DraftLabel, &mut Text)>,
+    mut mode: ResMut<BanishMode>,
+    mut pending: ResMut<PendingPick>,
+) {
+    if *phase.get() != Phase::LevelUp {
+        mode.0 = false;
+        return;
+    }
+    for (label, mut text) in &mut labels {
+        text.0 = match label.0 {
+            3 => format!("Reroll ({})", run.draft_uses[0]),
+            4 => format!("Skip ({})", run.draft_uses[2]),
+            _ if mode.0 => "Banish: choose a card (cancel)".into(),
+            _ => format!("Banish ({})", run.draft_uses[1]),
+        };
+    }
+    if pending.0.is_some() {
+        return;
+    }
+    for (button, interaction) in &buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if button.0 == 8 {
+            if run.draft_uses[1] > 0 {
+                mode.0 = !mode.0;
+            }
+        } else {
+            let slot = if button.0 == 3 { 0 } else { 2 };
+            if run.draft_uses[slot] > 0 {
+                mode.0 = false;
+                pending.0 = Some((button.0, 0.0));
+            }
+        }
+    }
+}
+
 impl PendingPick {
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::survivors) fn clear(&mut self) {
@@ -542,6 +590,7 @@ pub(super) fn choose_card(
     cards: Query<(&Card, &Interaction), Changed<Interaction>>,
     offer: Res<Offer>,
     mut pending: ResMut<PendingPick>,
+    mut mode: ResMut<BanishMode>,
 ) {
     if *phase.get() != Phase::LevelUp || pending.0.is_some() {
         return;
@@ -563,6 +612,7 @@ pub(super) fn choose_card(
         }
     }
     if let Some(i) = pick.filter(|&i| i < offer.len()) {
-        pending.0 = Some((i, 0.0));
+        pending.0 = Some((if mode.0 { i + 5 } else { i }, 0.0));
+        mode.0 = false;
     }
 }

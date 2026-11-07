@@ -582,7 +582,7 @@ fn apply_pick(world: &mut World, id: u64, offer_id: u64, index: usize) {
     };
     if companion.offer_id == offer_id
         && companion.run.pending_levels > 0
-        && index < companion.offer.len()
+        && (index < companion.offer.len() || (3..=7).contains(&index))
     {
         hud::pick(
             index,
@@ -968,6 +968,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
             .map(|(p, n)| (p.key.into(), *n))
             .collect(),
         offer_id,
+        draft_uses: run.draft_uses,
         choices: offer.choices().iter().map(encode_choice).collect(),
         mobility: [
             run.mobile.cd,
@@ -1134,10 +1135,12 @@ fn publish(world: &mut World) {
             Option<&game::unit_frames::Status>,
             Has<game::enemies::StillPickup>,
             Has<hero::Hero>,
+            Option<&game::enemies::Rank>,
         ), With<RunEntity>>()
         .iter(world)
         .map(
-            |(guid, net, store, tf, movement, owner, status, static_pickup, local)| wire::Unit {
+            |(guid, net, store, tf, movement, owner, status, static_pickup, local, rank)| wire::Unit {
+                rank: rank.copied(),
                 party_player: local || owner.is_some(),
                 static_pickup,
                 status: status.cloned(),
@@ -1461,6 +1464,11 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             guest.entities.insert(unit.guid, entity);
             entity
         };
+        if let Some(rank) = unit.rank {
+            world.entity_mut(entity).insert(rank);
+        } else {
+            world.entity_mut(entity).remove::<game::enemies::Rank>();
+        }
         if unit.party_player {
             world
                 .entity_mut(entity)
@@ -1538,6 +1546,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.elapsed = stats.elapsed;
         run.level = stats.level;
         run.meta_level = stats.character_level.max(1);
+        run.draft_uses = stats.draft_uses;
         run.xp = stats.xp;
         run.kills = stats.kills;
         run.won = stats.won;
@@ -2413,6 +2422,7 @@ mod tests {
                 direction: [1.0, 0.0, 0.0],
                 mortars: vec![],
                 elapsed: 1.2,
+                circle: None,
             },
         ]));
         host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
@@ -2425,6 +2435,12 @@ mod tests {
             );
         })
         .unwrap();
+        let healer = host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            let def = &data::roster(run.expedition_map).enemies[0];
+            game::enemies::spawn_enemy(&mut commands, &mut run, def, Vec3::X * 50.0, Vec3::ZERO, false)
+        }).unwrap();
+        host.entity_mut(healer).insert(game::enemies::Rank::Healer);
+        let healer_guid = host.get::<Guid>(healer).unwrap().0;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         host.insert_resource(network(listener));
@@ -2528,6 +2544,9 @@ mod tests {
             receipts: default(),
         };
         apply_snapshot(&mut guest_world, &mut guest, snapshot);
+        let guest_healer = guest.entities[&healer_guid];
+        assert_eq!(guest_world.get::<game::enemies::Rank>(guest_healer), Some(&game::enemies::Rank::Healer));
+
         let warnings = guest_world.resource::<game::boss_spells::Warnings>();
         assert_eq!(warnings.0[0].origin, [10.0, 2.0, 20.0]);
         assert_eq!(warnings.0[0].progress(), 0.5);
@@ -2586,7 +2605,7 @@ mod tests {
                 .query_filtered::<Entity, With<Replicated>>()
                 .iter(&guest_world)
                 .count(),
-            4
+            5
         );
         assert_eq!(
             guest_world

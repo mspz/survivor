@@ -73,6 +73,20 @@ impl Geometry {
         let origin = Vec3::from_array(w.origin);
         let direction = Vec3::from_array(w.direction);
         let tau = std::f32::consts::TAU;
+        if let Some([radius, _]) = w.circle {
+            self.band(origin, 0.0, radius, 0.0, tau, base, ground);
+            self.band(origin, 0.0, radius * p, 0.0, tau, fill, ground);
+            self.band(
+                origin,
+                (radius - 0.1).max(0.0),
+                radius + 0.05,
+                0.0,
+                tau,
+                edge,
+                ground,
+            );
+            return;
+        }
         match w.spell {
             Spell::Cone => {
                 let start = direction.z.atan2(direction.x) - std::f32::consts::FRAC_PI_4;
@@ -204,8 +218,11 @@ fn draw(
     }
 }
 pub(super) fn plugin(app: &mut App) {
-    app.init_resource::<Surface>()
-        .add_systems(Update, draw.after(super::tick));
+    app.init_resource::<Surface>().add_systems(
+        Update,
+        draw.after(super::tick)
+            .after(crate::survivors::special_mobs::tick),
+    );
 }
 
 #[cfg(test)]
@@ -219,6 +236,7 @@ mod tests {
             direction: Vec3::X.to_array(),
             mortars: vec![],
             elapsed: 0.0,
+            circle: None,
         };
         let mut empty = Geometry::default();
         empty.warning(&w, &|p| p);
