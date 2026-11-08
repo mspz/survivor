@@ -22,9 +22,10 @@ pub(super) enum Action {
     Character,
     DamageMeter,
     Inventory,
+    DrawCards,
 }
 impl Action {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Forward,
         Self::Back,
         Self::TurnLeft,
@@ -42,26 +43,28 @@ impl Action {
         Self::Character,
         Self::DamageMeter,
         Self::Inventory,
+        Self::DrawCards,
     ];
     pub fn name(self) -> &'static str {
         match self {
-            Self::Forward => "Avancer",
-            Self::Back => "Reculer",
-            Self::TurnLeft => "Tourner à gauche",
-            Self::TurnRight => "Tourner à droite",
-            Self::StrafeLeft => "Pas à gauche",
-            Self::StrafeRight => "Pas à droite",
-            Self::Jump => "Sauter",
-            Self::Mobility => "Compétence de déplacement",
+            Self::Forward => "Move forward",
+            Self::Back => "Move backward",
+            Self::TurnLeft => "Turn left",
+            Self::TurnRight => "Turn right",
+            Self::StrafeLeft => "Strafe left",
+            Self::StrafeRight => "Strafe right",
+            Self::Jump => "Jump",
+            Self::Mobility => "Movement skill",
             Self::Talents => "Talents",
-            Self::Grade => "Filtre couleur et netteté",
-            Self::Card1 => "Choisir la carte 1",
-            Self::Card2 => "Choisir la carte 2",
-            Self::Card3 => "Choisir la carte 3",
-            Self::Pause => "Pause / reprendre",
-            Self::Character => "Personnage",
-            Self::DamageMeter => "Compteur de combat",
-            Self::Inventory => "Sacs / inventaire",
+            Self::Grade => "Color grading and sharpening",
+            Self::Card1 => "Choose card 1",
+            Self::Card2 => "Choose card 2",
+            Self::Card3 => "Choose card 3",
+            Self::Pause => "Pause / Resume",
+            Self::Character => "Character",
+            Self::DamageMeter => "Combat meter",
+            Self::Inventory => "Bags / Inventory",
+            Self::DrawCards => "Draw stored card",
         }
     }
 }
@@ -140,7 +143,8 @@ const KEY_CODES: &[KeyCode] = &[
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub(super) struct Settings {
-    pub bindings: [[Option<KeyCode>; 2]; 17],
+    pub bindings: [[Option<KeyCode>; 2]; 18],
+    pub auto_draw_cards: bool,
     pub damage: bool,
     pub healing: bool,
     pub incoming: bool,
@@ -164,7 +168,7 @@ impl Settings {
             KeyCode::KeyE,
             KeyCode::Space,
             KeyCode::KeyF,
-            KeyCode::KeyT,
+            KeyCode::KeyN,
             KeyCode::KeyG,
             KeyCode::Digit1,
             KeyCode::Digit2,
@@ -173,6 +177,7 @@ impl Settings {
             KeyCode::KeyC,
             KeyCode::F6,
             KeyCode::KeyB,
+            KeyCode::KeyT,
         ];
         let mut bindings = primary.map(|key| [Some(key), None]);
         for (action, key) in [
@@ -185,6 +190,7 @@ impl Settings {
         }
         Self {
             bindings,
+            auto_draw_cards: true,
             damage: true,
             healing: true,
             incoming: true,
@@ -236,6 +242,7 @@ impl Settings {
             "v1\ndamage {}\nhealing {}\nincoming {}\ncritical_only {}\ngrade {}\n",
             self.damage, self.healing, self.incoming, self.critical_only, self.grade
         );
+        out.push_str(&format!("auto_draw_cards {}\n", self.auto_draw_cards));
         for (i, row) in self.bindings.iter().enumerate() {
             for (slot, key) in row.iter().enumerate() {
                 out.push_str(&format!(
@@ -261,6 +268,7 @@ impl Settings {
             };
             let flag = value.parse::<bool>().ok();
             match name {
+                "auto_draw_cards" => { if let Some(v) = flag { out.auto_draw_cards = v; } }
                 "invert_x" => {
                     if let Some(v) = flag {
                         out.invert_x = v;
@@ -330,6 +338,12 @@ impl Settings {
                     }
                 }
             }
+        }
+        // Migrate the old default T talent binding when adding the manual card shortcut.
+        if !text.lines().any(|line| line.starts_with("bind.17."))
+            && out.bindings[Action::Talents as usize][0] == Some(KeyCode::KeyT)
+        {
+            out.bindings[Action::Talents as usize][0] = Some(KeyCode::KeyN);
         }
         // A malformed file cannot assign the same key to several actions.
         let mut seen = Vec::new();
@@ -422,10 +436,19 @@ mod tests {
         assert!(!s.pressed(Action::Forward, &keys));
     }
     #[test]
+    fn old_talent_shortcut_migrates_to_leave_t_for_stored_cards() {
+        let settings = Settings::decode("v1\nbind.8.0 KeyT\n");
+        assert_eq!(settings.bindings[Action::Talents as usize][0], Some(KeyCode::KeyN));
+        assert_eq!(settings.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyT));
+        assert!(settings.auto_draw_cards);
+    }
+
+    #[test]
     fn preferences_and_unbound_secondary_keys_roundtrip() {
         let mut s = Settings::defaults();
         s.rebind(Action::Forward, 0, Some(KeyCode::KeyZ));
         s.rebind(Action::Back, 1, None);
+        s.auto_draw_cards = false;
         s.damage = false;
         s.critical_only = true;
         s.invert_y = true;

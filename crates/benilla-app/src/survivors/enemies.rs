@@ -935,7 +935,7 @@ fn bank_levels(run: &mut Run) {
     while run.xp >= data::xp_to_next(run.level) {
         run.xp -= data::xp_to_next(run.level);
         run.gain_expedition_level();
-        run.pending_levels += 1;
+        super::card_draw::bank(run);
         if run.level == super::mobility::LEARN_LEVEL {
             if let Some(m) = super::mobility::for_class(run.class.id) {
                 run.banner = Some((
@@ -1461,6 +1461,19 @@ mod pickup_tests {
         world.run_system_once(collect_gems).unwrap();
         assert!(world.get_entity(empty).is_err());
         assert_eq!(world.resource::<Run>().xp, remainder);
+    }
+    #[test]
+    fn manual_rewards_bank_xp_levels_without_opening_the_draft_or_hiding_the_player() {
+        let mut world = world();
+        world.resource_mut::<Run>().auto_draw_cards = false;
+        world.resource_mut::<Run>().hp = 100.0;
+        gem(&mut world, GemKind::Vacuum, Vec3::Y);
+        gem(&mut world, GemKind::Xp(100), Vec3::X * 10_000.0);
+        world.run_system_once(collect_gems).unwrap();
+        let run = world.resource::<Run>();
+        assert_eq!((run.level,run.pending_levels,run.stored_cards),(8,0,7));
+        assert!(targetable(run,false));
+        assert!(!matches!(world.resource::<NextState<Phase>>(),NextState::Pending(Phase::LevelUp)));
     }
     #[test]
     fn actual_drop_table_makes_vacuums_five_times_rarer_than_meat() {

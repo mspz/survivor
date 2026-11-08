@@ -80,7 +80,8 @@ pub(super) fn input(
         selection.talents_open = false;
         return;
     }
-    if settings.just_pressed(super::options::Action::Talents, &keys) {
+    if settings.just_pressed(super::options::Action::Talents, &keys)
+        && !settings.just_pressed(super::options::Action::DrawCards, &keys) {
         selection.sheet_open = false;
         selection.talents_open = !selection.talents_open;
         if selection.talents_open {
@@ -233,7 +234,7 @@ mod tests {
             build[1][0] = 1;
             app.world_mut()
                 .insert_resource(Account::from_shared(0, u64::MAX, build));
-            key(&mut app, KeyCode::KeyT);
+            key(&mut app, KeyCode::KeyN);
             let available = app.world().resource::<Account>().available(0);
             app.world_mut()
                 .spawn((Interaction::Hovered, Action::Buy(0, 0)));
@@ -315,8 +316,8 @@ mod tests {
     fn talents_pause_and_resume_with_keyboard_or_close_button_in_run_and_hub() {
         for hub in [false, true] {
             let mut app = pause_app(hub);
-            for close in [Some(KeyCode::KeyT), Some(KeyCode::Escape), None] {
-                key(&mut app, KeyCode::KeyT);
+            for close in [Some(KeyCode::KeyN), Some(KeyCode::Escape), None] {
+                key(&mut app, KeyCode::KeyN);
                 assert_eq!(
                     *app.world().resource::<State<Phase>>().get(),
                     Phase::CharacterSheet
@@ -351,11 +352,11 @@ mod tests {
     fn switching_between_character_bags_and_talents_keeps_the_game_paused() {
         let mut app = pause_app(false);
         for keycode in [
-            KeyCode::KeyT,
+            KeyCode::KeyN,
             KeyCode::KeyC,
-            KeyCode::KeyT,
+            KeyCode::KeyN,
             KeyCode::KeyB,
-            KeyCode::KeyT,
+            KeyCode::KeyN,
         ] {
             key(&mut app, keycode);
             assert_eq!(

@@ -11,6 +11,7 @@ mod balance;
 mod bank;
 mod boss_spells;
 mod cards;
+mod card_draw;
 mod characters;
 mod client;
 mod combat_ui;

@@ -149,6 +149,7 @@ pub(super) fn input(
                     6 => settings.invert_y = !settings.invert_y,
                     7 => settings.show_fps = !settings.show_fps,
                     8 => settings.perf_diag = !settings.perf_diag,
+                    9 => settings.auto_draw_cards = !settings.auto_draw_cards,
                     _ => settings.grade = !settings.grade,
                 };
                 settings.save();
@@ -186,6 +187,7 @@ pub(super) fn input(
                         }
                     }
                     Tab::Display => {
+                        settings.auto_draw_cards = true;
                         settings.damage = true;
                         settings.healing = true;
                         settings.incoming = true;
@@ -265,7 +267,7 @@ fn key_label(key: Option<KeyCode>) -> String {
             .replace("Digit", "")
             .replace("Arrow", "")
     })
-    .unwrap_or("Non assignée".to_owned())
+    .unwrap_or("Unbound".to_owned())
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render(
@@ -324,70 +326,69 @@ pub(super) fn render(
             super::super::combat_ui::skin::backdrop(frame);
             frame.spawn(text(f,"OPTIONS",26.0,GOLD));
             frame.spawn(Node{column_gap:Val::Px(5.0),row_gap:Val::Px(5.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|tabs| {
-                for (tab,label) in [(Tab::Controls,"Raccourcis"),(Tab::Mouse,"Caméra"),(Tab::Sound,"Audio"),(Tab::Display,"Interface"),(Tab::Video,"Vidéo"),(Tab::Help,"Aide")] {
+                for (tab,label) in [(Tab::Controls,"Key bindings"),(Tab::Mouse,"Camera"),(Tab::Sound,"Audio"),(Tab::Display,"Interface"),(Tab::Video,"Video"),(Tab::Help,"Help")] {
                     button(tabs,f,Click::Tab(tab),if tab==panel.tab{format!("[{label}]")}else{label.into()},104.0);
                 }
             });
             frame.spawn((Body,Interaction::default(),bevy::ui::RelativeCursorPosition::default(),ScrollPosition(Vec2::new(0.0,panel.scroll)),Node{width:Val::Percent(100.0),min_height:Val::Px(0.0),flex_direction:FlexDirection::Column,row_gap:Val::Px(8.0),flex_grow:1.0,flex_basis:Val::Px(0.0),overflow:Overflow::scroll_y(),..default()})).with_children(|body| {
                 match panel.tab {
                     Tab::Controls => {
-                        body.spawn(text(f,"Choisissez une touche principale ou secondaire. Les conflits échangent les raccourcis.",13.0,GOLD));
+                        body.spawn(text(f,"Choose a primary or secondary key. Conflicts swap the bindings.",13.0,GOLD));
                         for action in Action::ALL { row(body,f,action.name(),|r| {
-                            for slot in 0..2 { button(r,f,Click::Bind(action,slot),if panel.capture==Some((action,slot)){"Appuyez sur une touche…".into()}else{key_label(settings.bindings[action as usize][slot])},164.0); }
+                            for slot in 0..2 { button(r,f,Click::Bind(action,slot),if panel.capture==Some((action,slot)){"Press a key…".into()}else{key_label(settings.bindings[action as usize][slot])},164.0); }
                         }); }
-                        body.spawn(text(f,"Échap annule la saisie. Retour arrière retire la touche.\nLes raccourcis suivent la position physique des touches.",12.0,Color::WHITE));
+                        body.spawn(text(f,"Esc cancels binding. Backspace clears the key.\nBindings use physical key positions.",12.0,Color::WHITE));
                     }
                     Tab::Sound => {
-                        for (name,label) in [("MasterVolume","Volume général"),("SoundVolume","Effets sonores"),("MusicVolume","Musique"),("AmbienceVolume","Ambiance")] {
+                        for (name,label) in [("MasterVolume","Master volume"),("SoundVolume","Sound effects"),("MusicVolume","Music"),("AmbienceVolume","Ambience")] {
                             row(body,f,label,|r| { button(r,f,Click::Volume(name,-1),"−",45.0);r.spawn(text(f,format!("{:3.0} %",value(cv,name)*100.0),16.0,GOLD));button(r,f,Click::Volume(name,1),"+",45.0); });
                         }
-                        for (name,label) in [("MasterSoundEffects","Activer le son"),("EnableMusic","Activer la musique"),("EnableAmbience","Activer l'ambiance"),("SoundOutputLimiter","Limiter la saturation audio")] {
+                        for (name,label) in [("MasterSoundEffects","Enable sound"),("EnableMusic","Enable music"),("EnableAmbience","Enable ambience"),("SoundOutputLimiter","Audio limiter")] {
                             row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));
                         }
-                        body.spawn(text(f,"Le limiteur réduit la distorsion quand de nombreux sons se superposent. Réglages appliqués immédiatement.",13.0,GOLD));
+                        body.spawn(text(f,"The limiter reduces distortion when many sounds overlap. Settings apply immediately.",13.0,GOLD));
                     }
                     Tab::Mouse => {
-                        row(body,f,"Sensibilité",|r|{button(r,f,Click::Sensitivity(-1),"−",45.0);r.spawn(text(f,format!("{:.1}×",rig.sensitivity),16.0,GOLD));button(r,f,Click::Sensitivity(1),"+",45.0);});
-                        for(flag,label,on)in[(5,"Inverser l'axe horizontal",settings.invert_x),(6,"Inverser l'axe vertical",settings.invert_y)]{row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        row(body,f,"Vitesse du zoom",|r|{button(r,f,Click::Zoom(-1),"−",45.0);r.spawn(text(f,format!("{:.2}×",settings.zoom_speed),16.0,GOLD));button(r,f,Click::Zoom(1),"+",45.0);});
-                        row(body,f,"Distance actuelle",|r|{button(r,f,Click::Distance(-1),"−",45.0);r.spawn(text(f,format!("{:.1} m",rig.dist),16.0,GOLD));button(r,f,Click::Distance(1),"+",45.0);});
-                        button(body,f,Click::DistanceReset,"Recentrer la hauteur et le zoom",320.0);
-                        body.spawn(text(f,"Glisser avec un bouton de souris fait pivoter la caméra. La molette règle le zoom. Maintenir les deux boutons fait avancer.\nLa distance actuelle peut ensuite être modifiée à la molette.",13.0,Color::WHITE));
+                        row(body,f,"Sensitivity",|r|{button(r,f,Click::Sensitivity(-1),"−",45.0);r.spawn(text(f,format!("{:.1}×",rig.sensitivity),16.0,GOLD));button(r,f,Click::Sensitivity(1),"+",45.0);});
+                        for(flag,label,on)in[(5,"Invert horizontal axis",settings.invert_x),(6,"Invert vertical axis",settings.invert_y)]{row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
+                        row(body,f,"Zoom speed",|r|{button(r,f,Click::Zoom(-1),"−",45.0);r.spawn(text(f,format!("{:.2}×",settings.zoom_speed),16.0,GOLD));button(r,f,Click::Zoom(1),"+",45.0);});
+                        row(body,f,"Current distance",|r|{button(r,f,Click::Distance(-1),"−",45.0);r.spawn(text(f,format!("{:.1} m",rig.dist),16.0,GOLD));button(r,f,Click::Distance(1),"+",45.0);});
+                        button(body,f,Click::DistanceReset,"Reset camera height and zoom",320.0);
+                        body.spawn(text(f,"Drag with either mouse button to rotate the camera. Scroll to zoom. Hold both buttons to move forward.\nYou can adjust the current distance with the mouse wheel.",13.0,Color::WHITE));
                     }
                     Tab::Display => {
-                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade),(7,"Compteur de FPS",settings.show_fps),(8,"Diagnostic de performance",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        body.spawn(text(f,"Les filtres concernent les nouveaux nombres flottants. Les calculs de combat restent identiques.\nLes fenêtres Personnage et Dégâts peuvent être déplacées par leur titre.\nLe diagnostic affiche ce qui coûte le plus et écrit un rapport dans benilla-config/Diagnostics. Il se coupe au prochain lancement.
-Le détail par système demande warcraft-survivors-perf.exe.",13.0,GOLD));
+                        for(flag,label,on)in[(9,"Automatically draw level-up cards",settings.auto_draw_cards),(0,"Damage dealt",settings.damage),(1,"Healing received and done",settings.healing),(2,"Damage taken",settings.incoming),(3,"Show only outgoing critical hits",settings.critical_only),(4,"Color grading and sharpening",settings.grade),(7,"FPS counter",settings.show_fps),(8,"Performance diagnostics",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
+                        body.spawn(text(f,"Filters apply to new floating numbers. Combat calculations are unchanged.\nDrag the Character and Combat meter windows by their title bars to move them.\nPerformance diagnostics identify expensive work and write a report to benilla-config/Diagnostics. They turn off on the next launch.\nPer-system details require warcraft-survivors-perf.exe.",13.0,GOLD));
                     }
                     Tab::Video => {
-                        for(name,label)in[("gxWindow","Mode fenêtré"),("gxMaximize","Fenêtre maximisée"),("gxVSync","Synchronisation verticale")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));}
-                        row(body,f,"Distance d'affichage",|r|{button(r,f,Click::ViewDistance(-1),"−",45.0);r.spawn(text(f,format!("{:.0} m",value(cv,"farclip")),16.0,GOLD));button(r,f,Click::ViewDistance(1),"+",45.0);});
-                        body.spawn(text(f,"Une distance plus faible réduit la charge graphique. La synchronisation verticale limite les déchirures.\nLe plein écran utilise le mode sans bordure. Le navigateur gère sa propre fenêtre.",13.0,GOLD));
+                        for(name,label)in[("gxWindow","Windowed mode"),("gxMaximize","Maximized window"),("gxVSync","Vertical sync")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));}
+                        row(body,f,"View distance",|r|{button(r,f,Click::ViewDistance(-1),"−",45.0);r.spawn(text(f,format!("{:.0} m",value(cv,"farclip")),16.0,GOLD));button(r,f,Click::ViewDistance(1),"+",45.0);});
+                        body.spawn(text(f,"A shorter view distance reduces GPU load. Vertical sync reduces tearing.\nFullscreen uses borderless mode. The browser manages its own window.",13.0,GOLD));
                     }
                     Tab::Help => {
                         for(title,description)in[
-                            ("Hub et progression","Expéditions : choisir une zone et commencer une run. Talents : progression permanente du personnage. Runes : préparer votre équipement au Hub."),
-                            ("Objets et coffre partagé","Clic droit dans les sacs : équiper ou retirer un objet. Au coffre ouvert : clic droit pour transférer. Glisser un objet vers l'autre fenêtre permet aussi de le transférer. Relâcher ailleurs annule."),
-                            ("Gheed","Approchez du vendeur devant la forge, puis utilisez le bouton Parier. Survolez un emplacement pour son prix ; cliquez pour acheter un objet de votre classe et de votre niveau."),
-                            ("Multijoueur","Créez ou rejoignez un salon depuis la sélection du personnage. Utilisez l'IPv4 Hamachi de l'hôte. Les objets du coffre sont partagés entre les membres du salon."),
-                            ("Pause","En solo, les menus interrompent la run. En multijoueur, le monde continue : ouvrez les menus dans un endroit sûr."),
+                            ("Hub and progression","Expeditions: choose a zone and start a run. Talents: permanent character progression. Runes: prepare your equipment in the hub."),
+                            ("Items and shared chest","Right-click in your bags to equip or unequip an item. With the chest open, right-click to transfer. You can also drag items between the windows. Dropping elsewhere cancels the transfer."),
+                            ("Gheed","Approach the blacksmith and select a slot, item type, affix profile, rarity and item level. Choose random or custom affixes, inspect the preview, then click Craft. The training blacksmith also offers legendary effects."),
+                            ("Multiplayer","Host or join a game from character selection. Use the host's Hamachi IPv4 address. Shared chest items are available to everyone in the game."),
+                            ("Pause","Menus pause the run in solo play. In multiplayer, the world keeps running: open menus in a safe place."),
                         ]{body.spawn(text(f,title,17.0,GOLD));body.spawn(text(f,description,14.0,Color::WHITE));}
                     }
                 }
             });
             frame.spawn(Node{column_gap:Val::Px(10.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|footer| {
-                if panel.tab!=Tab::Help {button(footer,f,Click::Reset,"Réinitialiser cet onglet",240.0);}
-                button(footer,f,Click::Back,"Retour [Échap]",200.0);
+                if panel.tab!=Tab::Help {button(footer,f,Click::Reset,"Reset this tab",240.0);}
+                button(footer,f,Click::Back,"Back [Esc]",200.0);
             });
-            frame.spawn(text(f,"Préférences enregistrées automatiquement · Molette pour faire défiler",12.0,GOLD));
+            frame.spawn(text(f,"Preferences save automatically · Scroll to browse",12.0,GOLD));
         });
     });
 }
 fn on_off(on: bool) -> &'static str {
     if on {
-        "Activé"
+        "On"
     } else {
-        "Désactivé"
+        "Off"
     }
 }
 #[derive(Component)]

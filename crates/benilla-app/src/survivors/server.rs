@@ -210,6 +210,8 @@ pub(super) struct Run {
     /// The class mobility's cooldown and running effect.
     pub(super) mobile: mobility::MobilityState,
     pub pending_levels: u32,
+    pub stored_cards: u32,
+    pub auto_draw_cards: bool,
     /// Reward categories alternate per confirmed pick, independent of queued XP levels.
     pub(super) next_passive: bool,
     pub bosses: u32,
@@ -285,6 +287,8 @@ impl Default for Run {
             legendary: default(),
             mobile: mobility::MobilityState::default(),
             pending_levels: 0,
+            stored_cards: 0,
+            auto_draw_cards: true,
             next_passive: false,
             bosses: 0,
             rings: 0,

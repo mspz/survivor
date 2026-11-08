@@ -421,6 +421,14 @@ fn pump_host(world: &mut World, network: &mut Network) {
                         profile.save = Some(save);
                     }
                 }
+                wire::ToServer::CardDraw { automatic, open } => {
+                    let in_hub = world.resource::<Selection>().in_hub;
+                    if let Some(session) = &peer.session {
+                        if let Some(companion) = world.resource_mut::<Companions>().0.get_mut(&session.wire_id()) {
+                            game::card_draw::apply(&mut companion.run, automatic, open && !in_hub);
+                        }
+                    }
+                }
                 wire::ToServer::ResetMeter => {
                     if peer.session.is_some() {
                         world.resource_scope(|world, mut players: Mut<Companions>| {
@@ -851,6 +859,11 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
             for request in chest_requests {
                 guest.socket.send(&wire::ToServer::Chest(request))?;
             }
+            let automatic = world.get_resource::<game::options::Settings>()
+                .is_none_or(|settings| settings.auto_draw_cards);
+            let open = world.get_resource_mut::<game::card_draw::Request>()
+                .is_some_and(|mut request| std::mem::take(&mut request.0));
+            guest.socket.send(&wire::ToServer::CardDraw { automatic, open })?;
             guest.sequence += 1;
             guest.socket.send(&wire::ToServer::Input(wire::Input {
                 sequence: guest.sequence,
@@ -971,6 +984,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
             .collect(),
         offer_id,
         draft_uses: run.draft_uses,
+        stored_cards: run.stored_cards,
         choices: offer.choices().iter().map(encode_choice).collect(),
         mobility: [
             run.mobile.cd,
@@ -1563,6 +1577,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.immune_t = stats.immune;
         game::healer_buffs::restore(&mut run, stats.support_bonuses);
         run.damage_done = stats.damage_done;
+        run.stored_cards = stats.stored_cards;
         run.meter = stats.meter.clone();
         run.effect_meter = stats.effect_meter.clone();
         run.boss_meter = stats.boss_meter.clone();
@@ -2162,6 +2177,50 @@ mod tests {
             .peers
             .values()
             .all(|p| p.loot.len() == 1));
+    }
+
+    #[test]
+    fn tcp_guest_can_bank_and_open_one_card_and_receives_the_remaining_count() {
+        let mut host = world();
+        host.resource_mut::<Selection>().in_hub = false;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut client = Socket::new(TcpStream::connect(address).unwrap()).unwrap();
+        join(&mut client, 0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while host.resource::<Companions>().0.is_empty() {
+            tick(&mut host);
+            client.receive::<wire::ToClient>().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        client.send(&wire::ToServer::CardDraw { automatic:false, open:false }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            tick(&mut host);
+            client.receive::<wire::ToClient>().unwrap();
+            if !host.resource::<Companions>().0.values().next().unwrap().run.auto_draw_cards { break; }
+            assert!(Instant::now() < deadline);
+        }
+        {
+            let mut companions = host.resource_mut::<Companions>();
+            let run = &mut companions.0.values_mut().next().unwrap().run;
+            for _ in 0..3 { game::card_draw::bank(run); }
+            assert_eq!((run.pending_levels,run.stored_cards),(0,3));
+        }
+        client.send(&wire::ToServer::CardDraw { automatic:false, open:true }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            tick(&mut host);
+            if client.receive::<wire::ToClient>().unwrap().into_iter().any(|message| {
+                matches!(message, wire::ToClient::Snapshot(s) if s.stats.stored_cards == 2 && !s.stats.choices.is_empty())
+            }) { break; }
+            assert!(Instant::now() < deadline);
+        }
+        let companions = host.resource::<Companions>();
+        let run = &companions.0.values().next().unwrap().run;
+        assert_eq!((run.pending_levels,run.stored_cards),(1,2));
+        assert_eq!(host.resource::<Run>().pending_levels,0);
     }
 
     #[test]
