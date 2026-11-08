@@ -437,13 +437,15 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
 
 pub(in crate::survivors) fn earned(run: &Run) -> u64 {
     (run.elapsed.max(0.0) as u64 / 5)
-        + (u64::from(run.kills) * 1000).saturating_sub(run.meta_kill_penalty) / 1000
+        + (u64::from(run.meta_kills) * 1000).saturating_sub(run.meta_kill_penalty) / 1000
         + u64::from(run.bosses) * 100
         + if run.won { 500 } else { 0 }
 }
 
-/// Keep full meta kill XP within nine levels; retain fractional rewards across kills.
-pub(super) fn penalize_kill(run: &mut Run, monster_level: u32) {
+/// Count a kill toward the character's XP, kept in full within nine levels of the monster;
+/// fractional rewards carry across kills.
+pub(super) fn credit_kill(run: &mut Run, monster_level: u32) {
+    run.meta_kills += 1;
     let retained = match run.meta_level.abs_diff(monster_level) {
         0..=9 => 1000,
         10 => 100,
@@ -603,8 +605,7 @@ mod tests {
                     ..Run::default()
                 };
                 for _ in 0..1000 {
-                    run.kills += 1;
-                    penalize_kill(&mut run, monster_level);
+                    credit_kill(&mut run, monster_level);
                 }
                 assert_eq!(earned(&run), expected, "monster level {monster_level}");
             }
@@ -618,13 +619,11 @@ mod tests {
             ..Run::default()
         };
         for _ in 0..10 {
-            run.kills += 1;
-            penalize_kill(&mut run, 10);
+            credit_kill(&mut run, 10);
         }
         assert_eq!(earned(&run), 1);
         run.meta_level = 19;
-        run.kills += 1;
-        penalize_kill(&mut run, 10);
+        credit_kill(&mut run, 10);
         assert_eq!(earned(&run), 2);
     }
     #[test]
@@ -656,7 +655,7 @@ mod tests {
         let mut a = account();
         a.xp = 0;
         let mut run = Run {
-            kills: 12,
+            meta_kills: 12,
             elapsed: 30.0,
             ..Run::default()
         };

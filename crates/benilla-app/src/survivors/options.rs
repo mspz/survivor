@@ -22,9 +22,14 @@ pub(super) enum Action {
     Character,
     DamageMeter,
     Inventory,
+    // Saved bindings are indexed by position: new actions go last.
+    Reroll,
+    Skip,
+    Banish,
+    LevelUp,
 }
 impl Action {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 21] = [
         Self::Forward,
         Self::Back,
         Self::TurnLeft,
@@ -42,7 +47,19 @@ impl Action {
         Self::Character,
         Self::DamageMeter,
         Self::Inventory,
+        Self::Reroll,
+        Self::Skip,
+        Self::Banish,
+        Self::LevelUp,
     ];
+    /// The card screen's keys: movement and windows do not listen while it is open, so these may
+    /// share a key with them, but not with each other.
+    pub fn on_card_screen(self) -> bool {
+        matches!(
+            self,
+            Self::Card1 | Self::Card2 | Self::Card3 | Self::Reroll | Self::Skip | Self::Banish
+        )
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Forward => "Avancer",
@@ -62,6 +79,10 @@ impl Action {
             Self::Character => "Personnage",
             Self::DamageMeter => "Compteur de combat",
             Self::Inventory => "Sacs / inventaire",
+            Self::Reroll => "Relancer les cartes",
+            Self::Skip => "Passer les cartes",
+            Self::Banish => "Bannir une carte",
+            Self::LevelUp => "Choisir le niveau en attente",
         }
     }
 }
@@ -140,7 +161,7 @@ const KEY_CODES: &[KeyCode] = &[
 
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub(super) struct Settings {
-    pub bindings: [[Option<KeyCode>; 2]; 17],
+    pub bindings: [[Option<KeyCode>; 2]; Action::ALL.len()],
     pub damage: bool,
     pub healing: bool,
     pub incoming: bool,
@@ -152,6 +173,8 @@ pub(super) struct Settings {
     pub show_fps: bool,
     pub ally_plates: bool,
     pub enemy_plates: bool,
+    /// Levels wait for the player to open the cards instead of interrupting the fight.
+    pub manual_levels: bool,
     /// Session only: measuring has a cost and should never come back on its own.
     pub perf_diag: bool,
 }
@@ -175,6 +198,10 @@ impl Settings {
             KeyCode::KeyC,
             KeyCode::F6,
             KeyCode::KeyB,
+            KeyCode::KeyR,
+            KeyCode::KeyS,
+            KeyCode::KeyB,
+            KeyCode::KeyL,
         ];
         let mut bindings = primary.map(|key| [Some(key), None]);
         for (action, key) in [
@@ -198,6 +225,7 @@ impl Settings {
             show_fps: false,
             ally_plates: false,
             enemy_plates: false,
+            manual_levels: true,
             perf_diag: false,
         }
     }
@@ -213,10 +241,21 @@ impl Settings {
             .flatten()
             .any(|&key| keys.just_pressed(key))
     }
+    /// The first key bound to `action`, as the options list shows it.
+    pub fn key_name(&self, action: Action) -> Option<String> {
+        self.bindings[action as usize]
+            .iter()
+            .flatten()
+            .next()
+            .map(|&key| ui::key_label(Some(key)))
+    }
     pub fn rebind(&mut self, action: Action, slot: usize, key: Option<KeyCode>) {
         let old = self.bindings[action as usize][slot];
         if let Some(key) = key {
-            for row in &mut self.bindings {
+            for (other, row) in Action::ALL.iter().zip(&mut self.bindings) {
+                if other.on_card_screen() != action.on_card_screen() {
+                    continue;
+                }
                 for value in row {
                     if *value == Some(key) {
                         *value = old;
@@ -249,13 +288,14 @@ impl Settings {
             }
         }
         out.push_str(&format!(
-            "invert_x {}\ninvert_y {}\nzoom_speed {}\nshow_fps {}\nally_plates {}\nenemy_plates {}\n",
+            "invert_x {}\ninvert_y {}\nzoom_speed {}\nshow_fps {}\nally_plates {}\nenemy_plates {}\nmanual_levels {}\n",
             self.invert_x,
             self.invert_y,
             self.zoom_speed,
             self.show_fps,
             self.ally_plates,
-            self.enemy_plates
+            self.enemy_plates,
+            self.manual_levels
         ));
         out
     }
@@ -278,6 +318,11 @@ impl Settings {
                 "ally_plates" => {
                     if let Some(v) = flag {
                         out.ally_plates = v;
+                    }
+                }
+                "manual_levels" => {
+                    if let Some(v) = flag {
+                        out.manual_levels = v;
                     }
                 }
                 "enemy_plates" => {
@@ -350,11 +395,24 @@ impl Settings {
                 }
             }
         }
-        // A malformed file cannot assign the same key to several actions.
+        // The first card-screen keys were 4, 5 and 6: files saved with them move to R, S and B.
+        let first = [KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6];
+        let drafts = [Action::Reroll, Action::Skip, Action::Banish];
+        if drafts
+            .iter()
+            .zip(first)
+            .all(|(&action, key)| out.bindings[action as usize] == [Some(key), None])
+        {
+            for action in drafts {
+                out.bindings[action as usize] = Self::defaults().bindings[action as usize];
+            }
+        }
+        // A malformed file cannot assign the same key to several actions of one screen.
         let mut seen = Vec::new();
-        for row in &mut out.bindings {
+        for (action, row) in Action::ALL.iter().zip(&mut out.bindings) {
             for key in row {
                 if let Some(value) = *key {
+                    let value = (action.on_card_screen(), value);
                     if seen.contains(&value) {
                         *key = None;
                     } else {

@@ -1297,17 +1297,32 @@ pub(super) fn setup_hud(
                 ..default()
             })
             .with_children(|bar| {
-                for (index, label) in [(3, "Reroll"), (4, "Skip"), (8, "Banish")] {
+                for (index, label, icon) in [
+                    (3, "Reroll", super::draft_icons::Pictogram::Die),
+                    (4, "Skip", super::draft_icons::Pictogram::Arrow),
+                    (8, "Banish", super::draft_icons::Pictogram::NoEntry),
+                ] {
                     bar.spawn((
                         Button,
                         super::cards::DraftButton(index),
                         Node {
-                            padding: UiRect::all(Val::Px(12.0)),
+                            padding: UiRect::all(Val::Px(8.0)),
+                            column_gap: Val::Px(8.0),
+                            align_items: AlignItems::Center,
                             ..default()
                         },
                         BackgroundColor(Color::srgb(0.15, 0.12, 0.08)),
                     ))
                     .with_children(|button| {
+                        button.spawn((
+                            ImageNode::new(super::draft_icons::image(icon, &mut images)),
+                            bevy::ui::FocusPolicy::Pass,
+                            Node {
+                                width: Val::Px(28.0),
+                                height: Val::Px(28.0),
+                                ..default()
+                            },
+                        ));
                         button.spawn((
                             super::cards::DraftLabel(index),
                             text_bundle(f, label, 18.0, GOLD),
@@ -2349,6 +2364,15 @@ pub(super) fn toggle_training_spells(
     }
 }
 
+/// The cooldown an ability's icon shows: none while it only waits for a target in range.
+pub(super) fn shown_cooldown(run: &Run, index: usize) -> f32 {
+    match run.abilities.get(index) {
+        Some(_) if run.retrying & (1u64 << index.min(63)) != 0 => 0.0,
+        Some(owned) => owned.cd.max(0.0),
+        None => 0.0,
+    }
+}
+
 /// Drive each ability icon's cooldown sweep from its remaining cooldown.
 pub(super) fn update_cooldown_sweeps(
     run: Res<Run>,
@@ -2360,7 +2384,7 @@ pub(super) fn update_cooldown_sweeps(
             continue;
         };
         let total = run.resolve_spell(o.def, o.level).cooldown.max(0.01);
-        let f = (o.cd / total).clamp(0.0, 1.0);
+        let f = (shown_cooldown(&run, s.index) / total).clamp(0.0, 1.0);
         if let Some(m) = mats.get_mut(&s.handle) {
             m.sweep = f;
         }

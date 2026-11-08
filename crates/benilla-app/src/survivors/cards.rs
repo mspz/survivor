@@ -168,6 +168,8 @@ pub(super) struct BanishMode(bool);
 pub(super) fn draft_controls(
     phase: Res<State<Phase>>,
     run: Res<Run>,
+    keys: Res<ButtonInput<KeyCode>>,
+    settings: Res<super::options::Settings>,
     buttons: Query<(&DraftButton, &Interaction), Changed<Interaction>>,
     mut labels: Query<(&DraftLabel, &mut Text)>,
     mut mode: ResMut<BanishMode>,
@@ -178,31 +180,49 @@ pub(super) fn draft_controls(
         return;
     }
     for (label, mut text) in &mut labels {
-        text.0 = match label.0 {
+        let name = match label.0 {
             3 => format!("Reroll ({})", run.draft_uses[0]),
             4 => format!("Skip ({})", run.draft_uses[2]),
             _ if mode.0 => "Banish: choose a card (cancel)".into(),
             _ => format!("Banish ({})", run.draft_uses[1]),
         };
+        text.0 = match settings.key_name(draft_action(label.0)) {
+            Some(key) => format!("[{key}] {name}"),
+            None => name,
+        };
     }
     if pending.0.is_some() {
         return;
     }
-    for (button, interaction) in &buttons {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if button.0 == 8 {
+    let clicked = buttons
+        .iter()
+        .filter(|(_, interaction)| **interaction == Interaction::Pressed)
+        .map(|(button, _)| button.0);
+    let typed = [3, 4, 8]
+        .into_iter()
+        .filter(|&index| settings.just_pressed(draft_action(index), &keys));
+    for index in clicked.chain(typed).collect::<Vec<_>>() {
+        if index == 8 {
             if run.draft_uses[1] > 0 {
                 mode.0 = !mode.0;
             }
         } else {
-            let slot = if button.0 == 3 { 0 } else { 2 };
+            let slot = if index == 3 { 0 } else { 2 };
             if run.draft_uses[slot] > 0 {
                 mode.0 = false;
-                pending.0 = Some((button.0, 0.0));
+                pending.0 = Some((index, 0.0));
+                return;
             }
         }
+    }
+}
+
+/// The key action of a draft button: 3 rerolls, 4 skips, 8 banishes.
+pub(super) fn draft_action(index: usize) -> super::options::Action {
+    match index {
+        3 => super::options::Action::Reroll,
+        4 => super::options::Action::Skip,
+        _ => super::options::Action::Banish,
     }
 }
 

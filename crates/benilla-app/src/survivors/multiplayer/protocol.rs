@@ -41,6 +41,10 @@ pub struct Input {
     pub jump: bool,
     pub mobility: bool,
     pub active: bool,
+    #[serde(default)]
+    pub hold_levels: bool,
+    #[serde(default)]
+    pub release_levels: bool,
 }
 
 impl Input {
@@ -147,6 +151,8 @@ pub struct Stats {
     pub passives: Vec<(String, u64)>,
     #[serde(default)]
     pub draft_uses: [u8; 3],
+    #[serde(default)]
+    pub held_levels: u32,
     pub offer_id: u64,
     pub choices: Vec<Choice>,
     pub mobility: [f32; 4],

@@ -260,7 +260,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(Role::Guest);
         world.insert_resource(Run {
-            kills: 41,
+            meta_kills: 41,
             ..default()
         });
         world.init_resource::<Lobby>();

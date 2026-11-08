@@ -348,7 +348,7 @@ mod tests {
         let zone = game::progression::zone_order()[0];
         world.resource_mut::<Selection>().progress = game::progression::Progress::fresh(1);
         let run = Run {
-            kills: 25,
+            meta_kills: 25,
             won: true,
             ..default()
         };

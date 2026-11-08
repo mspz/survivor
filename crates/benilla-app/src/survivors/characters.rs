@@ -453,7 +453,7 @@ mod tests {
             Phase::Playing
         );
         assert!(!app.world().resource::<Selection>().in_hub);
-        app.world_mut().resource_mut::<Run>().kills = 25;
+        app.world_mut().resource_mut::<Run>().meta_kills = 25;
         app.world_mut()
             .resource_mut::<NextState<Phase>>()
             .set(Phase::Hub);

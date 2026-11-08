@@ -155,6 +155,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(damage_colors::plugin)
         .add_plugins(diagnostics::plugin)
         .add_plugins(health_plates::plugin)
+        .add_plugins(level_prompt::plugin)
         .init_resource::<crate::entities::dest_fx::AreaVisualScales>()
         .init_resource::<crate::entities::dest_fx::EchoCasts>()
         .add_plugins(talent_ui::plugin)

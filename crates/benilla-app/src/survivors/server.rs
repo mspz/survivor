@@ -184,6 +184,15 @@ pub(super) struct Run {
     pub(super) account_credited: u64,
     pub(super) meta_level: u32,
     pub(super) meta_kill_penalty: u64,
+    /// The kills that count toward the character's XP: the whole party's in co-op, not only
+    /// this player's (`kills`).
+    pub(super) meta_kills: u32,
+    /// The abilities, by index, waiting for a target rather than cooling down: their short retry
+    /// delay is not shown as a cooldown.
+    pub(super) retrying: u64,
+    /// Manual level ups (`level_prompt`): whether this player holds them, and how many wait.
+    pub(super) hold_levels: bool,
+    pub(super) held_levels: u32,
     pub class: &'static ClassDef,
     pub race: u8,
     pub elapsed: f32,
@@ -259,6 +268,10 @@ impl Default for Run {
             account_credited: 0,
             meta_level: 1,
             meta_kill_penalty: 0,
+            meta_kills: 0,
+            retrying: 0,
+            hold_levels: false,
+            held_levels: 0,
             class: &data::CLASSES[0],
             race: 0,
             elapsed: 0.0,

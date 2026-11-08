@@ -7,6 +7,8 @@ use benilla_world::{rig_anim::RigPose, view::WorldCamera};
 use bevy::prelude::*;
 
 const SIZE: Vec2 = Vec2::new(46.0, 5.0);
+/// Enemies are what the bars are mostly read for in a crowd, so theirs are larger.
+const ENEMY_SIZE: Vec2 = Vec2::new(64.0, 8.0);
 const BORDER: f32 = 1.0;
 const LIFT: f32 = 0.35;
 const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 0.75];
@@ -14,12 +16,12 @@ const ALLY: [f32; 4] = [0.1, 0.85, 0.1, 1.0];
 const ENEMY: [f32; 4] = [0.85, 0.1, 0.1, 1.0];
 
 /// The bar's outline and its fill, centred on `center`.
-fn bar(center: Vec2, ratio: f32) -> (Rect, Rect) {
-    let inner = Rect::from_center_size(center, SIZE);
+fn bar(center: Vec2, size: Vec2, ratio: f32) -> (Rect, Rect) {
+    let inner = Rect::from_center_size(center, size);
     let fill = Rect::new(
         inner.min.x,
         inner.min.y,
-        inner.min.x + SIZE.x * ratio.clamp(0.0, 1.0),
+        inner.min.x + size.x * ratio.clamp(0.0, 1.0),
         inner.max.y,
     );
     (inner.inflate(BORDER), fill)
@@ -69,7 +71,8 @@ fn draw(
         let Ok(center) = camera.world_to_viewport(&view, head + Vec3::Y * LIFT) else {
             continue;
         };
-        let (outline, fill) = bar(center, status.health / status.maximum);
+        let size = if status.friendly { SIZE } else { ENEMY_SIZE };
+        let (outline, fill) = bar(center, size, status.health / status.maximum);
         for (rect, color) in [
             (outline, BACKDROP),
             (fill, if status.friendly { ALLY } else { ENEMY }),
@@ -118,10 +121,10 @@ mod tests {
 
     #[test]
     fn the_fill_follows_the_health_share_from_the_left() {
-        let (outline, fill) = bar(Vec2::new(100.0, 50.0), 0.25);
+        let (outline, fill) = bar(Vec2::new(100.0, 50.0), SIZE, 0.25);
         assert_eq!(fill.width(), SIZE.x * 0.25);
         assert_eq!(fill.min.x, 100.0 - SIZE.x / 2.0);
         assert_eq!(outline.width(), SIZE.x + BORDER * 2.0);
-        assert_eq!(bar(Vec2::ZERO, 2.0).1.width(), SIZE.x);
+        assert_eq!(bar(Vec2::ZERO, ENEMY_SIZE, 2.0).1.width(), ENEMY_SIZE.x);
     }
 }

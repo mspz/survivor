@@ -380,9 +380,11 @@ fn pump_host(world: &mut World, network: &mut Network) {
                     // Edge actions survive multiple packets received in one server frame.
                     let jump = peer.held.jump || input.jump;
                     let mobility = peer.held.mobility || input.mobility;
+                    let release = peer.held.release_levels || input.release_levels;
                     peer.held = input;
                     peer.held.jump = jump;
                     peer.held.mobility = mobility;
+                    peer.held.release_levels = release;
                 }
                 wire::ToServer::Pick { offer, index } => {
                     if let Some(session) = &peer.session {
@@ -481,6 +483,18 @@ fn pump_host(world: &mut World, network: &mut Network) {
             continue;
         }
         if let Some(session) = &peer.session {
+            if let Some(companion) = world
+                .resource_mut::<Companions>()
+                .0
+                .get_mut(&session.wire_id())
+            {
+                game::level_prompt::hold_levels(
+                    &mut companion.run,
+                    peer.held.hold_levels,
+                    peer.held.release_levels,
+                );
+            }
+            peer.held.release_levels = false;
             let mut command = to_command(&peer.held);
             if peer.since_input > 0.25 {
                 command = default();
@@ -861,6 +875,10 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
                 jump: std::mem::take(&mut guest.pending_jump),
                 mobility: std::mem::take(&mut guest.pending_mobility),
                 active: command.active,
+                hold_levels: world.resource::<GuestActions>().hold_levels,
+                release_levels: std::mem::take(
+                    &mut world.resource_mut::<GuestActions>().release_levels,
+                ),
             }))?;
             if let Some(index) = world.resource_mut::<GuestActions>().pick.take() {
                 guest.socket.send(&wire::ToServer::Pick {
@@ -960,7 +978,8 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         abilities: run
             .abilities
             .iter()
-            .map(|o| (o.def.key.into(), o.level, o.cd))
+            .enumerate()
+            .map(|(i, o)| (o.def.key.into(), o.level, hud::shown_cooldown(run, i)))
             .collect(),
         passives: run
             .passives
@@ -969,6 +988,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
             .collect(),
         offer_id,
         draft_uses: run.draft_uses,
+        held_levels: run.held_levels,
         choices: offer.choices().iter().map(encode_choice).collect(),
         mobility: [
             run.mobile.cd,
@@ -1547,6 +1567,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.level = stats.level;
         run.meta_level = stats.character_level.max(1);
         run.draft_uses = stats.draft_uses;
+        run.held_levels = stats.held_levels;
         run.xp = stats.xp;
         run.kills = stats.kills;
         run.won = stats.won;

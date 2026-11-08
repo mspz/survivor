@@ -734,8 +734,9 @@ pub(super) fn render_meter(
                             BackgroundColor(hud::rgb(color).with_alpha(0.30)),
                             bevy::ui::FocusPolicy::Pass,
                             Node {
+                                // Anchored right: a small share stays clear of the spell icon.
                                 position_type: PositionType::Absolute,
-                                left: Val::Px(0.0),
+                                right: Val::Px(0.0),
                                 top: Val::Px(0.0),
                                 width: Val::Percent((row.total / maximum * 100.0) as f32),
                                 height: Val::Percent(100.0),

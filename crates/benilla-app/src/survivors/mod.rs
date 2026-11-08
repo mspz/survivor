@@ -30,6 +30,8 @@ mod grade;
 mod healer_buffs;
 mod healing;
 mod health_plates;
+mod draft_icons;
+mod level_prompt;
 mod hero;
 mod hub_ground;
 mod hud;

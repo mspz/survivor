@@ -3449,6 +3449,12 @@ pub(super) fn cast_abilities(
                 run.extra_spells.dodge_until = 0.0;
             }
             run.abilities[i].cd = if fired { p.cooldown } else { 0.2 };
+            let bit = 1u64 << i.min(63);
+            if fired {
+                run.retrying &= !bit;
+            } else {
+                run.retrying |= bit;
+            }
             if fired && p.recast > 0.0 {
                 let count = engine::recast_count(p.recast, rng.f32(), false);
                 run.recasts.schedule(i, now, count);
@@ -4047,6 +4053,8 @@ pub(super) fn apply_hits(
         all.push(Hit { splash: 0.0, ..h });
     }
 
+    // Character XP is shared: every kill is credited to each player once the hits are resolved.
+    let mut party_kills: Vec<u32> = Vec::new();
     let mut kill = |commands: &mut Commands,
                     run: &mut Run,
                     e: Entity,
@@ -4068,7 +4076,7 @@ pub(super) fn apply_hits(
             boss: en.boss,
         });
         run.kills += 1;
-        super::talents::penalize_kill(run, en.def.level);
+        party_kills.push(en.def.level);
         if origin == Origin::Skill {
             run.heal(run.equipment.life_on_kill);
         }
@@ -4605,10 +4613,29 @@ pub(super) fn apply_hits(
         }
         en.dots.retain(|d| d.left > 0.0);
     }
+    share_kills(&mut run, players.as_deref_mut(), &party_kills);
     run.proc_runtime.parent = 0;
     if let Some(players) = players.as_deref_mut() {
         for player in players.0.values_mut() {
             player.run.proc_runtime.parent = 0;
         }
+    }
+}
+
+/// Every player is credited every kill, against their own character level, and the bosses the host
+/// has seen, since only the host's run spawns them.
+fn share_kills(
+    host: &mut Run,
+    players: Option<&mut super::multiplayer::Companions>,
+    levels: &[u32],
+) {
+    for &level in levels {
+        super::talents::credit_kill(host, level);
+    }
+    for player in players.into_iter().flat_map(|players| players.0.values_mut()) {
+        for &level in levels {
+            super::talents::credit_kill(&mut player.run, level);
+        }
+        player.run.bosses = player.run.bosses.max(host.bosses);
     }
 }

@@ -910,7 +910,11 @@ fn bank_levels(run: &mut Run) {
     while run.xp >= data::xp_to_next(run.level) {
         run.xp -= data::xp_to_next(run.level);
         run.gain_expedition_level();
-        run.pending_levels += 1;
+        if run.hold_levels {
+            run.held_levels += 1;
+        } else {
+            run.pending_levels += 1;
+        }
         if run.level == super::mobility::LEARN_LEVEL {
             if let Some(m) = super::mobility::for_class(run.class.id) {
                 run.banner = Some((
