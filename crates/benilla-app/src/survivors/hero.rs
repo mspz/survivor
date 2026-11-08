@@ -744,6 +744,32 @@ mod tests {
     use bevy::window::{CursorLeft, WindowFocused};
 
     #[test]
+    fn diagonals_and_combined_commands_never_exceed_straight_line_speed() {
+        for yaw in [0.0, 0.7, 2.4] {
+            for dt in [1.0 / 144.0, 1.0 / 60.0, 0.1] {
+                for speed in [7.0, 14.0] {
+                    for axes in [Vec2::Y, Vec2::X, Vec2::ONE, Vec2::new(-1.0, 1.0), -Vec2::ONE] {
+                        for extra in [Vec3::ZERO, Vec3::X] {
+                            let mut tf = Transform::from_translation(arena(&data::HUB));
+                            tf.rotation = Quat::from_rotation_y(yaw);
+                            let start = tf.translation;
+                            let mut movement = MovementState::default();
+                            let mut physics = Hero { vy: 0.0, air: 0.0 };
+                            step_motion(&mut tf, &mut movement, &mut physics,
+                                super::super::session::Command { axes, direction: extra, active: true, ..default() },
+                                dt, speed, &data::HUB, |_| Some(start.y));
+                            let travelled = flat(tf.translation - start).length();
+                            // World coordinates near Goldshire have approximately 0.001 yd precision.
+                            assert!((travelled - speed * dt).abs() < 0.001,
+                                "axes={axes:?}, yaw={yaw}, dt={dt}: travelled {travelled}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dodge_caps_at_seventy_five_and_prevents_physical_magical_and_area_damage() {
         use super::super::spell_engine::{Change, Filter, Modifier, Tags};
         for tags in [

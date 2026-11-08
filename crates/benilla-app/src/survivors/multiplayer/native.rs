@@ -256,7 +256,7 @@ fn to_command(input: &wire::Input) -> session::Command {
         return default();
     }
     session::Command {
-        axes: Vec2::from_array(input.axes),
+        axes: Vec2::from_array(input.axes).clamp_length_max(1.0),
         turn: input.turn,
         facing: input
             .facing

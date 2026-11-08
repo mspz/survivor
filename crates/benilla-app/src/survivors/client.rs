@@ -60,7 +60,7 @@ pub(super) fn input(
         session::Command {
             direction,
             facing,
-            axes,
+            axes: axes.clamp_length_max(1.0),
             turn,
             automatic: auto.is_some(),
             active: interactive && run.dead_t.is_none(),
