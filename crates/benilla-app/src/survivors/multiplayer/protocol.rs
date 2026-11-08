@@ -129,6 +129,8 @@ pub struct Stats {
     pub movement_speed: f32,
     pub meter: super::super::combat_ui::Meter,
     #[serde(default)]
+    pub effect_meter: super::super::combat_ui::EffectMeter,
+    #[serde(default)]
     pub boss_meter: super::super::combat_ui::Meter,
     pub earned: u64,
     pub hp: f32,

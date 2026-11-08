@@ -56,15 +56,19 @@ impl Hit {
 mod spell_engine_integration_tests {
     #[test]
     fn boss_meter_filters_normal_targets_and_counts_direct_and_periodic_damage() {
-        for (boss, rank, included) in [
-            (false, None, false),
-            (true, None, true),
-            (false, Some(enemies::Rank::Elite), true),
-            (false, Some(enemies::Rank::Boss), true),
-            (false, Some(enemies::Rank::Sprinter), false),
+        for (boss, rank, dummy, included) in [
+            (false, None, false, false),
+            (true, None, false, true),
+            (false, Some(enemies::Rank::Elite), false, true),
+            (false, Some(enemies::Rank::Boss), false, true),
+            (false, Some(enemies::Rank::Sprinter), false, false),
+            (false, None, true, true),
         ] {
             let (mut world, targets) = legendary_world("fireball", 0, &[3.0]);
             world.get_mut::<Enemy>(targets[0]).unwrap().boss = boss;
+            if dummy {
+                world.get_mut::<Enemy>(targets[0]).unwrap().def = &super::super::training::DUMMY;
+            }
             if let Some(rank) = rank { world.entity_mut(targets[0]).insert(rank); }
             let mut hit = Hit::direct("fireball", targets[0], 40.0, false);
             hit.dot = 10.0;
@@ -81,6 +85,11 @@ mod spell_engine_integration_tests {
             let filtered: f64 = run.boss_meter.rows(0.0).iter().map(|r| r.total).sum();
             assert!(total > before, "periodic tick must deal damage");
             assert_eq!(filtered, if included { total } else { 0.0 });
+            if dummy {
+                let enemy = world.get::<Enemy>(targets[0]).unwrap();
+                assert!(!enemy.boss);
+                assert_eq!(enemy.hp, enemy.max_hp);
+            }
             let encoded = serde_json::to_string(&run.boss_meter).unwrap();
             let decoded: super::super::combat_ui::Meter = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded.rows(0.0).iter().map(|r| r.total).sum::<f64>(), filtered);
@@ -1882,6 +1891,8 @@ mod spell_engine_integration_tests {
             let extras: Vec<_> = wave.iter().filter(|h| h.skill == "fireball").collect();
             let meter = serde_json::to_value(&world.resource::<Run>().meter).unwrap();
             assert_eq!(meter["entries"]["fireball"]["casts"], 1);
+            assert_eq!(meter["entries"]["fireball"]["debug"]["extra_casts"], 1);
+            assert_eq!(meter["entries"]["fireball"]["debug"]["casts"], 0);
             assert!(!copies.is_empty());
             assert_eq!(
                 !extras.is_empty(),
@@ -3433,12 +3444,13 @@ pub(super) fn cast_abilities(
                         {
                             if let Some(state) = debuffs.as_deref_mut() {
                                 let boss = enemies.get(target.e).is_ok_and(|(_, _, en)| en.boss);
-                                state.apply(
+                                state.apply_from(
                                     target.e,
                                     def.key,
                                     power * if boss { 0.5 } else { 1.0 },
                                     now,
                                     p.duration,
+                                    run.owner,
                                 );
                             }
                             primary = Some((target.e, target.pos));
@@ -4025,6 +4037,8 @@ pub(super) fn cast_abilities(
             }
             run.meter.cast(def.key);
             run.boss_meter.cast(def.key);
+            run.meter.debug_cast(def.key, ordinal.is_some(), extra);
+            run.boss_meter.debug_cast(def.key, ordinal.is_some(), extra);
             run.legendary.events.position = hpos;
             if !repeated {
                 run.legendary.events.serial = p.cast_id;
@@ -4714,6 +4728,7 @@ pub(super) fn apply_hits(
             continue;
         }
         let full = en.hp >= en.max_hp;
+        let controls_before = [en.slow_t, en.root_t, en.stun_t, en.fear_t, en.weaken_t];
         let was_rooted = en.root_t > 0.0;
         let was_feared = en.fear_t > 0.0;
         let mut dealt_effective = 0.0;
@@ -4730,12 +4745,13 @@ pub(super) fn apply_hits(
                     .iter()
                     .find(|o| o.def.key == "mangle")
                     .map_or(1, |o| o.level);
-                state.apply(
+                state.apply_from(
                     e,
                     "mangle",
                     super::support_spells::magnitude("mangle", level),
                     run.elapsed,
                     h.dot_dur,
+                    run.owner,
                 );
             }
             h.damage *= state.multiplier(e, run.elapsed, tags, false);
@@ -4804,15 +4820,37 @@ pub(super) fn apply_hits(
                 super::talent_runtime::periodic_leech(run, tags, effective);
             }
             let now = run.elapsed;
-            run.meter.record_hit(
-                h.meter_source.unwrap_or(h.skill),
-                now,
-                effective,
-                h.crit,
-                false,
-            );
-            if en.boss || ranks.get(e).is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss)) {
-                run.boss_meter.record_hit(h.meter_source.unwrap_or(h.skill), now, effective, h.crit, false);
+            let major = en.boss
+                || ranks
+                    .get(e)
+                    .is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss));
+            let target_kind = if en.boss {
+                "Boss"
+            } else if major {
+                "Elite"
+            } else if immortal {
+                "Training dummy"
+            } else {
+                "Normal"
+            };
+            for meter in std::iter::once(&mut run.meter).chain((major || immortal).then_some(&mut run.boss_meter)) {
+                meter.record_damage(
+                    h.meter_source.unwrap_or(h.skill),
+                    now,
+                    super::combat_ui::DamageEvent {
+                        skill: h.skill,
+                        tags,
+                        origin: h.origin,
+                        item: h.item_source,
+                        cast: h.cast_id,
+                        amount: dmg,
+                        effective,
+                        critical: h.crit,
+                        periodic: false,
+                        target: target_kind,
+                        family: "Direct",
+                    },
+                );
             }
             if immortal {
                 en.hp = en.max_hp;
@@ -5013,6 +5051,9 @@ pub(super) fn apply_hits(
             &mut rng,
         );
         en.cap_slow(ranks.get(e).ok());
+        super::combat_ui::track_control_changes(
+            &mut commands, e, h.owner, h.skill, controls_before, &en,
+        );
         legendary_events::hit(
             run,
             &h,
@@ -5132,15 +5173,45 @@ pub(super) fn apply_hits(
                     amount.min(remaining_hp).max(0.0)
                 };
                 let now = run.elapsed;
-                run.meter.record_hit(
-                    d.meter_source.unwrap_or(d.skill),
-                    now,
-                    effective,
-                    false,
-                    true,
-                );
-                if boss || ranks.get(e).is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss)) {
-                    run.boss_meter.record_hit(d.meter_source.unwrap_or(d.skill), now, effective, false, true);
+                let major = boss
+                    || ranks
+                        .get(e)
+                        .is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss));
+                let target_kind = if boss {
+                    "Boss"
+                } else if major {
+                    "Elite"
+                } else if immortal {
+                    "Training dummy"
+                } else {
+                    "Normal"
+                };
+                let family = match super::items::legendary::periodic::family(d) {
+                    super::items::legendary::periodic::Family::Bleed => "Bleed",
+                    super::items::legendary::periodic::Family::Poison => "Poison",
+                    super::items::legendary::periodic::Family::Burn => "Ignite / burn",
+                    super::items::legendary::periodic::Family::Disease => "Disease",
+                    super::items::legendary::periodic::Family::Curse => "Curse",
+                    _ => "Other periodic",
+                };
+                for meter in std::iter::once(&mut run.meter).chain((major || immortal).then_some(&mut run.boss_meter)) {
+                    meter.record_damage(
+                        d.meter_source.unwrap_or(d.skill),
+                        now,
+                        super::combat_ui::DamageEvent {
+                            skill: d.skill,
+                            tags,
+                            origin: d.origin,
+                            item: d.item_source,
+                            cast: d.meta.parent,
+                            amount,
+                            effective,
+                            critical: false,
+                            periodic: true,
+                            target: target_kind,
+                            family,
+                        },
+                    );
                 }
                 if !immortal {
                     remaining_hp = (remaining_hp - effective).max(0.0);

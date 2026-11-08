@@ -214,6 +214,9 @@ mod tests {
         let first = app.world_mut().spawn(enemy(true, 100.0)).id();
         let second = app.world_mut().spawn(enemy(true, 50.0)).id();
         app.world_mut().spawn(enemy(false, 100.0));
+        let mut dummy = enemy(false, 100.0);
+        dummy.def = &super::super::super::training::DUMMY;
+        app.world_mut().spawn(dummy);
         app.world_mut()
             .resource_mut::<NextState<Phase>>()
             .set(Phase::Playing);

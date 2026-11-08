@@ -8,12 +8,17 @@ use bevy::{prelude::*, window::PrimaryWindow};
 pub(super) mod bags;
 mod boss_bars;
 mod meter;
+mod buff_meter;
+pub(super) use buff_meter::EffectMeter;
+pub(super) use buff_meter::{control_changes as track_control_changes, track as track_effects};
 mod meter_panel;
+mod meter_debug;
 use meter_panel::render_meter;
 mod preview;
 mod sheet;
 pub(super) mod skin;
 pub(super) use meter::Meter;
+pub(in crate::survivors) use meter::DamageEvent;
 pub(super) use meter_panel::{PartyDamage, PartyRow};
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.2);
 const GREY: Color = Color::srgb(0.65, 0.65, 0.65);
@@ -42,6 +47,9 @@ pub(super) struct View {
     stats_scroll: f32,
     meter_scroll: f32,
     details_scroll: f32,
+    debug_scroll: f32,
+    debug_open: bool,
+    debug_tab: meter_debug::Tab,
     meter_selected: Option<String>,
     meter_tab: meter_panel::Tab,
     drag: Option<Drag>,
@@ -64,6 +72,9 @@ impl Default for View {
             stats_scroll: 0.0,
             meter_scroll: 0.0,
             details_scroll: 0.0,
+            debug_scroll: 0.0,
+            debug_open: false,
+            debug_tab: default(),
             meter_selected: None,
             meter_tab: default(),
             drag: None,
@@ -153,8 +164,10 @@ pub(super) fn plugin(app: &mut App) {
             (render_meter, launchers, position)
                 .chain()
                 .after(input)
-                .after(super::abilities::apply_hits),
+                .after(super::abilities::apply_hits)
+                .after(track_effects),
         );
+    meter_debug::plugin(app);
     sheet::plugin(app);
     skin::plugin(app);
     preview::plugin(app);
@@ -204,7 +217,11 @@ pub(super) fn input(
         return;
     }
     if view.meter_selected.is_some() && keys.just_pressed(KeyCode::Escape) {
-        view.meter_selected = None;
+        if view.debug_open {
+            view.debug_open = false;
+        } else {
+            view.meter_selected = None;
+        }
         keys.clear_just_pressed(KeyCode::Escape);
     }
     let toggle = settings.just_pressed(Action::Character, &keys)
@@ -422,9 +439,9 @@ fn launchers(
         ))
         .with_children(|ui| {
             skin::backdrop(ui);
-            button(ui, &font.0, Click::Character, "Personnage", 105.0);
-            button(ui, &font.0, Click::Meter, "Dégâts", 90.0);
-            button(ui, &font.0, Click::Bags, "Sacs", 80.0);
+            button(ui, &font.0, Click::Character, "Character", 105.0);
+            button(ui, &font.0, Click::Meter, "Damage", 90.0);
+            button(ui, &font.0, Click::Bags, "Bags", 80.0);
             skin::button(
                 ui,
                 &font.0,
@@ -436,7 +453,7 @@ fn launchers(
                 skin::button(
                     ui,
                     &font.0,
-                    "Expéditions",
+                    "Expeditions",
                     super::characters::Click::Expeditions,
                     110.0,
                 );
@@ -459,7 +476,7 @@ fn launchers(
                 skin::button(
                     ui,
                     &font.0,
-                    "Déconnexion",
+                    "Log out",
                     super::characters::Click::Logout,
                     115.0,
                 );
@@ -469,7 +486,7 @@ fn launchers(
                 skin::button(
                     ui,
                     &font.0,
-                    "Rejoindre une partie",
+                    "Join a game",
                     super::multiplayer::lobby::Action::Toggle,
                     180.0,
                 );
@@ -486,8 +503,9 @@ fn scroll_meter(
             &bevy::ui::RelativeCursorPosition,
             &mut ScrollPosition,
             Option<&MeterRows>,
+            Option<&meter_debug::DebugRows>,
         ),
-        Or<(With<MeterRows>, With<meter_panel::DetailsRows>)>,
+        Or<(With<MeterRows>, With<meter_panel::DetailsRows>, With<meter_debug::DebugRows>)>,
     >,
 ) {
     for event in wheel.read() {
@@ -498,7 +516,10 @@ fn scroll_meter(
             bevy::input::mouse::MouseScrollUnit::Line => event.y * 28.0,
             bevy::input::mouse::MouseScrollUnit::Pixel => event.y,
         };
-        for (node, cursor, mut scroll, meter) in &mut rows {
+        for (node, cursor, mut scroll, meter, debug) in &mut rows {
+            if view.debug_open && debug.is_none() {
+                continue;
+            }
             if !cursor.cursor_over() {
                 continue;
             }
@@ -509,6 +530,8 @@ fn scroll_meter(
             );
             if meter.is_some() {
                 view.meter_scroll = scroll.0.y;
+            } else if debug.is_some() {
+                view.debug_scroll = scroll.0.y;
             } else {
                 view.details_scroll = scroll.0.y;
             }

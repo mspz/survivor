@@ -1,12 +1,29 @@
 //! Classic framed meter with per-spell combat statistics.
 use super::*;
 
+// Keep full precision in the diagnostic pages; compact the meter's totals and rates.
+fn compact_number(value: f64, decimals: usize) -> String {
+    for (threshold, divisor, suffix) in [
+        (1e13, 1e12, "T"),
+        (1e10, 1e9, "B"),
+        (1e7, 1e6, "M"),
+        (1e4, 1e3, "K"),
+    ] {
+        if value.abs() >= threshold {
+            let number = format!("{:.1}", value / divisor);
+            return format!("{} {suffix}", number.strip_suffix(".0").unwrap_or(&number));
+        }
+    }
+    format!("{value:.decimals$}")
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Tab {
     #[default]
     Damage,
     BossDamage,
     Healing,
+    Buffs,
     Taken,
     Party,
 }
@@ -99,7 +116,7 @@ pub(super) fn interact(
         } else {
             Color::srgba(0.18, 0.13, 0.055, 0.95)
         };
-        if *interaction == Interaction::Pressed && matches!(view.meter_tab, Tab::Damage | Tab::BossDamage) {
+        if *interaction == Interaction::Pressed && matches!(view.meter_tab, Tab::Damage | Tab::BossDamage | Tab::Buffs) {
             view.meter_selected = Some(skill.0.clone());
             view.details_scroll = 0.0;
             selection.pointer_captured = true;
@@ -391,7 +408,7 @@ mod tests {
     }
 }
 
-fn identity(run: &Run, key: &str, spells: Option<&crate::ui_action::Spells>) -> (String, u32) {
+pub(super) fn identity(run: &Run, key: &str, spells: Option<&crate::ui_action::Spells>) -> (String, u32) {
     if key == "Pack Frenzy" {
         return ("Pack Frenzy (explosion)".to_owned(), 1449);
     }
@@ -439,6 +456,14 @@ fn icon(ui: &mut ChildSpawnerCommands, spell: u32, size: f32) {
     }
 }
 
+fn detail_lines(run:&Run,tab:Tab,key:&str)->Vec<(String,String)> {
+    match tab {
+        Tab::Buffs => run.effect_meter.details(key,run.elapsed),
+        Tab::BossDamage => run.boss_meter.details(key,run.elapsed),
+        _ => run.meter.details(key,run.elapsed),
+    }
+}
+
 pub(super) fn render_meter(
     mut commands: Commands,
     phase: Res<State<Phase>>,
@@ -470,10 +495,12 @@ pub(super) fn render_meter(
     let (rate, noun) = match view.meter_tab {
         Tab::BossDamage => ("DPS", "boss / elite damage"),
         Tab::Healing => ("HPS", "healing"),
+        Tab::Buffs => ("APS", "applications"),
         Tab::Taken => ("DTPS", "damage taken"),
         _ => ("DPS", "damage"),
     };
     let mut rows = meter.rows(run.elapsed);
+    if view.meter_tab == Tab::Buffs { rows = run.effect_meter.rows(run.elapsed); }
     if view.meter_tab == Tab::Party {
         rows = party
             .as_deref()
@@ -522,24 +549,24 @@ pub(super) fn render_meter(
             let details = view
                 .meter_selected
                 .as_deref()
-                .map(|key| meter.details(key, run.elapsed))
+                .map(|key| detail_lines(&run, view.meter_tab, key))
                 .unwrap_or_default();
             for (binding, mut text) in &mut values {
                 let value = match binding {
                     MeterValue::Summary => Some(format!(
-                        "{total_dps:.1} {rate}   |   {total_damage:.0} {noun}"
+                        "{} {rate}   |   {} {noun}", compact_number(total_dps, 1), compact_number(total_damage, 0)
                     )),
                     MeterValue::Damage(key) => rows.iter().find(|r| r.key == *key).map(|r| {
                         format!(
-                            "{:.0} {noun}   •   {:.1}%",
-                            r.total,
+                            "{} {noun}   •   {:.1}%",
+                            compact_number(r.total, 0),
                             r.total / total_damage.max(f64::MIN_POSITIVE) * 100.0
                         )
                     }),
                     MeterValue::Dps(key) => rows
                         .iter()
                         .find(|r| r.key == *key)
-                        .map(|r| format!("{:.1}", r.dps)),
+                        .map(|r| compact_number(r.dps, 1)),
                     MeterValue::Detail(index) => {
                         details.get(*index).map(|(_, value)| value.clone())
                     }
@@ -643,6 +670,7 @@ pub(super) fn render_meter(
                     (Tab::Damage, "Damage"),
                     (Tab::BossDamage, "Boss damage"),
                     (Tab::Healing, "Healing done"),
+                    (Tab::Buffs, "Buffs"),
                     (Tab::Taken, "Damage taken"),
                     (Tab::Party, "Party DPS"),
                 ] {
@@ -673,15 +701,15 @@ pub(super) fn render_meter(
                 MeterValue::Summary,
                 text(
                     f,
-                    format!("{total_dps:.1} {rate}   |   {total_damage:.0} {noun}"),
+                    format!("{} {rate}   |   {} {noun}", compact_number(total_dps, 1), compact_number(total_damage, 0)),
                     12.0,
                     Color::WHITE,
                 ),
             ));
             ui.spawn(text(
                 f,
-                if matches!(view.meter_tab, Tab::Damage | Tab::BossDamage) {
-                    "DPS: last 5s • Click a spell for details"
+                if matches!(view.meter_tab, Tab::Damage | Tab::BossDamage | Tab::Buffs) {
+                    if view.meter_tab == Tab::Buffs { "APS: last 5s · Click an effect for details" } else { "DPS: last 5s • Click a spell for details" }
                 } else {
                     "Rate: last 5s • Total since last reset"
                 },
@@ -716,7 +744,7 @@ pub(super) fn render_meter(
                             0,
                         )
                     } else {
-                        identity(&run, &row.key, spells.as_deref())
+                        if view.meter_tab == Tab::Buffs { run.effect_meter.identity(&row.key) } else { identity(&run, &row.key, spells.as_deref()) }
                     };
                     let color = member
                         .and_then(|p| data::CLASSES.iter().find(|c| c.id == p.class))
@@ -775,8 +803,8 @@ pub(super) fn render_meter(
                                 text(
                                     f,
                                     format!(
-                                        "{:.0} {noun}   •   {:.1}%",
-                                        row.total,
+                                        "{} {noun}   •   {:.1}%",
+                                        compact_number(row.total, 0),
                                         row.total / total_damage.max(f64::MIN_POSITIVE) * 100.0
                                     ),
                                     9.0,
@@ -786,19 +814,19 @@ pub(super) fn render_meter(
                         });
                         line.spawn((
                             MeterValue::Dps(row.key.clone()),
-                            text(f, format!("{:.1}", row.dps), 12.0, GOLD),
+                            text(f, compact_number(row.dps, 1), 12.0, GOLD),
                         ));
                     });
                 }
             });
         });
-    if !matches!(view.meter_tab, Tab::Damage | Tab::BossDamage) {
+    if !matches!(view.meter_tab, Tab::Damage | Tab::BossDamage | Tab::Buffs) {
         return;
     }
     let Some(selected) = view.meter_selected.as_deref() else {
         return;
     };
-    let (name, spell) = identity(&run, selected, spells.as_deref());
+    let (name, spell) = if view.meter_tab == Tab::Buffs { run.effect_meter.identity(selected) } else { identity(&run, selected, spells.as_deref()) };
     let size = windows.single().map_or(Vec2::new(1280.0, 720.0), |w| {
         Vec2::new(w.width(), w.height()) / scale.as_deref().map_or(1.0, |s| s.0)
     });
@@ -838,7 +866,7 @@ pub(super) fn render_meter(
                 ));
                 button(header, f, Click::CloseMeterDetails, "X", 24.0);
             });
-            ui.spawn(text(f, "Effective damage • since last reset", 12.0, GREY));
+            ui.spawn(text(f, if view.meter_tab == Tab::Buffs { "Observed applications / refreshes · since reset" } else { "Effective damage • since last reset" }, 12.0, GREY));
             ui.spawn((
                 DetailsRows,
                 Interaction::default(),
@@ -854,8 +882,7 @@ pub(super) fn render_meter(
                 },
             ))
             .with_children(|ui| {
-                for (index, (label, value)) in meter
-                    .details(selected, run.elapsed)
+                for (index, (label, value)) in detail_lines(&run, view.meter_tab, selected)
                     .into_iter()
                     .enumerate()
                 {
@@ -885,9 +912,10 @@ pub(super) fn render_meter(
             });
             ui.spawn(text(
                 f,
-                "Hits count per target. Passive procs and ticks are not casts.",
+                if view.meter_tab == Tab::Buffs { "Live effects on allies and enemies. Ticks are not applications." } else { "Hits count per target. Passive procs and ticks are not casts." },
                 11.0,
                 GREY,
             ));
+            super::meter_debug::launch_button(ui, f);
         });
 }

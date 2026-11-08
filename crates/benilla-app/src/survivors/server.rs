@@ -59,7 +59,7 @@ pub(super) fn plugin(app: &mut App) {
                 enemies::collect_gems,
                 hero::hero_vitals,
                 healing::credit,
-                revival::tick,
+                (revival::tick, combat_ui::track_effects).chain(),
             )
                 .chain()
                 .after(WorldStage::Input)
@@ -160,6 +160,7 @@ pub(super) struct Run {
     pub(super) expeditions: expedition_config::Config,
     pub(super) expedition_map: usize,
     pub(super) expedition_players: usize,
+    pub effect_meter: combat_ui::EffectMeter,
     pub meter: combat_ui::Meter,
     pub boss_meter: combat_ui::Meter,
     pub healing_meter: combat_ui::Meter,
@@ -237,6 +238,7 @@ impl Default for Run {
             expeditions: expedition_config::Config::default(),
             expedition_map: data::CAMPAIGN[0],
             expedition_players: 1,
+            effect_meter: default(),
             meter: combat_ui::Meter::default(),
             boss_meter: default(),
             healing_meter: default(),

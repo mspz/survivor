@@ -315,6 +315,10 @@ pub(in crate::survivors) fn install(
                 != events::school(dot.tags.unwrap_or(Tags(0)))
     });
     events::dot_applied(run, target, dot.tags.unwrap_or(Tags(0)), dot.origin, other);
+    run.meter.debug_activation(
+        dot.meter_source.unwrap_or(dot.skill), dot.skill, run.elapsed,
+        dot.meta.parent, dot.origin, dot.item_source, true,
+    );
     en.dots.push(dot);
 }
 fn neighbour(run: &Run, target: Entity, pos: Vec3) -> Option<Entity> {

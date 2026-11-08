@@ -75,6 +75,7 @@ pub(super) struct GuestActions {
 
 pub(super) fn reset_meters(run: &mut super::Run, players: Option<&mut Companions>) {
     fn clear(run: &mut super::Run) {
+        run.effect_meter = default();
         run.meter = default();
         run.boss_meter = default();
         run.healing_meter = default();

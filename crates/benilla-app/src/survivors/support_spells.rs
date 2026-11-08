@@ -234,6 +234,7 @@ impl Debuffs {
             !list.is_empty()
         });
     }
+    #[cfg(test)]
     pub fn apply(
         &mut self,
         target: Entity,
@@ -242,9 +243,16 @@ impl Debuffs {
         now: f32,
         duration: f32,
     ) {
+        self.apply_from(target, key, power, now, duration, None);
+    }
+    pub fn active(&self, now:f32) -> impl Iterator<Item=(Entity,&Buff)> {
+        self.entries.iter().flat_map(move |(entity,buffs)| buffs.iter().filter(move |b| b.until>now).map(move |buff|(*entity,buff)))
+    }
+    pub fn apply_from(&mut self, target:Entity, key:&'static str, power:f32, now:f32, duration:f32, caster:Option<u64>) {
         let list = self.entries.entry(target).or_default();
         list.retain(|b| b.until > now);
         if let Some(buff) = list.iter_mut().find(|b| b.key == key) {
+            if power >= buff.power || now + duration > buff.until { buff.caster = caster; }
             buff.power = buff.power.max(power);
             buff.until = buff.until.max(now + duration);
         } else {
@@ -253,7 +261,7 @@ impl Debuffs {
                 power,
                 until: now + duration,
                 reserve: 0.0,
-                caster: None,
+                caster,
                 jumps: 0,
             });
         }
