@@ -13,6 +13,17 @@ use serde::{Deserialize, Serialize};
 
 mod visuals;
 
+// Shared by collision checks and ground telegraphs.
+const CONE_RADIUS: f32 = 13.0 * 1.5;
+const MORTAR_RADIUS: f32 = 3.5 * 1.5;
+const RING_BANDS: [(f32, f32); 5] = [
+    (6.0, 10.5),
+    (15.0, 19.5),
+    (24.0, 28.5),
+    (33.0, 37.5),
+    (42.0, 46.5),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Spell {
     Cone,
@@ -39,10 +50,10 @@ impl Spell {
     }
     fn range(self) -> f32 {
         match self {
-            Self::Cone => 13.0,
+            Self::Cone => CONE_RADIUS,
             Self::Charge => 28.0,
             Self::Mortars => 45.0,
-            Self::Rings => 19.0,
+            Self::Rings => RING_BANDS[4].1,
         }
     }
     fn multiplier(self) -> f32 {
@@ -133,7 +144,7 @@ impl Warning {
                 let direction = Vec3::from_array(self.direction);
                 let forward = delta.dot(direction);
                 let side = delta.cross(direction).y.abs();
-                distance <= 13.0 + radius
+                distance <= CONE_RADIUS + radius
                     && forward >= -radius
                     && side <= forward + radius * std::f32::consts::SQRT_2
             }
@@ -147,8 +158,8 @@ impl Warning {
             Spell::Mortars => self
                 .mortars
                 .iter()
-                .any(|p| flat(pos - Vec3::from_array(*p)).length() <= 3.5 + radius),
-            Spell::Rings => [(4.0, 7.0), (10.0, 13.0), (16.0, 19.0)]
+                .any(|p| flat(pos - Vec3::from_array(*p)).length() <= MORTAR_RADIUS + radius),
+            Spell::Rings => RING_BANDS
                 .iter()
                 .any(|&(inner, outer)| distance + radius >= inner && distance - radius <= outer),
         }
@@ -408,7 +419,7 @@ mod tests {
         let player = world
             .spawn((
                 Hero { vy: 0.0, air: 0.0 },
-                Transform::from_xyz(5.0, 0.0, 0.0),
+                Transform::from_xyz(if spell == Spell::Rings { 8.0 } else { 5.0 }, 0.0, 0.0),
             ))
             .id();
         let boss = world
@@ -482,20 +493,25 @@ mod tests {
             circle: None,
         };
         assert!(w.contains(Vec3::X * 8.0, HERO_RADIUS));
+        assert!(w.contains(Vec3::X * 19.0, 0.0));
+        assert!(!w.contains(Vec3::X * 20.0, 0.0));
         assert!(!w.contains(Vec3::NEG_X * 8.0, HERO_RADIUS));
         assert!(!w.contains(Vec3::Z * 8.0, HERO_RADIUS));
         w.spell = Spell::Charge;
         assert!(w.contains(Vec3::X * 20.0, HERO_RADIUS));
         assert!(!w.contains(Vec3::new(20.0, 0.0, 5.0), HERO_RADIUS));
+        assert!(!w.contains(Vec3::X * 25.0, 0.0));
         w.spell = Spell::Rings;
-        for radius in [5.5, 11.5, 17.5] {
+        for radius in [8.25, 17.25, 26.25, 35.25, 44.25] {
             assert!(w.contains(Vec3::X * radius, HERO_RADIUS));
         }
-        for radius in [0.0, 8.5, 14.5, 22.0] {
+        for radius in [0.0, 12.75, 21.75, 30.75, 39.75, 50.0] {
             assert!(!w.contains(Vec3::X * radius, HERO_RADIUS));
         }
         w.spell = Spell::Mortars;
         assert!(w.contains(Vec3::new(8.0, 0.0, 3.0), HERO_RADIUS));
+        assert!(w.contains(Vec3::new(13.0, 0.0, 3.0), 0.0));
+        assert!(!w.contains(Vec3::new(13.5, 0.0, 3.0), 0.0));
         assert!(!w.contains(Vec3::ZERO, HERO_RADIUS));
     }
     #[test]
@@ -527,7 +543,7 @@ mod tests {
             let (mut world, player, boss) = arena(spell);
             advance(&mut world, 0.1);
             let origin = world.resource::<Warnings>().0[0].origin;
-            world.get_mut::<Transform>(player).unwrap().translation = Vec3::new(-30.0, 0.0, 30.0);
+            world.get_mut::<Transform>(player).unwrap().translation = Vec3::new(-60.0, 0.0, 60.0);
             advance(&mut world, spell.windup() + 0.7);
             assert_eq!(world.resource::<Run>().hp, 100.0);
             assert_eq!(world.resource::<Warnings>().0[0].origin, origin);

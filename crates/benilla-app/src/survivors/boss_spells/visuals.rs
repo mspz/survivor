@@ -91,13 +91,13 @@ impl Geometry {
             Spell::Cone => {
                 let start = direction.z.atan2(direction.x) - std::f32::consts::FRAC_PI_4;
                 let angle = std::f32::consts::FRAC_PI_2;
-                self.band(origin, 0.0, 13.0, start, angle, base, ground);
-                self.band(origin, 0.0, 13.0 * p, start, angle, fill, ground);
-                self.band(origin, 12.9, 13.05, start, angle, edge, ground);
+                self.band(origin, 0.0, CONE_RADIUS, start, angle, base, ground);
+                self.band(origin, 0.0, CONE_RADIUS * p, start, angle, fill, ground);
+                self.band(origin, CONE_RADIUS - 0.1, CONE_RADIUS + 0.05, start, angle, edge, ground);
                 for a in [start, start + angle] {
                     self.line(
                         origin,
-                        origin + Vec3::new(a.cos(), 0.0, a.sin()) * 13.0,
+                        origin + Vec3::new(a.cos(), 0.0, a.sin()) * CONE_RADIUS,
                         edge,
                         ground,
                     );
@@ -125,13 +125,13 @@ impl Geometry {
             Spell::Mortars => {
                 for point in &w.mortars {
                     let center = Vec3::from_array(*point);
-                    self.band(center, 0.0, 3.5, 0.0, tau, base, ground);
-                    self.band(center, 0.0, 3.5 * p, 0.0, tau, fill, ground);
-                    self.band(center, 3.4, 3.55, 0.0, tau, edge, ground);
+                    self.band(center, 0.0, MORTAR_RADIUS, 0.0, tau, base, ground);
+                    self.band(center, 0.0, MORTAR_RADIUS * p, 0.0, tau, fill, ground);
+                    self.band(center, MORTAR_RADIUS - 0.1, MORTAR_RADIUS + 0.05, 0.0, tau, edge, ground);
                 }
             }
             Spell::Rings => {
-                for (inner, outer) in [(4.0, 7.0), (10.0, 13.0), (16.0, 19.0)] {
+                for (inner, outer) in RING_BANDS {
                     self.band(origin, inner, outer, 0.0, tau, base, ground);
                     self.band(
                         origin,
@@ -247,7 +247,7 @@ mod tests {
         for triangle in filled.positions.chunks_exact(3) {
             let center = triangle.iter().map(|p| Vec3::from_array(*p)).sum::<Vec3>() / 3.0;
             let distance = center.length();
-            assert!(!(7.1..9.8).contains(&distance) && !(13.1..15.8).contains(&distance));
+            assert!(RING_BANDS.iter().any(|&(inner, outer)| distance >= inner - 0.1 && distance <= outer + 0.1));
         }
     }
 }
