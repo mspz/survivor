@@ -1094,7 +1094,12 @@ impl Inventory {
         let item = self.item(id).ok_or("Item missing")?;
         let slot = SLOTS
             .iter()
-            .find(|(_, kind)| self.can_equip(item, *kind))
+            .filter(|(_, kind)| self.can_equip(item, *kind))
+            .find(|(slot, _)| {
+                matches!(item.slot, SlotKind::Ring | SlotKind::Trinket)
+                    && self.equipped(slot).is_none()
+            })
+            .or_else(|| SLOTS.iter().find(|(_, kind)| self.can_equip(item, *kind)))
             .ok_or("No compatible slot")?
             .0;
         self.equip(id, slot)
@@ -1881,45 +1886,54 @@ mod tests {
         assert_eq!(run.heal(10.0), 10.0);
     }
     #[test]
-    fn right_click_uses_first_slot_and_drag_swaps_equipment_and_bag_order_atomically() {
-        let ring = || {
-            item(
-                SlotKind::Ring,
-                vec![affix(Effect::Life, 10.0, AffixKind::Prefix, vec![])],
-            )
-        };
-        let mut inventory = Inventory::fixture(vec![ring(), ring(), ring()]);
-        inventory.quick_equip(1).unwrap();
-        inventory.quick_equip(2).unwrap();
-        assert_eq!(inventory.equipped("Ring 1").unwrap().id, 2);
-        assert!(inventory.equipped("Ring 2").is_none());
-        inventory.equip(1, "Ring 2").unwrap();
-        inventory.quick_equip(1).unwrap();
-        assert!(!inventory.worn(1));
-        assert!(inventory.equipped("Ring 2").is_none());
-        inventory.drop_on_equipment(1, "Ring 2").unwrap();
-        inventory.drop_on_equipment(2, "Ring 2").unwrap();
-        assert_eq!(inventory.equipped("Ring 1").unwrap().id, 1);
-        assert_eq!(inventory.equipped("Ring 2").unwrap().id, 2);
-        let before = toml::to_string(&inventory.save).unwrap();
-        assert!(inventory.drop_on_equipment(2, "Head").is_err());
-        assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
-        inventory.drop_in_bag(2, 0).unwrap();
-        assert!(!inventory.worn(2));
-        assert_eq!(
-            inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
-            vec![2, 3]
-        );
-        inventory.drop_in_bag(2, 1).unwrap();
-        assert_eq!(
-            inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
-            vec![3, 2]
-        );
-        inventory.blocked = true;
-        let before = toml::to_string(&inventory.save).unwrap();
-        assert!(inventory.drop_in_bag(1, 0).is_err());
-        assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
-        assert_eq!(Inventory::decode(&before).unwrap().items.len(), 3);
+    fn right_click_fills_empty_accessory_slots_and_drag_swaps_equipment_and_bag_order_atomically() {
+        for (kind, first, second) in [
+            (SlotKind::Ring, "Ring 1", "Ring 2"),
+            (SlotKind::Trinket, "Trinket 1", "Trinket 2"),
+        ] {
+            let ring = || {
+                item(
+                    kind,
+                    vec![affix(Effect::Life, 10.0, AffixKind::Prefix, vec![])],
+                )
+            };
+            let mut inventory = Inventory::fixture(vec![ring(), ring(), ring()]);
+            inventory.quick_equip(1).unwrap();
+            inventory.quick_equip(2).unwrap();
+            assert_eq!(inventory.equipped(first).unwrap().id, 1);
+            assert_eq!(inventory.equipped(second).unwrap().id, 2);
+            inventory.quick_equip(3).unwrap();
+            assert_eq!(inventory.equipped(first).unwrap().id, 3);
+            assert_eq!(inventory.equipped(second).unwrap().id, 2);
+            inventory.quick_equip(1).unwrap();
+            inventory.drop_on_equipment(2, first).unwrap();
+            inventory.quick_equip(1).unwrap();
+            assert!(!inventory.worn(1));
+            assert!(inventory.equipped(second).is_none());
+            inventory.drop_on_equipment(1, second).unwrap();
+            inventory.drop_on_equipment(2, second).unwrap();
+            assert_eq!(inventory.equipped(first).unwrap().id, 1);
+            assert_eq!(inventory.equipped(second).unwrap().id, 2);
+            let before = toml::to_string(&inventory.save).unwrap();
+            assert!(inventory.drop_on_equipment(2, "Head").is_err());
+            assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
+            inventory.drop_in_bag(2, 0).unwrap();
+            assert!(!inventory.worn(2));
+            assert_eq!(
+                inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
+                vec![2, 3]
+            );
+            inventory.drop_in_bag(2, 1).unwrap();
+            assert_eq!(
+                inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
+                vec![3, 2]
+            );
+            inventory.blocked = true;
+            let before = toml::to_string(&inventory.save).unwrap();
+            assert!(inventory.drop_in_bag(1, 0).is_err());
+            assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
+            assert_eq!(Inventory::decode(&before).unwrap().items.len(), 3);
+        }
     }
     #[test]
     fn bag_items_stay_in_the_cell_they_are_dropped_in() {
