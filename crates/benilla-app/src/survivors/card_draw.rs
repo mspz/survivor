@@ -29,8 +29,7 @@ pub(super) fn apply(run: &mut Run, automatic: bool, open: bool) -> bool {
         && run.dead_t.is_none()
         && run.hp > 0.0
     {
-        run.stored_cards -= 1;
-        run.pending_levels = 1;
+        run.pending_levels = std::mem::take(&mut run.stored_cards);
     }
     run.pending_levels > 0 && run.dead_t.is_none() && run.hp > 0.0
 }
@@ -89,7 +88,7 @@ fn display(
         .next()
         .map(|key| format!("{key:?}").trim_start_matches("Key").to_owned())
         .unwrap_or_else(|| "Click".into());
-    let label = format!("Draw card [{key}] - {} available", run.stored_cards);
+    let label = format!("Draw cards [{key}] - {} available", run.stored_cards);
     for mut text in &mut labels {
         if text.0 != label {
             text.0 = label.clone();
@@ -161,7 +160,7 @@ pub(super) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     #[test]
-    fn confirming_a_manual_choice_returns_to_combat_and_preserves_the_reserve() {
+    fn manual_choices_chain_until_the_entire_reserve_is_consumed() {
         let mut run = Run {
             hp: 100.0,
             stored_cards: 3,
@@ -174,20 +173,22 @@ mod tests {
             ..default()
         };
         let mut next = NextState::Unchanged;
-        hud::pick(
-            0,
-            &mut run,
-            &mut offer,
-            &mut super::super::Rng(42),
-            &mut next,
-        );
-        assert_eq!((run.pending_levels, run.stored_cards), (0, 2));
-        assert!(offer.choices.is_empty());
-        assert!(matches!(next, NextState::Pending(Phase::Playing)));
+        let mut rng = super::super::Rng(42);
+        for remaining in (0..3).rev() {
+            hud::pick(0, &mut run, &mut offer, &mut rng, &mut next);
+            assert_eq!((run.pending_levels, run.stored_cards), (remaining, 0));
+            if remaining > 0 {
+                assert!(!offer.choices.is_empty());
+                assert!(matches!(next, NextState::Unchanged));
+            } else {
+                assert!(offer.choices.is_empty());
+                assert!(matches!(next, NextState::Pending(Phase::Playing)));
+            }
+        }
     }
 
     #[test]
-    fn keyboard_and_button_open_the_same_single_card_and_counter_updates() {
+    fn keyboard_and_button_open_the_entire_reserve_and_hide_the_counter() {
         for click in [false, true] {
             let mut app = App::new();
             let mut settings = options::Settings::defaults();
@@ -233,7 +234,7 @@ mod tests {
                     world.resource::<Run>().pending_levels,
                     world.resource::<Run>().stored_cards
                 ),
-                (1, 2)
+                (3, 0)
             );
             assert!(matches!(
                 world.resource::<NextState<Phase>>(),
@@ -244,12 +245,16 @@ mod tests {
                 .single(world)
                 .unwrap()
                 .0
-                .contains("2 available"));
+                .contains("0 available"));
+            assert_eq!(
+                *world.query_filtered::<&Visibility, With<DrawButton>>().single(world).unwrap(),
+                Visibility::Hidden
+            );
         }
     }
 
     #[test]
-    fn manual_cards_accumulate_without_draft_protection_and_open_one_at_a_time() {
+    fn manual_cards_accumulate_without_draft_protection_and_open_as_a_batch() {
         let mut run = Run {
             hp: 100.0,
             ..default()
@@ -260,9 +265,11 @@ mod tests {
         }
         assert_eq!((run.pending_levels, run.stored_cards), (0, 3));
         assert!(apply(&mut run, false, true));
-        assert_eq!((run.pending_levels, run.stored_cards), (1, 2));
+        assert_eq!((run.pending_levels, run.stored_cards), (3, 0));
         apply(&mut run, false, true);
-        assert_eq!(run.stored_cards, 2);
+        assert_eq!((run.pending_levels, run.stored_cards), (3, 0));
+        bank(&mut run);
+        bank(&mut run);
         run.pending_levels = 0;
         run.dead_t = Some(0.0);
         assert!(!apply(&mut run, false, true));

@@ -2180,7 +2180,7 @@ mod tests {
     }
 
     #[test]
-    fn tcp_guest_can_bank_and_open_one_card_and_receives_the_remaining_count() {
+    fn tcp_guest_can_open_all_banked_cards_in_one_request() {
         let mut host = world();
         host.resource_mut::<Selection>().in_hub = false;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2213,13 +2213,13 @@ mod tests {
         loop {
             tick(&mut host);
             if client.receive::<wire::ToClient>().unwrap().into_iter().any(|message| {
-                matches!(message, wire::ToClient::Snapshot(s) if s.stats.stored_cards == 2 && !s.stats.choices.is_empty())
+                matches!(message, wire::ToClient::Snapshot(s) if s.stats.stored_cards == 0 && !s.stats.choices.is_empty())
             }) { break; }
             assert!(Instant::now() < deadline);
         }
         let companions = host.resource::<Companions>();
         let run = &companions.0.values().next().unwrap().run;
-        assert_eq!((run.pending_levels,run.stored_cards),(1,2));
+        assert_eq!((run.pending_levels,run.stored_cards),(3,0));
         assert_eq!(host.resource::<Run>().pending_levels,0);
     }
 
