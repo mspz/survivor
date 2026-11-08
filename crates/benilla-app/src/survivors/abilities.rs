@@ -564,6 +564,33 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    fn rogue_knives_and_smoke_emit_visible_casts_and_a_lifetime_bound_cloud() {
+        for (key, visual) in [("fan_of_knives", 1680), ("smoke_bomb", 10389)] {
+            let (mut world, _) = legendary_world(key, 0, &[1.0, 2.0]);
+            world.init_resource::<crate::entities::dest_fx::AreaVisualScales>();
+            world.run_system_once(cast_abilities).unwrap();
+            assert!(world.resource::<Messages<CastEvent>>().iter_current_update_messages().any(|e| e.spell_id == visual));
+            assert!(world.resource::<Messages<SpellGoTargets>>().iter_current_update_messages().any(|e| e.spell_id == visual));
+            if key == "fan_of_knives" {
+                let hits: Vec<_> = world.resource::<Messages<Hit>>().iter_current_update_messages().collect();
+                assert_eq!(hits.len(), 2);
+                assert!(hits.iter().all(|h| h.skill == key && h.damage > 0.0));
+            } else {
+                let zone = &world.resource::<Run>().support.zones[0];
+                let anchor = zone.entity;
+                let until = zone.until;
+                assert_eq!(world.get::<ObjectStore>(anchor).unwrap().0.dynamicobject_spell_id(), Some(10389));
+                assert_eq!(world.get::<ObjectStore>(anchor).unwrap().0.object_scale_x(), Some(zone.radius / 2.0));
+                assert!(world.resource::<Messages<Hit>>().is_empty());
+                world.resource_mut::<Run>().elapsed = until + 0.1;
+                world.run_system_once(cast_abilities).unwrap();
+                assert!(world.get_entity(anchor).is_err());
+                assert!(world.resource::<Run>().support.zones.iter().all(|z| z.entity != anchor));
+            }
+        }
+    }
+
+    #[test]
     fn support_all_new_skills_cast_and_buffs_never_emit_damage_hits() {
         for &(_, key, _, _) in super::super::support_spells::SPELLS {
             let (mut world, _) = legendary_world(key, 0, &[1.0, 2.0]);

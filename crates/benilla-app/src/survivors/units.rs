@@ -244,7 +244,11 @@ pub(super) fn spawn_area_object(
 ) -> Entity {
     // Spell.dbc: 13809 only places the trap; 13810's area visual is FrostTrap_Aura.
     // Its ICESLICK_AREA ground quad spans 25 yd in the shipped M2 (vertices +/-12.5).
-    let (spell, scale, pos) = if spell == 13809 {
+    let (spell, scale, pos) = if spell == 2094 {
+        // Smoke Screen's Blind row has no ground model. Spawn Smoke (10389) has
+        // area_gate=1 and Vanish_Cast_Base, which loops with this zone anchor.
+        (10389, (radius / 2.0).max(0.01), pos)
+    } else if spell == 13809 {
         (13810, (radius / 12.5).max(0.01), pos + Vec3::Y * 0.03)
     } else {
         (spell, scale, pos)
@@ -415,9 +419,50 @@ pub(super) struct Fx<'w> {
 /// More impacts than this per cast only cost frames.
 const MAX_VISUAL_HITS: usize = 12;
 
+fn cast_visual_spell(spell: u32) -> u32 {
+    match spell {
+        // Fan of Knives borrows Whirlwind's spinning blades and body animation;
+        // its authored Slice and Dice row only flashes an aura on the chest.
+        5171 => 1680,
+        // Blind has no cloud; Spawn Smoke supplies the smoke cast and ground model.
+        2094 => 10389,
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod rogue_visual_tests {
+    use super::*;
+
+    #[test]
+    fn rogue_cast_and_smoke_area_surrogates_resolve_to_installed_models() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let spells = benilla_formats::load_spell_catalog(&mut chain).unwrap();
+        let visuals = benilla_formats::load_spell_visual_catalog(&mut chain).unwrap();
+        let knives = cast_visual_spell(super::super::data::ability("fan_of_knives").spell);
+        let stages = visuals.stages(spells.get(knives).unwrap().visual).unwrap();
+        let kit = visuals.kit(stages.cast).unwrap();
+        assert_eq!(kit.anim_id, Some(126));
+        assert!(kit.effects().filter_map(|(_, effect)| visuals.effect_path(effect))
+            .any(|path| path.eq_ignore_ascii_case("Spells\\Whirlwind_State_Base.mdx")));
+        assert!(chain.read_file("Spells\\Whirlwind_State_Base.m2").is_ok());
+        let smoke = cast_visual_spell(super::super::data::ability("smoke_bomb").spell);
+        let stages = visuals.stages(spells.get(smoke).unwrap().visual).unwrap();
+        assert_ne!(stages.cast, 0);
+        assert_ne!(stages.area_gate, 0);
+        assert!(visuals.effect_path(stages.area_effect).unwrap()
+            .eq_ignore_ascii_case("Spells\\Vanish_Cast_Base.mdx"));
+        assert!(chain.read_file("Spells\\Vanish_Cast_Base.m2").is_ok());
+    }
+}
+
 impl Fx<'_> {
     /// Size `caster`'s visuals of `spell` for the radius it will cast at.
     pub fn area_scale(&mut self, caster: Entity, spell: u32, scale: f32) {
+        // Whirlwind_State_Base's shipped horizontal bounds span roughly 6.4 yd.
+        let scale = if spell == 5171 { scale * (5.0 / 3.2) } else { scale };
+        let spell = cast_visual_spell(spell);
         if let Some(scales) = self.area_scales.as_mut() {
             scales.0.insert((caster, spell), scale);
         }
@@ -425,6 +470,7 @@ impl Fx<'_> {
 
     /// The next effects of `spell` on `unit` are an echo: they overlap the running ones.
     pub fn echo(&mut self, unit: Entity, spell: u32) {
+        let spell = cast_visual_spell(spell);
         if let Some(echoes) = self.echoes.as_mut() {
             echoes.0.insert((unit, spell));
         }
@@ -459,6 +505,7 @@ impl Fx<'_> {
     }
     /// `SMSG_SPELL_GO`: the cast kit on the caster, and a missile or an impact at each hit.
     pub fn cast(&mut self, caster: Entity, spell: u32, hits: &[Entity], dest: Option<Vec3>) {
+        let spell = cast_visual_spell(spell);
         let seq = self.seq.next();
         self.casts.write(CastEvent {
             entity: caster,
@@ -479,6 +526,7 @@ impl Fx<'_> {
 
     /// Only the spell's impact kit, on `target`: no cast animation on anyone.
     pub fn impact(&mut self, target: Entity, spell: u32) {
+        let spell = cast_visual_spell(spell);
         let seq = self.seq.next();
         self.casts.write(CastEvent {
             entity: target,
