@@ -45,12 +45,17 @@ impl Affix {
                     ProcKind::AttackSpeed => format!("+{:.0}% Attack speed", p.power * 100.0),
                 };
                 if matches!(p.kind, ProcKind::ClassSpell) {
-                    format!("On hit: {:.0}% chance to cast {effect}", self.value * 100.0)
+                    format!(
+                        "On hit: {:.0}% chance to cast {effect} ({:.1}s cooldown)",
+                        self.value * 100.0,
+                        p.internal_cooldown()
+                    )
                 } else {
                     format!(
-                        "On hit: {:.0}% chance for {effect} ({:.0}s)",
+                        "On hit: {:.0}% chance for {effect} ({:.0}s; {:.1}s cooldown)",
                         self.value * 100.0,
-                        p.duration
+                        p.duration,
+                        p.internal_cooldown()
                     )
                 }
             });

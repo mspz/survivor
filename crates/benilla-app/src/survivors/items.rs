@@ -354,6 +354,10 @@ pub(super) struct ProcRoll {
     pub class: Option<u8>,
 }
 impl ProcRoll {
+    fn internal_cooldown(&self) -> f32 {
+        if self.duration > 0.0 { self.duration * 1.2 } else { self.cooldown }
+    }
+
     fn valid(&self) -> bool {
         self.cooldown.is_finite()
             && (0.2..=300.0).contains(&self.cooldown)
@@ -1150,6 +1154,7 @@ impl Inventory {
                     if let Some(roll) = &a.proc {
                         procs.push(combat::EquippedProc {
                             item: *id,
+                            name: item.name.clone(),
                             index,
                             chance: a.value.min(1.0),
                             filter: Filter::requiring(

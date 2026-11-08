@@ -32,7 +32,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
     if run.dead_t.is_some() || run.hp <= 0.0 {
         return vec![];
     }
-    let mut out = vec![];
+    let mut out = super::items::combat::active_buffs(run);
     for b in run.support.buffs.iter().filter(|b| b.until > run.elapsed) {
         if let Some(def) = data::ABILITIES.iter().find(|d| d.key == b.key) {
             let mut desc = super::support_spells::description(b.key)
