@@ -13,6 +13,7 @@ const PROC_SOURCE: u64 = 0x4000_0000;
 #[derive(Clone)]
 pub(super) struct EquippedProc {
     pub item: u64,
+    pub name: String,
     pub index: usize,
     pub chance: f32,
     pub filter: Filter,
@@ -27,6 +28,8 @@ struct Event {
 }
 struct Buff {
     item: u64,
+    name: String,
+    duration: f32,
     index: usize,
     until: f32,
     change: Change,
@@ -49,6 +52,33 @@ pub(super) fn equip(run: &mut Run, procs: Vec<EquippedProc>) {
     run.item_runtime.procs = procs;
     sync_buffs(run);
 }
+pub(in crate::survivors) fn active_buffs(run: &Run) -> Vec<super::super::player_auras::Aura> {
+    run.item_runtime
+        .buffs
+        .iter()
+        .filter(|b| b.until > run.elapsed)
+        .map(|buff| {
+            let (spell, effect) = match buff.change {
+                Change::IncreasedDamage(_) => (6673, "Damage"),
+                Change::CriticalChance(_) => (19434, "Critical chance"),
+                Change::IncreasedAttackSpeed(_) => (3045, "Attack speed"),
+                _ => (6673, "Trinket proc"),
+            };
+            super::super::player_auras::Aura::buff(
+                spell,
+                format!("{} - {effect}", buff.name),
+                format!(
+                    "{}\nDuration: {:.1}s\nInternal cooldown: {:.1}s",
+                    buff.change.description(),
+                    buff.duration,
+                    buff.duration * 1.2
+                ),
+                Some(buff.until - run.elapsed),
+            )
+        })
+        .collect()
+}
+
 fn sync_buffs(run: &mut Run) {
     let modifiers: Vec<_> = run
         .item_runtime
@@ -184,8 +214,7 @@ pub(in crate::survivors) fn tick(
             {
                 continue;
             }
-            let cooldown =
-                super::super::procs::cooldown(&run, event.skill, event.tags, proc.roll.cooldown);
+            let cooldown = proc.roll.internal_cooldown();
             run.item_runtime.cooldowns.insert(key, now + cooldown);
             let change = match proc.roll.kind {
                 ProcKind::Damage => Some(Change::IncreasedDamage(proc.roll.power)),
@@ -199,6 +228,8 @@ pub(in crate::survivors) fn tick(
                     .retain(|b| b.item != proc.item || b.index != proc.index);
                 run.item_runtime.buffs.push(Buff {
                     item: proc.item,
+                    name: proc.name.clone(),
+                    duration: proc.roll.duration,
                     index: proc.index,
                     until: now + proc.roll.duration,
                     change,
@@ -358,6 +389,7 @@ mod tests {
     fn proc(item: u64, kind: ProcKind) -> EquippedProc {
         EquippedProc {
             item,
+            name: "Test Trinket".into(),
             index: 0,
             chance: 1.0,
             filter: Filter::default(),
@@ -445,7 +477,16 @@ mod tests {
             world.resource::<Run>().resolve_spell(fire, 1).dmg,
             base * 1.5
         );
-        world.resource_mut::<Run>().elapsed = 4.0;
+        let buffs = super::super::super::player_auras::collect(world.resource::<Run>());
+        let buff = buffs
+            .iter()
+            .find(|a| a.name.contains("Test Trinket"))
+            .unwrap();
+        assert_eq!(buff.left, Some(3.0));
+        assert!(buff.description.contains("3.6s"));
+        // Haste and cooldown recovery must not shorten the duration-based internal cooldown.
+        assert!((world.resource::<Run>().item_runtime.cooldowns[&(1, 0)] - 3.6).abs() < 0.001);
+        world.resource_mut::<Run>().elapsed = 3.1;
         record_hit(&mut world.resource_mut::<Run>(), "fireball", Tags::FIRE);
         world.run_system_once(tick).unwrap();
         assert_eq!(world.resource::<Run>().resolve_spell(fire, 1).dmg, base);
@@ -457,7 +498,12 @@ mod tests {
         }
         world.run_system_once(tick).unwrap();
         assert!(world.resource::<Run>().item_runtime.buffs.is_empty());
-        world.resource_mut::<Run>().elapsed = 10.0;
+        assert!(
+            !super::super::super::player_auras::collect(world.resource::<Run>())
+                .iter()
+                .any(|a| a.name.contains("Test Trinket"))
+        );
+        world.resource_mut::<Run>().elapsed = 3.61;
         record_hit(&mut world.resource_mut::<Run>(), "fireball", Tags::FIRE);
         world.run_system_once(tick).unwrap();
         assert_eq!(world.resource::<Run>().item_runtime.buffs.len(), 1);

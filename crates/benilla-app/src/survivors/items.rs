@@ -11,10 +11,13 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) mod armour;
+mod auto_salvage;
 pub(super) mod combat;
 mod config;
+pub(in crate::survivors) use config::crafting::{CraftAffix, CraftProfile, CraftRequest, LegendaryChoice};
 mod equipment;
 mod item_level;
+pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
 pub(super) mod legendary;
 mod starter;
 mod tooltip;
@@ -352,6 +355,10 @@ pub(super) struct ProcRoll {
     pub class: Option<u8>,
 }
 impl ProcRoll {
+    fn internal_cooldown(&self) -> f32 {
+        if self.duration > 0.0 { self.duration * 1.2 } else { self.cooldown }
+    }
+
     fn valid(&self) -> bool {
         self.cooldown.is_finite()
             && (0.2..=300.0).contains(&self.cooldown)
@@ -431,7 +438,7 @@ pub(super) struct Affix {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Item {
-    /// Zero preserves saved allocations from before prefix/suffix budgets.
+    /// 0: legacy allocation; 1: natural loot; 2: forged, allowing partial custom affixes.
     #[serde(default)]
     pub affix_rules: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -457,9 +464,23 @@ pub(super) struct Item {
     pub level: u32,
     pub affixes: Vec<Affix>,
 }
+impl Item {
+    pub(in crate::survivors) fn sale_price(&self) -> u64 {
+        let multiplier = match self.rarity {
+            Rarity::Normal => 1,
+            Rarity::Magic => 2,
+            Rarity::Epic => 3,
+            Rarity::Legendary => 4,
+        };
+        super::currency::reward(self.level, false) * multiplier
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Save {
+    #[serde(default)]
+    auto_salvage: [AutoSalvageRule; 4],
     #[serde(default)]
     copper: u64,
     #[serde(default)]
@@ -487,6 +508,7 @@ impl Default for Save {
     fn default() -> Self {
         Self {
             copper: 0,
+            auto_salvage: Default::default(),
             version: 1,
             trade_identity: String::new(),
             trade_sequence: 0,
@@ -540,6 +562,7 @@ fn bag_layout(save: &Save) -> Vec<u64> {
 #[derive(Resource)]
 pub(super) struct Inventory {
     class: u8,
+    character_level: u32,
     character: Option<u64>,
     save: Save,
     pub config: Config,
@@ -554,6 +577,7 @@ impl Default for Inventory {
         Self {
             character: None,
             class: 1,
+            character_level: 1,
             save: Save::default(),
             config: Config::load(),
             revision: 0,
@@ -594,7 +618,6 @@ impl Inventory {
             self.notice = format!("Money could not be saved: {error}");
         }
     }
-    #[cfg(test)]
     pub(in crate::survivors) fn add_money(&mut self, amount: u64) -> Result<(), String> {
         if amount == 0 {
             return Ok(());
@@ -620,13 +643,16 @@ impl Inventory {
 
     /// Trusted friend-session inventory; never binds or writes a character on the host.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::survivors) fn from_shared(class: u8, text: &str) -> Result<Self, String> {
-        Ok(Self {
-            class,
-            save: toml::from_str(text).map_err(|e| e.to_string())?,
-            revision: 1,
-            ..Self::default()
-        })
+    pub(in crate::survivors) fn from_shared(class: u8, level: u32, text: &str) -> Result<Self, String> {
+        let mut inventory = Self { class, character_level: level.clamp(1,60), save: toml::from_str(text).map_err(|e| e.to_string())?, revision: 1, ..Self::default() };
+        inventory.save.equipped.retain(|_, id| inventory.save.items.iter().any(|item| item.id == *id && item.required_level() <= inventory.character_level));
+        Ok(inventory)
+    }
+    #[cfg(test)]
+    pub(super) fn fixture_for_character(character: u64, items: Vec<Item>) -> Self {
+        let mut inventory = Self::fixture(items);
+        inventory.character = Some(character);
+        inventory
     }
     #[cfg(test)]
     pub(super) fn fixture(mut items: Vec<Item>) -> Self {
@@ -636,6 +662,7 @@ impl Inventory {
         Self {
             character: Some(1),
             class: 1,
+            character_level: 60,
             save: Save {
                 next_id: items.len() as u64 + 1,
                 items,
@@ -708,6 +735,7 @@ impl Inventory {
                 save.equipped.remove("Off hand");
             }
         }
+        auto_salvage::apply(&mut save);
         save.bag_cells = bag_layout(&save);
         self.validate_loadout(&save)?;
         self.persist(&save)?;
@@ -770,6 +798,18 @@ impl Inventory {
         let mut save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
         // Identity is the saved unique ID; display names can change or be translated.
         for item in &mut save.items {
+            if item.affix_rules == 2 && item.legendary.is_none() {
+                for (old, profile) in [
+                    (" forge (Force)", "Strength"),
+                    (" forge (Agilite)", "Agility"),
+                    (" forge (Intelligence)", "Intelligence"),
+                ] {
+                    if let Some(base) = item.name.strip_suffix(old) {
+                        item.name = format!("{base} forged ({profile})");
+                        break;
+                    }
+                }
+            }
             if let Some(definition) = item
                 .legendary
                 .as_ref()
@@ -778,7 +818,13 @@ impl Inventory {
                 item.name = definition.name.into();
             }
         }
-        if save.version != 1 || save.next_id == 0 {
+        if save.version != 1
+            || save.next_id == 0
+            || save
+                .auto_salvage
+                .iter()
+                .any(|r| r.below_ilvl > AutoSalvageRule::MAX_BELOW_ILVL)
+        {
             return Err("unsupported inventory".into());
         }
         let mut ids = BTreeSet::new();
@@ -794,7 +840,7 @@ impl Inventory {
                     .is_some_and(|id| !super::data::CLASSES.iter().any(|c| c.id == id))
                 || item.level == 0
                 || !legendary::validate_item(item)
-                || item.affix_rules > 1
+                || item.affix_rules > 2
                 || (item.affix_rules == 0
                     && item.affixes.len() != item.rarity.legacy_count()
                     && !starter::is_plain(item))
@@ -821,10 +867,10 @@ impl Inventory {
                 kinds[usize::from(a.kind == AffixKind::Suffix)] += 1;
             }
             let primary = item.affixes.iter().filter(|a| a.effect.primary()).count();
-            if item.affix_rules == 1 {
+            if item.affix_rules >= 1 {
                 let (minimum, cap) = item.rarity.affix_limits();
                 // White items saved before the guaranteed-affix rule remain loadable.
-                let minimum = if item.rarity == Rarity::Normal {
+                let minimum = if item.rarity == Rarity::Normal || item.affix_rules == 2 {
                     0
                 } else {
                     minimum
@@ -890,9 +936,7 @@ impl Inventory {
         save.items.push(item);
         self.commit(save)
     }
-    pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind) -> bool {
-        self.config.gamble_available(slot, self.class)
-    }
+    #[cfg(test)]
     pub(in crate::survivors) fn gamble(
         &mut self,
         slot: SlotKind,
@@ -904,7 +948,7 @@ impl Inventory {
         let copper = self
             .money()
             .checked_sub(price)
-            .ok_or("Pas assez de monnaie.")?;
+            .ok_or("Not enough gold.")?;
         let mut item = self.config.generate_gamble(level, self.class, slot, rng)?;
         let mut save = self.save.clone();
         item.id = save.next_id;
@@ -917,8 +961,80 @@ impl Inventory {
         self.commit(save)?;
         Ok(item)
     }
+    pub(in crate::survivors) fn training_legendary_choices(
+        &self,
+        request: &CraftRequest,
+    ) -> Vec<LegendaryChoice> {
+        self.config.training_legendary_choices(request, self.class)
+    }
+    pub(in crate::survivors) fn training_craft_preview(
+        &self,
+        request: &CraftRequest,
+        level: u32,
+        roll: Option<&legendary::Roll>,
+    ) -> Option<Item> {
+        let mut preview = request.clone();
+        if preview.affixes.is_none() {
+            preview.affixes = Some(vec![]);
+        }
+        self.config
+            .generate_training_craft(&preview, level, self.class, roll, &mut Rng(1))
+            .ok()
+    }
+    pub(in crate::survivors) fn craft_training(
+        &mut self,
+        selection: &super::Selection,
+        request: &CraftRequest,
+        level: u32,
+        roll: Option<&legendary::Roll>,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        if !super::training::active(selection) {
+            return Err("The training blacksmith is only available in the training zone.".into());
+        }
+        self.writable()?;
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let price = request.training_price(level)?;
+        let copper = self
+            .money()
+            .checked_sub(price)
+            .ok_or("Not enough gold.")?;
+        let mut item = self
+            .config
+            .generate_training_craft(request, level, self.class, roll, rng)?;
+        let mut save = self.save.clone();
+        item.id = save.next_id;
+        save.next_id = save
+            .next_id
+            .checked_add(1)
+            .ok_or("Item identity exhausted")?;
+        save.copper = copper;
+        save.items.push(item.clone());
+        self.commit(save)?;
+        Ok(item)
+    }
+    pub(in crate::survivors) fn craft_preview(&self, request: &CraftRequest, level: u32) -> Option<Item> {
+        self.config.craft_preview(request, level, self.class)
+    }
+    pub(in crate::survivors) fn craft_types(&self, slot: SlotKind) -> Vec<EquipmentType> { self.config.craft_types(slot) }
+    pub(in crate::survivors) fn craft_affixes(&self, request: &CraftRequest, level: u32) -> Vec<CraftAffix> { self.config.craft_affixes(request, level, self.class) }
+    pub(in crate::survivors) fn craft(&mut self, request: &CraftRequest, level: u32, rng: &mut Rng) -> Result<Item, String> {
+        self.writable()?;
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let price = request.price(level)?;
+        let copper = self.money().checked_sub(price).ok_or("Not enough gold.")?;
+        let mut item = self.config.generate_craft(request, level, self.class, rng)?;
+        let mut save = self.save.clone();
+        item.id = save.next_id;
+        save.next_id = save.next_id.checked_add(1).ok_or("Item identity exhausted")?;
+        save.copper = copper;
+        save.items.push(item.clone());
+        self.commit(save)?;
+        Ok(item)
+    }
     pub fn equip(&mut self, id: u64, slot: &str) -> Result<(), String> {
         let item = self.item(id).ok_or("Item missing")?;
+        if self.character_level < item.required_level() { return Err(format!("Requires level {} to equip this item.", item.required_level())); }
         if !SLOTS
             .iter()
             .any(|(name, kind)| *name == slot && self.can_equip(item, *kind))
@@ -939,11 +1055,15 @@ impl Inventory {
         save.equipped.remove(slot);
         self.commit(save)
     }
+    /// Removing an object sells it; removal and payment are persisted together.
     pub fn delete(&mut self, id: u64) -> Result<(), String> {
-        if self.item(id).is_none() {
-            return Err("Item missing".into());
-        }
+        let price = self.item(id).ok_or("Item missing")?.sale_price();
         let mut save = self.save.clone();
+        save.copper = save
+            .copper
+            .checked_add(price)
+            .filter(|&total| total <= super::currency::MAX_BALANCE)
+            .ok_or("Money limit reached")?;
         save.equipped.retain(|_, equipped| *equipped != id);
         save.items.retain(|item| item.id != id);
         self.commit(save)
@@ -974,7 +1094,12 @@ impl Inventory {
         let item = self.item(id).ok_or("Item missing")?;
         let slot = SLOTS
             .iter()
-            .find(|(_, kind)| self.can_equip(item, *kind))
+            .filter(|(_, kind)| self.can_equip(item, *kind))
+            .find(|(slot, _)| {
+                matches!(item.slot, SlotKind::Ring | SlotKind::Trinket)
+                    && self.equipped(slot).is_none()
+            })
+            .or_else(|| SLOTS.iter().find(|(_, kind)| self.can_equip(item, *kind)))
             .ok_or("No compatible slot")?
             .0;
         self.equip(id, slot)
@@ -1116,6 +1241,7 @@ impl Inventory {
                     if let Some(roll) = &a.proc {
                         procs.push(combat::EquippedProc {
                             item: *id,
+                            name: item.name.clone(),
                             index,
                             chance: a.value.min(1.0),
                             filter: Filter::requiring(
@@ -1227,13 +1353,24 @@ pub(super) fn plugin(app: &mut App) {
                 ),
         );
 }
-pub(super) fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {
+pub(super) fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>, account: Option<Res<super::talents::Account>>) {
+    let level = account.as_ref().filter(|a| a.character == roster.active).map(|a| super::talents::level(a.xp)).unwrap_or_else(|| if inventory.character != roster.active { 60 } else { inventory.character_level });
+    let level_changed = inventory.character_level != level;
+    inventory.character_level = level;
     inventory.class = roster
         .current()
         .and_then(|c| super::data::CLASSES.get(c.class))
         .map_or(run.class.id, |c| c.id);
     if inventory.character != roster.active {
         inventory.bind(roster.active)
+    }
+    if level_changed {
+        let mut save = inventory.save.clone();
+        save.equipped.retain(|_, id| save.items.iter().any(|item| item.id == *id && item.required_level() <= level));
+        if save.equipped != inventory.save.equipped {
+            if let Err(error) = inventory.commit(save) { inventory.notice = error; }
+        }
+        inventory.revision = inventory.revision.wrapping_add(1);
     }
     if roster.current().is_some_and(|c| c.starter_equipment) {
         if let Err(error) = inventory.grant_starter(
@@ -1282,7 +1419,11 @@ pub(super) struct ChestOpened {
 // Elwynn's small wooden treasure chest: GameObjectDisplayInfo -> Chest01.mdx.
 const BOSS_CHEST_DISPLAY: u32 = 10;
 pub(in crate::survivors) fn drops_chest(boss: bool, boss_chance: f32, roll: f32) -> bool {
-    roll < if boss { boss_chance } else { 1.0 / 2000.0 }
+    roll < if boss { boss_chance } else { 1.0 / 5000.0 }
+}
+/// Magic Find has double potency on all dropped items.
+pub(in crate::survivors) fn compensated_magic_find(magic_find: f32) -> f32 {
+    if magic_find.is_finite() { (magic_find.max(0.0) * 2.0).min(f32::MAX) } else { 0.0 }
 }
 pub(in crate::survivors) fn chest_item_level(monster_level: u32, boss: bool) -> u32 {
     // Campaign bosses end at level 59; their chest must unlock the final level-60 bases.
@@ -1309,7 +1450,7 @@ pub(super) fn chest_drops(
         match inventory.config.generate_loot(
             chest_item_level(drop.item_level, drop.boss),
             run.class.id,
-            run.equipment.magic_find,
+            compensated_magic_find(run.equipment.magic_find),
             &mut rng,
         ) {
             Ok(item) => {
@@ -1394,7 +1535,7 @@ mod tests {
         )]);
         source.save.equipped.insert("Ring 1".into(), 1);
         let encoded = source.shared_save().unwrap();
-        let remote = Inventory::from_shared(1, &encoded).unwrap();
+        let remote = Inventory::from_shared(1, 60, &encoded).unwrap();
         let mut run = Run::default();
         let before = run.stats().max_hp;
         remote.apply(&mut run);
@@ -1406,6 +1547,7 @@ mod tests {
     fn inventory() -> Inventory {
         Inventory {
             class: 1,
+            character_level: 60,
             character: Some(1),
             save: Save::default(),
             config: Config::builtin(),
@@ -1458,6 +1600,40 @@ mod tests {
         }
     }
     #[test]
+    fn item_sales_pay_by_item_level_and_rarity_once_and_preserve_items_when_balance_is_full() {
+        for (level, prices) in [(1, [1, 2, 3, 4]), (60, [436, 872, 1308, 1744])] {
+            for (rarity, price) in [
+                Rarity::Normal,
+                Rarity::Magic,
+                Rarity::Epic,
+                Rarity::Legendary,
+            ]
+            .into_iter()
+            .zip(prices)
+            {
+                let mut source = item(SlotKind::Ring, vec![]);
+                source.level = level;
+                source.rarity = rarity;
+                assert_eq!(source.sale_price(), price);
+                let mut inventory = Inventory::fixture(vec![source]);
+                inventory.delete(1).unwrap();
+                assert_eq!(inventory.money(), price);
+                assert!(inventory.item(1).is_none());
+                assert!(inventory.delete(1).is_err());
+                assert_eq!(inventory.money(), price);
+                let restored =
+                    Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+                assert_eq!(restored.copper, price);
+            }
+        }
+        let mut inventory = Inventory::fixture(vec![item(SlotKind::Ring, vec![])]);
+        inventory.equip(1, "Ring 1").unwrap();
+        inventory.save.copper = super::super::currency::MAX_BALANCE;
+        let before = toml::to_string(&inventory.save).unwrap();
+        assert!(inventory.delete(1).is_err());
+        assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
+    }
+    #[test]
     fn deletion_is_persisted_and_failed_writes_leave_items_and_equipment_intact() {
         let mut inventory = Inventory::fixture(vec![item(
             SlotKind::Ring,
@@ -1474,7 +1650,10 @@ mod tests {
         assert!(saved.items.is_empty());
         assert!(saved.equipped.is_empty());
         assert_eq!(saved.next_id, 2);
+        assert!(saved.copper > 0);
+        let money = inventory.money();
         assert!(inventory.delete(1).is_err());
+        assert_eq!(inventory.money(), money);
     }
     #[test]
     fn equipping_from_bags_replaces_the_incoming_cell_and_persists_its_order() {
@@ -1707,45 +1886,54 @@ mod tests {
         assert_eq!(run.heal(10.0), 10.0);
     }
     #[test]
-    fn right_click_uses_first_slot_and_drag_swaps_equipment_and_bag_order_atomically() {
-        let ring = || {
-            item(
-                SlotKind::Ring,
-                vec![affix(Effect::Life, 10.0, AffixKind::Prefix, vec![])],
-            )
-        };
-        let mut inventory = Inventory::fixture(vec![ring(), ring(), ring()]);
-        inventory.quick_equip(1).unwrap();
-        inventory.quick_equip(2).unwrap();
-        assert_eq!(inventory.equipped("Ring 1").unwrap().id, 2);
-        assert!(inventory.equipped("Ring 2").is_none());
-        inventory.equip(1, "Ring 2").unwrap();
-        inventory.quick_equip(1).unwrap();
-        assert!(!inventory.worn(1));
-        assert!(inventory.equipped("Ring 2").is_none());
-        inventory.drop_on_equipment(1, "Ring 2").unwrap();
-        inventory.drop_on_equipment(2, "Ring 2").unwrap();
-        assert_eq!(inventory.equipped("Ring 1").unwrap().id, 1);
-        assert_eq!(inventory.equipped("Ring 2").unwrap().id, 2);
-        let before = toml::to_string(&inventory.save).unwrap();
-        assert!(inventory.drop_on_equipment(2, "Head").is_err());
-        assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
-        inventory.drop_in_bag(2, 0).unwrap();
-        assert!(!inventory.worn(2));
-        assert_eq!(
-            inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
-            vec![2, 3]
-        );
-        inventory.drop_in_bag(2, 1).unwrap();
-        assert_eq!(
-            inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
-            vec![3, 2]
-        );
-        inventory.blocked = true;
-        let before = toml::to_string(&inventory.save).unwrap();
-        assert!(inventory.drop_in_bag(1, 0).is_err());
-        assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
-        assert_eq!(Inventory::decode(&before).unwrap().items.len(), 3);
+    fn right_click_fills_empty_accessory_slots_and_drag_swaps_equipment_and_bag_order_atomically() {
+        for (kind, first, second) in [
+            (SlotKind::Ring, "Ring 1", "Ring 2"),
+            (SlotKind::Trinket, "Trinket 1", "Trinket 2"),
+        ] {
+            let ring = || {
+                item(
+                    kind,
+                    vec![affix(Effect::Life, 10.0, AffixKind::Prefix, vec![])],
+                )
+            };
+            let mut inventory = Inventory::fixture(vec![ring(), ring(), ring()]);
+            inventory.quick_equip(1).unwrap();
+            inventory.quick_equip(2).unwrap();
+            assert_eq!(inventory.equipped(first).unwrap().id, 1);
+            assert_eq!(inventory.equipped(second).unwrap().id, 2);
+            inventory.quick_equip(3).unwrap();
+            assert_eq!(inventory.equipped(first).unwrap().id, 3);
+            assert_eq!(inventory.equipped(second).unwrap().id, 2);
+            inventory.quick_equip(1).unwrap();
+            inventory.drop_on_equipment(2, first).unwrap();
+            inventory.quick_equip(1).unwrap();
+            assert!(!inventory.worn(1));
+            assert!(inventory.equipped(second).is_none());
+            inventory.drop_on_equipment(1, second).unwrap();
+            inventory.drop_on_equipment(2, second).unwrap();
+            assert_eq!(inventory.equipped(first).unwrap().id, 1);
+            assert_eq!(inventory.equipped(second).unwrap().id, 2);
+            let before = toml::to_string(&inventory.save).unwrap();
+            assert!(inventory.drop_on_equipment(2, "Head").is_err());
+            assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
+            inventory.drop_in_bag(2, 0).unwrap();
+            assert!(!inventory.worn(2));
+            assert_eq!(
+                inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
+                vec![2, 3]
+            );
+            inventory.drop_in_bag(2, 1).unwrap();
+            assert_eq!(
+                inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
+                vec![3, 2]
+            );
+            inventory.blocked = true;
+            let before = toml::to_string(&inventory.save).unwrap();
+            assert!(inventory.drop_in_bag(1, 0).is_err());
+            assert_eq!(toml::to_string(&inventory.save).unwrap(), before);
+            assert_eq!(Inventory::decode(&before).unwrap().items.len(), 3);
+        }
     }
     #[test]
     fn bag_items_stay_in_the_cell_they_are_dropped_in() {
@@ -1985,18 +2173,24 @@ mod tests {
         assert_eq!(world.query::<&ItemDrop>().iter(&world).count(), 0);
     }
     #[test]
-    fn ordinary_monster_chests_have_one_in_two_thousand_chance_without_changing_boss_chance() {
+    fn ordinary_monster_chests_have_one_in_five_thousand_chance_and_bosses_half() {
         assert!(drops_chest(false, 0.0, 0.0));
-        assert!(drops_chest(false, 0.0, 0.000499));
-        assert!(!drops_chest(false, 1.0, 0.0005));
+        assert!(drops_chest(false, 0.0, 0.000199));
+        assert!(!drops_chest(false, 1.0, 0.0002));
         assert!(!drops_chest(false, 1.0, 0.5));
         assert!(!drops_chest(true, 0.0, 0.0));
+        assert!(drops_chest(true, 0.5, 0.4999));
+        assert!(!drops_chest(true, 0.5, 0.5));
+        assert_eq!(Config::builtin().boss_drop_chance, 0.5);
+        assert_eq!(compensated_magic_find(1.0), 2.0);
+        assert_eq!(compensated_magic_find(0.5), 1.0);
+        assert_eq!(compensated_magic_find(0.0), 0.0);
         assert!(drops_chest(true, 1.0, 0.999));
         let mut rng = Rng(742);
         let count = (0..100000)
             .filter(|_| drops_chest(false, 1.0, rng.f32()))
             .count();
-        assert!((25..=80).contains(&count), "{count}/100000");
+        assert!((5..=40).contains(&count), "{count}/100000");
     }
     #[test]
     fn final_boss_chests_reach_the_last_base_tier_at_level_sixty() {
@@ -2072,6 +2266,36 @@ mod tests {
 #[cfg(test)]
 mod money_tests {
     use super::*;
+    #[test]
+    fn forging_is_atomic_and_unusual_primaries_survive_save_reload_and_equipping() {
+        let mut inventory = Inventory::fixture(vec![]);
+        let mut request = CraftRequest { slot: SlotKind::Chest, equipment: EquipmentType::Plate,
+            profile: CraftProfile::Agility, rarity: Rarity::Epic, affixes: Some(vec!["agility".into()]) };
+        let options = inventory.craft_affixes(&request, 60);
+        request.affixes = Some(vec![options.iter().find(|a| a.id == "agility").expect("agility affix").id.clone()]);
+        assert!(inventory.craft(&request, 60, &mut Rng(5)).is_err());
+        assert!(inventory.all().is_empty());
+        let mut rules = [AutoSalvageRule::default(); 4];
+        rules[2] = AutoSalvageRule { enabled: true, below_ilvl: 999 };
+        inventory.set_auto_salvage(rules).unwrap();
+        inventory.add_money(1_000_000_000).unwrap();
+        let before = inventory.money();
+        let item = inventory.craft(&request, 60, &mut Rng(5)).unwrap();
+        assert_eq!(inventory.money(), before - request.price(60).unwrap());
+        inventory.equip(item.id, "Chest").unwrap();
+        let mut legacy = inventory.save.clone();
+        let forged = legacy.items.iter_mut().find(|i| i.id == item.id).unwrap();
+        forged.name = forged.name.replace(" forged (Agility)", " forge (Agilite)");
+        let save = Inventory::decode(&toml::to_string(&legacy).unwrap()).unwrap();
+        assert!(save.items.iter().find(|i| i.id == item.id).unwrap().name.ends_with(" forged (Agility)"));
+        assert!(save.items.iter().any(|i| i.id == item.id && i.affixes.iter().any(|a| a.effect == Effect::Agility)));
+        let before = inventory.money();
+        let count = inventory.all().len();
+        request.affixes = Some(vec!["agility".into(), "agility".into()]);
+        assert!(inventory.craft(&request, 60, &mut Rng(5)).is_err());
+        assert_eq!(inventory.money(), before);
+        assert_eq!(inventory.all().len(), count);
+    }
     #[test]
     fn gambling_charges_and_delivers_together_and_never_spends_on_failure() {
         let mut inventory = Inventory::fixture(vec![]);

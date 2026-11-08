@@ -60,7 +60,7 @@ pub(super) fn input(
         session::Command {
             direction,
             facing,
-            axes,
+            axes: axes.clamp_length_max(1.0),
             turn,
             automatic: auto.is_some(),
             active: interactive && run.dead_t.is_none(),
@@ -137,25 +137,31 @@ mod tests {
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_plugins((boss_spells::plugin, super::enemy_visuals::plugin));
+    app.add_plugins((
+        boss_spells::plugin,
+        super::enemy_visuals::plugin,
+        super::revival_visuals::plugin,
+    ));
     app.add_message::<units::CombatNumber>()
         .init_resource::<session::LocalSession>()
         .add_plugins(grade::plugin)
         .add_plugins(characters::plugin)
         .add_plugins(hub_ground::plugin)
         .add_plugins(options::plugin)
+        .add_plugins(card_draw::plugin)
         .add_plugins(codex::plugin)
         .add_plugins(player_auras::plugin)
         .add_plugins(combat_ui::plugin)
         .add_plugins(unit_frames::plugin)
         .add_plugins(items::plugin)
         .add_plugins(shared_chest::plugin)
+        .add_plugins(super::bank::plugin)
         .add_plugins(super::gambling::plugin)
+        .add_plugins(super::hub_interact::plugin)
         .add_plugins(runes::plugin)
         .add_plugins(damage_colors::plugin)
         .add_plugins(diagnostics::plugin)
         .add_plugins(health_plates::plugin)
-        .add_plugins(level_prompt::plugin)
         .init_resource::<crate::entities::dest_fx::AreaVisualScales>()
         .init_resource::<crate::entities::dest_fx::EchoCasts>()
         .add_plugins(talent_ui::plugin)

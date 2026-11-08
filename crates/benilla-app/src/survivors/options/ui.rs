@@ -1,6 +1,7 @@
 use super::super::{hero::CamRig, hud::HudFont, Phase};
 use super::*;
 use crate::cvars::Cvars;
+mod layout;
 
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.2);
 #[derive(Component)]
@@ -149,9 +150,9 @@ pub(super) fn input(
                     6 => settings.invert_y = !settings.invert_y,
                     7 => settings.show_fps = !settings.show_fps,
                     8 => settings.perf_diag = !settings.perf_diag,
-                    9 => settings.ally_plates = !settings.ally_plates,
-                    10 => settings.enemy_plates = !settings.enemy_plates,
-                    11 => settings.manual_levels = !settings.manual_levels,
+                    9 => settings.auto_draw_cards = !settings.auto_draw_cards,
+                    10 => settings.ally_plates = !settings.ally_plates,
+                    11 => settings.enemy_plates = !settings.enemy_plates,
                     _ => settings.grade = !settings.grade,
                 };
                 settings.save();
@@ -189,6 +190,7 @@ pub(super) fn input(
                         }
                     }
                     Tab::Display => {
+                        settings.auto_draw_cards = false;
                         settings.damage = true;
                         settings.healing = true;
                         settings.incoming = true;
@@ -197,7 +199,6 @@ pub(super) fn input(
                         settings.show_fps = false;
                         settings.ally_plates = false;
                         settings.enemy_plates = false;
-                        settings.manual_levels = true;
                         settings.perf_diag = false;
                     }
                     Tab::Video => {
@@ -239,7 +240,26 @@ fn button(
     label: impl Into<String>,
     width: f32,
 ) {
-    super::super::combat_ui::skin::button(ui, f, label, click, width);
+    ui.spawn((
+        Button,
+        click,
+        BackgroundColor(Color::srgb(0.075, 0.065, 0.045)),
+        BorderColor::all(Color::srgb(0.32, 0.26, 0.15)),
+        Node {
+            width: Val::Px(width),
+            max_width: Val::Percent(100.0),
+            min_width: Val::Px(0.0),
+            min_height: Val::Px(32.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+    ))
+    .with_children(|b| {
+        b.spawn(text(f, label, 13.0, GOLD));
+    });
 }
 fn row(
     ui: &mut ChildSpawnerCommands,
@@ -247,23 +267,43 @@ fn row(
     label: &str,
     build: impl FnOnce(&mut ChildSpawnerCommands),
 ) {
-    ui.spawn(Node {
-        width: Val::Percent(100.0),
-        column_gap: Val::Px(8.0),
-        align_items: AlignItems::Center,
-        ..default()
-    })
+    ui.spawn((
+        BackgroundColor(Color::srgba(1.0, 0.9, 0.6, 0.025)),
+        Node {
+            width: Val::Percent(100.0),
+            min_width: Val::Px(0.0),
+            flex_shrink: 0.0,
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(8.0)),
+            column_gap: Val::Px(12.0),
+            row_gap: Val::Px(6.0),
+            flex_wrap: FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+    ))
     .with_children(|r| {
         r.spawn((
-            text(f, label, 15.0, Color::WHITE),
+            text(f, label, 14.0, Color::srgb(0.78, 0.76, 0.69)),
             Node {
-                width: Val::Px(280.0),
+                width: Val::Percent(43.0),
+                min_width: Val::Px(150.0),
                 ..default()
             },
         ));
-        build(r);
+        r.spawn(Node {
+            flex_grow: 1.0,
+            flex_basis: Val::Px(0.0),
+            min_width: Val::Px(180.0),
+            column_gap: Val::Px(8.0),
+            row_gap: Val::Px(6.0),
+            flex_wrap: FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(build);
     });
 }
+
 pub(super) fn key_label(key: Option<KeyCode>) -> String {
     key.map(|k| {
         format!("{k:?}")
@@ -271,7 +311,7 @@ pub(super) fn key_label(key: Option<KeyCode>) -> String {
             .replace("Digit", "")
             .replace("Arrow", "")
     })
-    .unwrap_or("Non assignée".to_owned())
+    .unwrap_or("Unbound".to_owned())
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render(
@@ -283,6 +323,8 @@ pub(super) fn render(
     cvars: Option<Res<Cvars>>,
     font: Option<Res<HudFont>>,
     roots: Query<Entity, With<Root>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scale: Option<Res<UiScale>>,
     mut cache: Local<String>,
 ) {
     let Some(font) = font else {
@@ -304,15 +346,19 @@ pub(super) fn render(
         "SoundOutputLimiter",
     ]
     .map(|k| value(cv, k));
+    let viewport = windows.single().map_or(Vec2::new(1000.0, 820.0), |window| {
+        Vec2::new(window.width(), window.height()) / scale.as_deref().map_or(1.0, |s| s.0)
+    });
     let stamp = format!(
-        "{:?} {} {:?} {:?} {:?} {:?} {:?}",
+        "{:?} {} {:?} {:?} {:?} {:?} {:?} {:?}",
         phase.get(),
         panel.open,
         panel.tab,
         panel.capture,
         *settings,
         (rig.sensitivity, rig.dist),
-        audio
+        audio,
+        viewport
     );
     if *cache == stamp {
         return;
@@ -324,76 +370,22 @@ pub(super) fn render(
     if !panel.open || *phase.get() != Phase::Paused {
         return;
     }
-    let f = &font.0;
-    commands.spawn((Root,Button,GlobalZIndex(800),BackgroundColor(Color::srgba(0.0,0.0,0.0,0.8)),Node{position_type:PositionType::Absolute,width:Val::Percent(100.0),height:Val::Percent(100.0),justify_content:JustifyContent::Center,align_items:AlignItems::Center,..default()})).with_children(|overlay| {
-        overlay.spawn(Node{width:Val::Px(740.0),max_width:Val::Percent(98.0),height:Val::Px(710.0),max_height:Val::Vh(94.0),padding:UiRect::all(Val::Px(20.0)),flex_direction:FlexDirection::Column,row_gap:Val::Px(12.0),..default()}).with_children(|frame| {
-            super::super::combat_ui::skin::backdrop(frame);
-            frame.spawn(text(f,"OPTIONS",26.0,GOLD));
-            frame.spawn(Node{column_gap:Val::Px(5.0),row_gap:Val::Px(5.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|tabs| {
-                for (tab,label) in [(Tab::Controls,"Raccourcis"),(Tab::Mouse,"Caméra"),(Tab::Sound,"Audio"),(Tab::Display,"Interface"),(Tab::Video,"Vidéo"),(Tab::Help,"Aide")] {
-                    button(tabs,f,Click::Tab(tab),if tab==panel.tab{format!("[{label}]")}else{label.into()},104.0);
-                }
-            });
-            frame.spawn((Body,Interaction::default(),bevy::ui::RelativeCursorPosition::default(),ScrollPosition(Vec2::new(0.0,panel.scroll)),Node{width:Val::Percent(100.0),min_height:Val::Px(0.0),flex_direction:FlexDirection::Column,row_gap:Val::Px(8.0),flex_grow:1.0,flex_basis:Val::Px(0.0),overflow:Overflow::scroll_y(),..default()})).with_children(|body| {
-                match panel.tab {
-                    Tab::Controls => {
-                        body.spawn(text(f,"Choisissez une touche principale ou secondaire. Les conflits échangent les raccourcis.",13.0,GOLD));
-                        for action in Action::ALL { row(body,f,action.name(),|r| {
-                            for slot in 0..2 { button(r,f,Click::Bind(action,slot),if panel.capture==Some((action,slot)){"Appuyez sur une touche…".into()}else{key_label(settings.bindings[action as usize][slot])},164.0); }
-                        }); }
-                        body.spawn(text(f,"Échap annule la saisie. Retour arrière retire la touche.\nLes raccourcis suivent la position physique des touches.",12.0,Color::WHITE));
-                    }
-                    Tab::Sound => {
-                        for (name,label) in [("MasterVolume","Volume général"),("SoundVolume","Effets sonores"),("MusicVolume","Musique"),("AmbienceVolume","Ambiance")] {
-                            row(body,f,label,|r| { button(r,f,Click::Volume(name,-1),"−",45.0);r.spawn(text(f,format!("{:3.0} %",value(cv,name)*100.0),16.0,GOLD));button(r,f,Click::Volume(name,1),"+",45.0); });
-                        }
-                        for (name,label) in [("MasterSoundEffects","Activer le son"),("EnableMusic","Activer la musique"),("EnableAmbience","Activer l'ambiance"),("SoundOutputLimiter","Limiter la saturation audio")] {
-                            row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));
-                        }
-                        body.spawn(text(f,"Le limiteur réduit la distorsion quand de nombreux sons se superposent. Réglages appliqués immédiatement.",13.0,GOLD));
-                    }
-                    Tab::Mouse => {
-                        row(body,f,"Sensibilité",|r|{button(r,f,Click::Sensitivity(-1),"−",45.0);r.spawn(text(f,format!("{:.1}×",rig.sensitivity),16.0,GOLD));button(r,f,Click::Sensitivity(1),"+",45.0);});
-                        for(flag,label,on)in[(5,"Inverser l'axe horizontal",settings.invert_x),(6,"Inverser l'axe vertical",settings.invert_y)]{row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        row(body,f,"Vitesse du zoom",|r|{button(r,f,Click::Zoom(-1),"−",45.0);r.spawn(text(f,format!("{:.2}×",settings.zoom_speed),16.0,GOLD));button(r,f,Click::Zoom(1),"+",45.0);});
-                        row(body,f,"Distance actuelle",|r|{button(r,f,Click::Distance(-1),"−",45.0);r.spawn(text(f,format!("{:.1} m",rig.dist),16.0,GOLD));button(r,f,Click::Distance(1),"+",45.0);});
-                        button(body,f,Click::DistanceReset,"Recentrer la hauteur et le zoom",320.0);
-                        body.spawn(text(f,"Glisser avec un bouton de souris fait pivoter la caméra. La molette règle le zoom. Maintenir les deux boutons fait avancer.\nLa distance actuelle peut ensuite être modifiée à la molette.",13.0,Color::WHITE));
-                    }
-                    Tab::Display => {
-                        for(flag,label,on)in[(0,"Dégâts infligés",settings.damage),(1,"Soins reçus et prodigués",settings.healing),(2,"Dégâts reçus",settings.incoming),(3,"Afficher seulement les critiques sortants",settings.critical_only),(4,"Filtre couleur et netteté",settings.grade),(9,"Barres de vie des alliés",settings.ally_plates),(10,"Barres de vie des ennemis",settings.enemy_plates),(11,"Level up manuel (touche ou clic)",settings.manual_levels),(7,"Compteur de FPS",settings.show_fps),(8,"Diagnostic de performance",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        body.spawn(text(f,"Les filtres concernent les nouveaux nombres flottants. Les calculs de combat restent identiques.\nLes fenêtres Personnage et Dégâts peuvent être déplacées par leur titre.\nLe diagnostic affiche ce qui coûte le plus et écrit un rapport dans benilla-config/Diagnostics. Il se coupe au prochain lancement.
-Le détail par système demande warcraft-survivors-perf.exe.",13.0,GOLD));
-                    }
-                    Tab::Video => {
-                        for(name,label)in[("gxWindow","Mode fenêtré"),("gxMaximize","Fenêtre maximisée"),("gxVSync","Synchronisation verticale")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));}
-                        row(body,f,"Distance d'affichage",|r|{button(r,f,Click::ViewDistance(-1),"−",45.0);r.spawn(text(f,format!("{:.0} m",value(cv,"farclip")),16.0,GOLD));button(r,f,Click::ViewDistance(1),"+",45.0);});
-                        body.spawn(text(f,"Une distance plus faible réduit la charge graphique. La synchronisation verticale limite les déchirures.\nLe plein écran utilise le mode sans bordure. Le navigateur gère sa propre fenêtre.",13.0,GOLD));
-                    }
-                    Tab::Help => {
-                        for(title,description)in[
-                            ("Hub et progression","Expéditions : choisir une zone et commencer une run. Talents : progression permanente du personnage. Runes : préparer votre équipement au Hub."),
-                            ("Objets et coffre partagé","Clic droit dans les sacs : équiper ou retirer un objet. Au coffre ouvert : clic droit pour transférer. Glisser un objet vers l'autre fenêtre permet aussi de le transférer. Relâcher ailleurs annule."),
-                            ("Gheed","Approchez du vendeur devant la forge, puis utilisez le bouton Parier. Survolez un emplacement pour son prix ; cliquez pour acheter un objet de votre classe et de votre niveau."),
-                            ("Multijoueur","Créez ou rejoignez un salon depuis la sélection du personnage. Utilisez l'IPv4 Hamachi de l'hôte. Les objets du coffre sont partagés entre les membres du salon."),
-                            ("Pause","En solo, les menus interrompent la run. En multijoueur, le monde continue : ouvrez les menus dans un endroit sûr."),
-                        ]{body.spawn(text(f,title,17.0,GOLD));body.spawn(text(f,description,14.0,Color::WHITE));}
-                    }
-                }
-            });
-            frame.spawn(Node{column_gap:Val::Px(10.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|footer| {
-                if panel.tab!=Tab::Help {button(footer,f,Click::Reset,"Réinitialiser cet onglet",240.0);}
-                button(footer,f,Click::Back,"Retour [Échap]",200.0);
-            });
-            frame.spawn(text(f,"Préférences enregistrées automatiquement · Molette pour faire défiler",12.0,GOLD));
-        });
-    });
+    layout::build(
+        &mut commands,
+        &font.0,
+        &panel,
+        &settings,
+        &rig,
+        cv,
+        viewport,
+    );
 }
+
 fn on_off(on: bool) -> &'static str {
     if on {
-        "Activé"
+        "On"
     } else {
-        "Désactivé"
+        "Off"
     }
 }
 #[derive(Component)]
@@ -556,18 +548,58 @@ mod tests {
         app.world_mut()
             .resource_mut::<NextState<Phase>>()
             .set(Phase::Paused);
-        for tab in [
-            Tab::Controls,
-            Tab::Sound,
-            Tab::Mouse,
-            Tab::Display,
-            Tab::Video,
-            Tab::Help,
+        for (tab, sections, heading) in [
+            (Tab::Controls, 3, "Movement & combat"),
+            (Tab::Sound, 3, "Volume levels"),
+            (Tab::Mouse, 2, "Camera rotation"),
+            (Tab::Display, 4, "Cards & progression"),
+            (Tab::Video, 2, "Window & synchronization"),
+            (Tab::Help, 6, "Hub & progression"),
         ] {
             app.world_mut().resource_mut::<Panel>().tab = tab;
             app.update();
             let world = app.world_mut();
             assert_eq!(world.query::<&Root>().iter(world).count(), 1);
+            assert_eq!(
+                world.query::<&layout::Section>().iter(world).count(),
+                sections
+            );
+            assert!(world
+                .query::<&Text>()
+                .iter(world)
+                .any(|text| text.0 == heading));
+            assert_eq!(
+                world
+                    .query::<&Click>()
+                    .iter(world)
+                    .filter(|click| matches!(click, Click::Tab(_)))
+                    .count(),
+                6
+            );
+            if tab == Tab::Controls {
+                assert_eq!(
+                    world
+                        .query::<&Click>()
+                        .iter(world)
+                        .filter(|click| matches!(click, Click::Bind(_, _)))
+                        .count(),
+                    Action::ALL.len() * 2
+                );
+            }
+            // Changing a setting rebuilds the controls while preserving the browsing position.
+            app.world_mut().resource_mut::<Panel>().scroll = 77.0;
+            app.world_mut().resource_mut::<Settings>().damage ^= true;
+            app.update();
+            let world = app.world_mut();
+            assert_eq!(
+                world
+                    .query_filtered::<&ScrollPosition, With<Body>>()
+                    .single(world)
+                    .unwrap()
+                    .0
+                    .y,
+                77.0
+            );
         }
     }
 }

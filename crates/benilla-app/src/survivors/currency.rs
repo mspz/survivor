@@ -9,11 +9,13 @@ pub(super) fn split(copper: u64) -> (u64, u64, u64) {
 }
 pub(super) fn reward(level: u32, boss: bool) -> u64 {
     let steps = u64::from(level.clamp(1, 60) - 1);
-    if boss {
+    let base = if boss {
         10 + (10 * GOLD - 10) * steps.pow(3) / 59u64.pow(3)
     } else {
         3 + steps.pow(2) / 4
-    }
+    };
+    // Economy rewards are halved, rounded down to whole copper.
+    base / 2
 }
 /// Saves reach the disk only at moments where a short stall goes unnoticed: anywhere but live
 /// combat, on death, and when the game closes.
@@ -116,9 +118,9 @@ mod tests {
             boss: true,
         });
         world.run_system(system).unwrap();
-        assert_eq!(world.resource::<Inventory>().money(), 100003);
+        assert_eq!(world.resource::<Inventory>().money(), 50001);
         world.run_system(system).unwrap();
-        assert_eq!(world.resource::<Inventory>().money(), 100003);
+        assert_eq!(world.resource::<Inventory>().money(), 50001);
         assert_eq!(world.entities().len(), entities);
     }
     #[test]
@@ -146,11 +148,11 @@ mod tests {
         assert!(!unsaved(&mut world, system));
     }
     #[test]
-    fn loot_starts_with_a_few_copper_and_bosses_cap_at_ten_gold() {
-        assert_eq!(reward(1, false), 3);
-        assert_eq!(reward(1, true), 10);
-        assert_eq!(reward(60, true), 10 * GOLD);
-        assert_eq!(reward(u32::MAX, true), 10 * GOLD);
+    fn loot_starts_with_a_few_copper_and_bosses_cap_at_five_gold() {
+        assert_eq!(reward(1, false), 1);
+        assert_eq!(reward(1, true), 5);
+        assert_eq!(reward(60, true), 5 * GOLD);
+        assert_eq!(reward(u32::MAX, true), 5 * GOLD);
         for level in 1..60 {
             assert!(reward(level + 1, false) >= reward(level, false));
             assert!(reward(level + 1, true) >= reward(level, true));

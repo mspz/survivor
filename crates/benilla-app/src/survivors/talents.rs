@@ -68,9 +68,10 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Beast Mastery",
-            "concussive_shot",
-            "arcane_shot",
-            "concussive_shot"
+            "kill_command",
+            "tame_beast",
+            "kill_command",
+            "bestial_wrath"
         ),
         spec!(
             "Marksmanship",
@@ -127,7 +128,7 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Arcane",
-            "arcane_explosion",
+            "arcane_missiles",
             "arcane_missiles",
             "arcane_explosion"
         ),
@@ -350,6 +351,32 @@ impl Account {
     pub fn reset(&mut self, class: usize) {
         self.builds[class] = [[0; NODES]; 3];
     }
+    pub fn can_refund(&self, class: usize, tree: usize, node: usize) -> bool {
+        if class >= CLASSES || tree >= 3 || node >= NODES {
+            return false;
+        }
+        let mut ranks = self.builds[class][tree];
+        if ranks[node] == 0 {
+            return false;
+        }
+        ranks[node] -= 1;
+        ranks.iter().enumerate().all(|(index, &rank)| {
+            rank == 0
+                || (ranks[..tier(index) * 3]
+                    .iter()
+                    .map(|&r| u32::from(r))
+                    .sum::<u32>()
+                    >= tier(index) as u32 * 5
+                    && prerequisite(index).is_none_or(|parent| ranks[parent] == max_rank(parent)))
+        })
+    }
+    pub fn refund(&mut self, class: usize, tree: usize, node: usize) -> bool {
+        if !self.can_refund(class, tree, node) {
+            return false;
+        }
+        self.builds[class][tree][node] -= 1;
+        true
+    }
     pub fn save(&self) {
         if let Some(home) = crate::local_state::home() {
             let mut text = format!("v4 {}", self.xp);
@@ -491,6 +518,46 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
 mod tests {
     use super::*;
     #[test]
+    fn single_point_refunds_preserve_tier_requirements_and_other_trees() {
+        let mut a = account();
+        for _ in 0..5 {
+            assert!(a.buy(0, 0, 0));
+        }
+        assert!(a.buy(0, 0, 3));
+        assert!(a.buy(0, 1, 0));
+        assert!(!a.refund(0, 0, 0));
+        assert_eq!(a.rank(0, 0, 0), 5);
+        assert!(a.buy(0, 0, 1));
+        let available = a.available(0);
+        assert!(a.refund(0, 0, 0));
+        assert_eq!(a.available(0), available + 1);
+        assert_eq!(a.rank(0, 0, 0), 4);
+        assert_eq!(a.rank(0, 0, 3), 1);
+        assert_eq!(a.rank(0, 1, 0), 1);
+        assert!(!a.refund(0, 0, 2));
+        assert!(!a.refund(CLASSES, 0, 0));
+        assert!(!a.refund(0, 3, 0));
+        assert!(!a.refund(0, 0, NODES));
+    }
+    #[test]
+    fn milestones_must_be_refunded_from_child_to_parent() {
+        let mut a = account();
+        for node in [0, 1, 3, 4, 6, 7] {
+            for _ in 0..5 {
+                assert!(a.buy(0, 0, node));
+            }
+        }
+        for node in [8, 12, 18] {
+            assert!(a.buy(0, 0, node));
+        }
+        assert!(!a.refund(0, 0, 8));
+        assert!(!a.refund(0, 0, 12));
+        assert!(a.refund(0, 0, 18));
+        assert!(a.refund(0, 0, 12));
+        assert!(a.refund(0, 0, 8));
+        assert!(!a.refund(0, 0, 8));
+    }
+    #[test]
     fn post_cap_xp_survives_save_loading_without_extra_talent_points_or_character_levels() {
         let cap = threshold(60);
         let mut account = Account::from_save(&format!("v4 {}", cap - 25));
@@ -538,7 +605,7 @@ mod tests {
     }
     #[test]
     fn bleed_milestones_filter_physical_skill_hits_and_keep_ferals_melee_requirement() {
-        for (class, tree, chance) in [(0, 1, 1.0), (2, 0, 0.5), (2, 2, 1.0), (8, 1, 1.0)] {
+        for (class, tree, chance) in [(0, 1, 1.0), (2, 0, 0.0), (2, 2, 1.0), (8, 1, 1.0)] {
             let mut account = Account::fresh();
             account.builds[class][tree][8] = 1;
             let mut run = Run {
@@ -572,6 +639,45 @@ mod tests {
         assert_eq!(account.shared_build(0), build);
         assert!(run.abilities.iter().any(|a| a.def.key == TREES[0][0].cap));
     }
+    #[test]
+    fn beast_mastery_capstone_does_not_grant_concussive_shot_or_arcane_offers() {
+        let mut account = account();
+        for node in [8, 12, 18] { account.builds[2][0][node] = 1; }
+        let mut run = Run { class: &data::CLASSES[2], ..Default::default() };
+        run.abilities.push(Owned { def: data::ability(run.class.start), level: 1, cd: 0.5 });
+        account.apply(2, &mut run);
+        assert_eq!(run.abilities.iter().filter(|a| a.def.key == "kill_command").count(), 1);
+        assert!(!run.abilities.iter().any(|a| matches!(a.def.key, "arcane_shot" | "concussive_shot")));
+        let arcane = data::PASSIVES.iter().find(|p| p.key == "arcane").unwrap();
+        assert!(!super::super::passives::eligible(arcane, &run));
+    }
+
+    #[test]
+    fn arcane_capstone_keeps_missiles_without_granting_explosion() {
+        let mut account = account();
+        for node in [8, 12, 18] {
+            account.builds[6][0][node] = 1;
+        }
+        let mut run = Run {
+            class: &data::CLASSES[6],
+            ..Default::default()
+        };
+        run.abilities.push(Owned {
+            def: data::ability(run.class.start),
+            level: 4,
+            cd: 0.5,
+        });
+        account.apply(6, &mut run);
+        account.apply(6, &mut run);
+        assert_eq!(run.abilities.len(), 1);
+        assert_eq!(run.abilities[0].def.key, "arcane_missiles");
+        assert_eq!(run.abilities[0].level, 4);
+        assert!(super::super::talent_runtime::active(
+            &run,
+            super::super::talent_design::Mechanic::ArcaneCascade,
+        ));
+    }
+
     fn account() -> Account {
         Account {
             character: None,

@@ -125,6 +125,10 @@ macro_rules! ability {
 }
 
 pub(crate) static ABILITIES: &[AbilityDef] = &[
+    ability!("tame_beast", 1515, Buff { cooldown: 15.0 }),
+    ability!("stomp", 20549, Nova { damage: 24.0, cooldown: 6.0, radius: 6.0, effect: Effect::Slow(0.5, 4.0) }),
+    ability!("kill_command", 24394, Strike { damage: 36.0, cooldown: 5.0, range: 40.0 }),
+    ability!("bestial_wrath", 19574, Buff { cooldown: 24.0, duration: 6.0 }),
     ability!(
         "mangle",
         6785,
@@ -1554,6 +1558,16 @@ const fn tagged(
 }
 use super::spell_engine::{Change as C, Tags as T};
 pub(crate) static PASSIVES: &[PassiveDef] = &[
+    tagged("dodge", "Evasion", 5277, T(0), C::DodgeChance(0.01)),
+    tagged("minion_damage", "Minion Power", 1515, T::MINION, C::IncreasedDamage(0.10)),
+    tagged("minion_attack_speed", "Minion Ferocity", 19574, T::MINION, C::IncreasedAttackSpeed(0.10)),
+    tagged("minion_movement_speed", "Minion Swiftness", 1515, T::MINION, C::IncreasedMovementSpeed(0.10)),
+    tagged("totem_power", "Totemic Power", 3599, T::TOTEM, C::IncreasedEffect(0.10)),
+    tagged("totem_duration", "Lasting Totems", 3599, T::TOTEM, C::IncreasedDuration(0.15)),
+    tagged("totem_area", "Totemic Reach", 3599, T::TOTEM, C::IncreasedArea(0.15)),
+    tagged("totem_recovery", "Totemic Recovery", 3599, T::TOTEM, C::IncreasedCooldownRecovery(0.10)),
+    tagged("totem_limit_epic", "Totemic Expansion", 3599, T::TOTEM, C::AdditionalTotems(1)),
+    tagged("totem_limit_legendary", "Totemic Dominion", 3599, T::TOTEM, C::AdditionalTotems(2)),
     tagged(
         "buff_effect",
         "Buff Effect",
@@ -1570,10 +1584,10 @@ pub(crate) static PASSIVES: &[PassiveDef] = &[
     ),
     generic("fortitude", "Fortitude", 1243, Stat::MaxHp, 0.15),
     generic("pack", "Fleet Footed", 13159, Stat::Speed, 0.08),
-    generic("renew", "Regeneration", 139, Stat::Regen, 0.5),
+    generic("renew", "Regeneration", 139, Stat::Regen, 0.01),
     generic("detect", "Magnetism", 132, Stat::Magnet, 0.30),
     generic("wisdom", "Fast Learner", 19742, Stat::Growth, 0.10),
-    generic("wild", "Thick Skin", 1126, Stat::Armor, 1.0),
+    generic("wild", "Thick Skin", 1126, Stat::DamageReduction, 0.02),
     tagged(
         "might",
         "Battle Power",
@@ -1782,6 +1796,10 @@ pub(crate) static CLASSES: &[ClassDef] = &[
         power: 0,
         start: "arcane_shot",
         pool: &[
+            "tame_beast",
+            "stomp",
+            "kill_command",
+            "bestial_wrath",
             "raptor_strike",
             "frost_trap",
             "hunters_mark",

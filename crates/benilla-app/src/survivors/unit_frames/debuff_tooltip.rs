@@ -6,12 +6,12 @@ pub(super) struct Tooltip;
 
 fn description(spell: u32) -> &'static str {
     match spell {
-        116 => "Réduit la vitesse de déplacement.",
-        339 => "Immobilise la cible.",
-        408 => "Étourdit la cible et l'empêche d'agir.",
-        5782 => "La cible fuit sous l'effet de la peur.",
-        702 => "Réduit les dégâts infligés par la cible.",
-        355 => "Force la cible à attaquer le provocateur.",
+        116 => "Reduces movement speed.",
+        339 => "Roots the target.",
+        408 => "Stuns the target, preventing actions.",
+        5782 => "The target flees in fear.",
+        702 => "Reduces the target's damage dealt.",
+        355 => "Forces the target to attack the taunter.",
         _ => data::ABILITIES
             .iter()
             .find(|d| d.spell == spell)
@@ -19,12 +19,12 @@ fn description(spell: u32) -> &'static str {
                 super::super::support_spells::description(d.key)
                     .or_else(|| super::super::extra_spells::description(d.key))
                     .or(if d.kind == data::Kind::Dot {
-                        Some("Inflige des dégâts périodiques à la cible.")
+                        Some("Deals periodic damage to the target.")
                     } else {
                         None
                     })
             })
-            .unwrap_or("Effet néfaste actif sur la cible."),
+            .unwrap_or("Active debuff on the target."),
     }
 }
 
@@ -97,7 +97,7 @@ pub(super) fn show(
             for (value, size, color) in [
                 (name, 17.0, hud::GOLD_TONE),
                 (description(*spell).into(), 14.0, Color::WHITE),
-                (format!("Temps restant : {left:.1} s"), 12.0, hud::GOLD_TONE),
+                (format!("Time remaining: {left:.1} s"), 12.0, hud::GOLD_TONE),
             ] {
                 body.spawn((
                     Text::new(value),

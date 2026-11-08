@@ -1,5 +1,8 @@
 //! Effective health removed, attributed to the originating ability (including periodic effects).
 use std::collections::{BTreeMap, VecDeque};
+mod debug;
+pub(in crate::survivors) use debug::DamageEvent;
+pub(super) use debug::{DiagnosticPage, DiagnosticSection};
 const BUCKETS: u64 = 50;
 #[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Meter {
@@ -7,6 +10,8 @@ pub struct Meter {
 }
 #[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Entry {
+    #[serde(default)]
+    debug: debug::Diagnostics,
     total: f64,
     recent: VecDeque<(u64, f64)>,
     normal: Samples,

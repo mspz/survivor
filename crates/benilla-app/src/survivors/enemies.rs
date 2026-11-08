@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use super::abilities::Hit;
 use super::data::{self, EnemyDef};
-use super::hero::{self, Hero, HERO_RADIUS};
+use super::hero::{self, Hero};
 use super::units::{self, flat, yaw_toward, Fx, Marks, UnitSpec, COLOR_HURT};
 use super::{Phase, Rng, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
@@ -53,6 +53,18 @@ pub(super) enum Rank {
     Healer,
     Protector,
     Boss,
+}
+impl Enemy {
+    /// Retain root/freeze timers for spell interactions without immobilizing major enemies.
+    pub(super) fn ignores_freeze(&self, rank: Option<&Rank>) -> bool {
+        self.boss || matches!(rank, Some(Rank::Elite | Rank::Boss))
+    }
+
+    pub(super) fn cap_slow(&mut self, rank: Option<&Rank>) {
+        if self.ignores_freeze(rank) {
+            self.slow = self.slow.max(0.5);
+        }
+    }
 }
 fn roll_rank(roll: f32, config: &super::expedition_config::Config, map: usize) -> Rank {
     let zone = data::CAMPAIGN
@@ -321,7 +333,7 @@ fn spawn_rank(
     if elite {
         commands
             .entity(e)
-            .insert(super::unit_frames::Label(format!("{} · Élite", def.name)));
+            .insert(super::unit_frames::Label(format!("{} · Elite", def.name)));
     }
     let special_label = match rank {
         Rank::Explosive => Some("Explosif"),
@@ -362,6 +374,47 @@ impl ExpeditionClear {
         let horde = *self.horde.get_or_insert(mobs_alive);
         let allowed = (horde as f32 * (1.0 - data::CLEAR_MOB_SHARE)).floor() as usize;
         self.done = !bosses_pending && bosses_alive == 0 && mobs_alive <= allowed;
+    }
+}
+
+const SPAWN_CLEARANCE: f32 = 20.0;
+
+fn safe_spawn_position(mut position: Vec3, players: &[Vec3]) -> Vec3 {
+    let clear = |p: Vec3| players.iter().all(|player| flat(p - *player).length_squared() >= SPAWN_CLEARANCE * SPAWN_CLEARANCE);
+    if clear(position) { return position; }
+    // Push out of overlapping player exclusion circles, then use an enclosing-circle fallback.
+    for _ in 0..8 {
+        for player in players {
+            let delta = flat(position - *player);
+            if delta.length_squared() < SPAWN_CLEARANCE * SPAWN_CLEARANCE {
+                let direction = if delta.length_squared() > 0.0001 { delta.normalize() } else { Vec3::X };
+                let y = position.y;
+                position = *player + direction * (SPAWN_CLEARANCE + 0.01);
+                position.y = y;
+            }
+        }
+        if clear(position) { return position; }
+    }
+    let center = players.iter().copied().sum::<Vec3>() / players.len() as f32;
+    let radius = players.iter().map(|p| flat(*p - center).length()).fold(0.0_f32, f32::max) + SPAWN_CLEARANCE + 0.01;
+    let direction = flat(position - center).normalize_or_zero();
+    let direction = if direction == Vec3::ZERO { Vec3::X } else { direction };
+    let y = position.y;
+    position = center + direction * radius;
+    position.y = y;
+    position
+}
+
+/// Runs after every spawn source and before movement, which seats relocated mobs on terrain.
+pub(super) fn protect_spawns(
+    players: Query<&Transform, (Or<(With<Hero>, With<super::multiplayer::RemoteOwner>)>, Without<Enemy>)>,
+    mut spawned: Query<(&mut Transform, &Enemy), Added<Enemy>>,
+) {
+    let players: Vec<_> = players.iter().map(|tf| tf.translation).collect();
+    for (mut transform, enemy) in &mut spawned {
+        if !super::training::actor(enemy.def) {
+            transform.translation = safe_spawn_position(transform.translation, &players);
+        }
     }
 }
 
@@ -505,8 +558,9 @@ pub(super) fn move_enemies(
             &mut Enemy,
             &mut MovementState,
             Option<&super::talent_runtime::Taunted>,
-            Option<&super::ranged_enemies::Caster>,
+            Option<&mut super::ranged_enemies::Caster>,
             Option<&super::boss_spells::Skills>,
+            Option<&Rank>,
         ),
         Without<Hero>,
     >,
@@ -581,7 +635,7 @@ pub(super) fn move_enemies(
         push.insert(ent, acc);
     }
 
-    for (ent, mut tf, mut e, mut mv, taunt, caster, skills) in &mut enemies {
+    for (ent, mut tf, mut e, mut mv, taunt, mut caster, skills, rank) in &mut enemies {
         let e = &mut *e;
         if e.dead {
             if mv.speed != 0.0 || mv.flags != 0 {
@@ -613,6 +667,7 @@ pub(super) fn move_enemies(
             continue;
         }
         if skills.is_some_and(|s| s.busy()) {
+            if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             continue;
         }
         let host_visible = targetable(&run, e.boss);
@@ -652,6 +707,7 @@ pub(super) fn move_enemies(
             }
         }
         let Some((owner, hero_e, hpos)) = target else {
+            if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             mv.speed = 0.0;
             mv.flags = 0;
             e.attack_cd -= dt;
@@ -674,17 +730,16 @@ pub(super) fn move_enemies(
         let to_hero = flat(hpos - pos);
         let dist = to_hero.length();
 
-        // Strays far behind are brought back in front, as the reference genre does.
-        if dist > 75.0 {
-            let back = hpos + to_hero.normalize_or_zero() * 38.0;
-            tf.translation = ground(&world, back, hpos.y);
-            continue;
-        }
-
         // Under Fade the horde has lost the hero: it mills where it stands.
         let lost = target_run.mobile.vanish_t > 0.0 && !e.boss;
-        let held = e.stun_t > 0.0 || e.root_t > 0.0 || lost;
-        let contact = dist <= HERO_RADIUS + e.radius + 0.35;
+        let cast_ready = caster.as_deref_mut().is_some_and(|caster| {
+            let eligible = dist <= caster.range && !lost && e.stun_t <= 0.0
+                && e.fear_t <= 0.0 && e.attack_cd <= 0.0 && !hero_down;
+            caster.ready(eligible.then_some(hero_e), dt)
+        });
+        e.cap_slow(rank);
+        let held = e.stun_t > 0.0 || (e.root_t > 0.0 && !e.ignores_freeze(rank)) || lost;
+        let contact = dist <= super::spell_engine::targeting::melee_contact_range(e.radius);
         let mut step = Vec3::ZERO;
         let mut speed = 0.0;
         if !held && !hero_down {
@@ -693,7 +748,8 @@ pub(super) fn move_enemies(
             } else {
                 to_hero.normalize_or_zero()
             };
-            if caster.map_or(!contact, |c| dist > c.stand_off) || e.fear_t > 0.0 {
+            if (caster.as_deref().map_or(!contact, |c| dist > c.stand_off)
+                && !caster.as_deref().is_some_and(|c| c.casting())) || e.fear_t > 0.0 {
                 speed = e.speed * e.slow;
                 step = dir * speed;
             }
@@ -714,8 +770,8 @@ pub(super) fn move_enemies(
             mv.flags = 0;
         }
 
-        if let Some(caster) = caster.filter(|caster| dist <= caster.range) {
-            if !lost && e.stun_t <= 0.0 && e.fear_t <= 0.0 && e.attack_cd <= 0.0 && !hero_down {
+        if let Some(caster) = caster.as_deref() {
+            if cast_ready {
                 e.attack_cd = caster.interval;
                 let speed = spells
                     .as_deref()
@@ -856,7 +912,7 @@ pub(super) fn mark_dying(commands: &mut Commands, e: Entity) {
 
 /// Most gems on the ground at once; past it, a kill's worth joins an existing gem.
 const MAX_GEMS: usize = 350;
-const MEAT_DROP_CHANCE: f32 = 0.015;
+const MEAT_DROP_CHANCE: f32 = 0.0075;
 const VACUUM_DROP_CHANCE: f32 = MEAT_DROP_CHANCE / 5.0;
 
 pub(super) fn drop_loot(
@@ -910,11 +966,7 @@ fn bank_levels(run: &mut Run) {
     while run.xp >= data::xp_to_next(run.level) {
         run.xp -= data::xp_to_next(run.level);
         run.gain_expedition_level();
-        if run.hold_levels {
-            run.held_levels += 1;
-        } else {
-            run.pending_levels += 1;
-        }
+        super::card_draw::bank(run);
         if run.level == super::mobility::LEARN_LEVEL {
             if let Some(m) = super::mobility::for_class(run.class.id) {
                 run.banner = Some((
@@ -1262,7 +1314,7 @@ mod elite_tests {
         assert_eq!(sprinter.xp, normal.xp);
         assert_eq!(sprinter_model.scale, normal_model.scale);
         assert!(!sprinter.boss);
-        assert!(label.unwrap().0.ends_with("Élite"));
+        assert!(label.unwrap().0.ends_with("Elite"));
         assert!(
             query
                 .iter(&world)
@@ -1457,6 +1509,19 @@ mod pickup_tests {
         assert_eq!(world.resource::<Run>().xp, remainder);
     }
     #[test]
+    fn manual_rewards_bank_xp_levels_without_opening_the_draft_or_hiding_the_player() {
+        let mut world = world();
+        world.resource_mut::<Run>().auto_draw_cards = false;
+        world.resource_mut::<Run>().hp = 100.0;
+        gem(&mut world, GemKind::Vacuum, Vec3::Y);
+        gem(&mut world, GemKind::Xp(100), Vec3::X * 10_000.0);
+        world.run_system_once(collect_gems).unwrap();
+        let run = world.resource::<Run>();
+        assert_eq!((run.level,run.pending_levels,run.stored_cards),(8,0,7));
+        assert!(targetable(run,false));
+        assert!(!matches!(world.resource::<NextState<Phase>>(),NextState::Pending(Phase::LevelUp)));
+    }
+    #[test]
     fn actual_drop_table_makes_vacuums_five_times_rarer_than_meat() {
         let mut world = World::new();
         world.init_resource::<Run>();
@@ -1485,8 +1550,47 @@ mod pickup_tests {
                 _ => {}
             }
         }
-        assert!((1300..1700).contains(&meats), "{meats}");
-        assert!((220..380).contains(&vacuums), "{vacuums}");
+        assert!((650..850).contains(&meats), "{meats}");
+        assert!((110..190).contains(&vacuums), "{vacuums}");
         assert!((4.0..6.0).contains(&(meats as f32 / vacuums as f32)));
+    }
+}
+
+#[cfg(test)]
+mod spawn_clearance_tests {
+    use super::*;
+    #[test]
+    fn new_mobs_avoid_host_and_guest_but_existing_mobs_can_approach() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.init_resource::<Run>().add_systems(Update, protect_spawns);
+        app.world_mut().spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
+        app.world_mut().spawn((super::super::multiplayer::RemoteOwner(42), Transform::from_xyz(35.0, 0.0, 0.0)));
+        let entity = app.world_mut().run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            spawn_enemy(&mut commands, &mut run, &data::roster(0).enemies[0], Vec3::X * 35.0, Vec3::ZERO, false)
+        }).unwrap();
+        app.update();
+        let pos = app.world().get::<Transform>(entity).unwrap().translation;
+        assert!(flat(pos).length() >= 20.0);
+        assert!(flat(pos - Vec3::X * 35.0).length() >= 20.0);
+        app.world_mut().get_mut::<Transform>(entity).unwrap().translation = Vec3::ZERO;
+        app.update();
+        assert_eq!(app.world().get::<Transform>(entity).unwrap().translation, Vec3::ZERO);
+    }
+
+    #[test]
+    fn spawn_positions_clear_every_player_including_overlapping_exclusion_zones() {
+        for players in [vec![Vec3::ZERO], vec![Vec3::ZERO, Vec3::X * 35.0], vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::Z * 10.0, -Vec3::X * 10.0]] {
+            for x in -40..80 {
+                for z in -30..30 {
+                    let original = Vec3::new(x as f32, 7.0, z as f32);
+                    let position = safe_spawn_position(original, &players);
+                    assert_eq!(position.y, original.y);
+                    assert!(players.iter().all(|p| flat(position - *p).length() >= 20.0));
+                    if players.iter().all(|p| flat(original - *p).length() >= 20.0) { assert_eq!(position, original); }
+                }
+            }
+        }
+        assert_eq!(safe_spawn_position(Vec3::ONE, &[]), Vec3::ONE);
     }
 }

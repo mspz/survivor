@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 #[derive(Default)]
 pub(super) struct Runtime {
+    pub minions: super::minions::Runtime,
     enabled: Vec<M>,
     target: Option<Entity>,
     streak: u32,
@@ -30,6 +31,7 @@ pub(super) struct Runtime {
     bursts: Vec<Burst>,
 }
 struct Burst {
+    created: f32,
     parent: u64,
     chain: u64,
     pos: Vec3,
@@ -60,8 +62,13 @@ pub(super) struct Summon {
     carried: Option<Dot>,
     carry_until: f32,
     harvested: Option<Entity>,
+    charge: Option<(Entity, super::spell_engine::Resolved)>,
+    protecting: bool,
 }
 impl Summon {
+    pub(super) fn owned_pet(&self, owner: Option<u64>) -> bool {
+        (self.family == 0 || self.family == 3) && self.owner == owner
+    }
     pub(super) fn owned_totem(&self, owner: Option<u64>) -> bool {
         self.family == 2 && self.stationary && self.owner == owner
     }
@@ -72,42 +79,27 @@ fn within_pet_leash(position: Vec3, owner: Vec3) -> bool {
     position.distance_squared(owner) <= PET_LEASH * PET_LEASH
 }
 
-/// Stay near the owner's current fight, prefer reachable enemies, then vary between three.
-/// The caller retains the result between decisions, avoiding frame-to-frame wandering.
+/// Bosses first, then proximity biased toward the owner, within the owner's leash.
 fn pet_target(
-    foes: impl Iterator<Item = (Entity, Vec3)>,
+    foes: impl Iterator<Item = (Entity, Vec3, bool)>,
     origin: Vec3,
     owner_pos: Vec3,
-    range: f32,
-    rng: &mut Rng,
 ) -> Option<Entity> {
-    let mut candidates: Vec<_> = foes
-        .filter(|(_, position)| within_pet_leash(*position, owner_pos))
-        .map(|(entity, pos)| {
-            (
-                entity,
-                units::flat(pos - owner_pos).length(),
-                units::flat(pos - origin).length(),
-            )
+    let owner_direction = units::flat(owner_pos - origin).normalize_or_zero();
+    let score = |position: Vec3| {
+        let delta = units::flat(position - origin);
+        let alignment = delta.normalize_or_zero().dot(owner_direction).max(0.0);
+        // A target toward the owner counts as up to 35% closer. Nearby foes still matter.
+        delta.length() * (1.0 - 0.35 * alignment)
+    };
+    foes.filter(|(_, position, _)| within_pet_leash(*position, owner_pos))
+        .min_by(|(a_entity, a, a_boss), (b_entity, b, b_boss)| {
+            b_boss
+                .cmp(a_boss)
+                .then_with(|| score(*a).total_cmp(&score(*b)))
+                .then(a_entity.to_bits().cmp(&b_entity.to_bits()))
         })
-        .collect();
-    candidates.sort_by(|a, b| {
-        a.1.total_cmp(&b.1)
-            .then_with(|| a.0.to_bits().cmp(&b.0.to_bits()))
-    });
-    let nearest = candidates.first()?.1;
-    let limit = nearest + 6.0;
-    let reachable = candidates
-        .iter()
-        .any(|(_, distance, pet_distance)| *distance <= limit && *pet_distance <= range);
-    candidates.retain(|(_, distance, pet_distance)| {
-        *distance <= limit && (!reachable || *pet_distance <= range)
-    });
-    let count = candidates.len().min(3);
-    if count == 0 {
-        return None;
-    }
-    Some(candidates[(rng.next_u64() % count as u64) as usize].0)
+        .map(|(entity, _, _)| entity)
 }
 pub(super) fn active(run: &Run, m: M) -> bool {
     run.talent_runtime.enabled.contains(&m) || super::items::legendary::milestones::active(run, m)
@@ -152,15 +144,9 @@ fn meter_source(run: &Run, m: M) -> Option<&'static str> {
         .find(|milestone| milestone.mechanic == m)
         .map(|milestone| milestone.name)
 }
-pub(super) fn ailment_source(run: &Run, spell: u32, roll: f32) -> Option<&'static str> {
+pub(super) fn ailment_source(run: &Run, spell: u32, _roll: f32) -> Option<&'static str> {
     match spell {
-        1943 => meter_source(run, M::Bleed).or_else(|| {
-            if roll < 0.5 {
-                meter_source(run, M::Pet)
-            } else {
-                None
-            }
-        }),
+        1943 => meter_source(run, M::Bleed),
         133 => meter_source(run, M::Ignite),
         _ => None,
     }
@@ -191,10 +177,7 @@ pub(super) fn configure(run: &mut Run) {
             "consecration"
         });
     }
-    if class == 2 && run.talent_build[2][8] > 0 {
-        unlocks.push("raptor_strike");
-    }
-    if class == 2 && run.talent_build[2][12] > 0 {
+    if active(run, M::TrapLaunch) {
         unlocks.push("explosive_trap");
     }
     if class == 1 && run.talent_build[0][8] > 0 {
@@ -311,7 +294,8 @@ pub(super) fn on_hit(
     let count = run.talent_runtime.impacts;
     let poison = accepts(run, h, M::Poison, t);
     let arcane = accepts(run, h, M::Moonfire, t);
-    let plague = accepts(run, h, M::ShadowPlague, t) || accepts(run, h, M::Plague, t) || arcane;
+    let affliction = accepts(run, h, M::Plague, t);
+    let plague = accepts(run, h, M::ShadowPlague, t) || affliction || arcane;
     if (poison || plague)
         && en.hp > 0.0
         && procs::ready(
@@ -338,7 +322,7 @@ pub(super) fn on_hit(
             .iter()
             .find(|d| d.owner == h.owner && d.skill == key)
             .map_or(1.0, |d| d.tick);
-        if !run.legendary.has(230) {
+        if !poison && !affliction && !run.legendary.has(230) {
             en.dots.retain(|d| !(d.owner == h.owner && d.skill == key));
         }
         let p = procs::resolve(run, key, 0.0, h.damage * 0.18, 6.0, 0.0, 1);
@@ -446,6 +430,7 @@ pub(super) fn on_hit(
     }
     if accepts(run, h, M::Splash, t) {
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::Splash),
             pos,
@@ -465,6 +450,7 @@ pub(super) fn on_hit(
         && accepts(run, h, M::HolyJudgement, t)
     {
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::HolyJudgement),
             pos,
@@ -543,6 +529,7 @@ pub(super) fn on_hit(
             _ => (7.0, 64),
         };
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: h.cast_id,
             chain: h.proc_chain | chain_bit(mechanic),
             pos,
@@ -586,6 +573,7 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
     let fire = owned
         .iter()
         .any(|d| tags::school(d.skill).is_some_and(|t| t.contains(Tags::FIRE)));
+    let trap_spread = active(run, M::DeathTrap) && has("explosive_trap");
     let spread = (active(run, M::Proliferate) && poison)
         || (active(run, M::IgniteSpread) && fire)
         || (active(run, M::PlagueSpread) && !owned.is_empty());
@@ -593,25 +581,26 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
     let explode = bleed
         || active(run, M::Poisonburst) && poison
         || active(run, M::Fireburst) && fire
-        || active(run, M::Plagueburst) && !owned.is_empty()
+        || (active(run, M::Plagueburst) || active(run, M::DeathTrap)) && !owned.is_empty()
         || super::items::legendary::milestones::sources(run, M::PlagueSpread).contains(&5)
             && active(run, M::PlagueSpread)
             && !owned.is_empty()
         || freeze;
-    if spread || explode {
+    if spread || trap_spread || explode {
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: run.proc_runtime.parent,
             chain: 0,
             pos,
             damage: if explode {
-                (en.max_hp * 0.3).min(300.0)
+                death_explosion_base(en.max_hp)
             } else {
                 0.0
             },
             exclude: None,
-            radius: 6.0,
+            radius: if explode { DEATH_EXPLOSION_RADIUS } else { 6.0 },
             targets: 64,
-            dots: if spread { owned } else { vec![] },
+            dots: owned.into_iter().filter(|d| d.left > 0.0 && d.left.is_finite() && (spread || trap_spread && d.skill == "explosive_trap")).collect(),
             freeze,
             skill: if poison {
                 "deadly_poison"
@@ -628,6 +617,8 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
                     M::Poisonburst
                 } else if active(run, M::Fireburst) && fire {
                     M::Fireburst
+                } else if active(run, M::DeathTrap) {
+                    M::DeathTrap
                 } else if active(run, M::Plagueburst) {
                     M::Plagueburst
                 } else if freeze {
@@ -642,12 +633,22 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
                     M::Proliferate
                 } else if active(run, M::IgniteSpread) && fire {
                     M::IgniteSpread
+                } else if trap_spread {
+                    M::DeathTrap
                 } else {
                     M::PlagueSpread
                 },
             ),
         });
     }
+}
+
+/// Only the health-derived base is capped; the source's damage modifiers and crit follow.
+pub(super) const DEATH_EXPLOSION_CAP: f32 = 1000.0;
+pub(super) const DEATH_EXPLOSION_RADIUS: f32 = 6.0 * std::f32::consts::SQRT_2;
+
+fn death_explosion_base(max_hp: f32) -> f32 {
+    (max_hp.max(0.0) * 0.3).min(DEATH_EXPLOSION_CAP)
 }
 
 pub(super) fn tick(
@@ -670,6 +671,7 @@ pub(super) fn tick(
     mut fx: Fx,
 ) {
     let dt = time.delta_secs();
+    super::minions::tick(&mut run);
     if dt <= 0.0 || run.dead_t.is_some() || run.pending_levels > 0 {
         return;
     }
@@ -681,6 +683,12 @@ pub(super) fn tick(
     let now = run.elapsed;
     let bursts = std::mem::take(&mut run.talent_runtime.bursts);
     for mut burst in bursts {
+        let delay = (now - burst.created).max(0.0);
+        for dot in &mut burst.dots {
+            dot.left -= delay;
+            dot.tick -= delay;
+        }
+        burst.dots.retain(|dot| dot.left > 0.0);
         if run.legendary.has(238) && !burst.dots.is_empty() {
             let mut gathered = Vec::new();
             for (_, tf, mut en) in &mut enemies {
@@ -727,7 +735,10 @@ pub(super) fn tick(
                 1.0
             }
         }));
-        if !procs::ready(&mut run, skill, p.tags) {
+        let death_trap = active(&run, M::DeathTrap)
+            && burst.meter_source.is_some()
+            && burst.meter_source == meter_source(&run, M::DeathTrap);
+        if !death_trap && !procs::ready(&mut run, skill, p.tags) {
             continue;
         }
         if skill == "proc_starfall" && run.legendary.has(88) {
@@ -797,9 +808,6 @@ pub(super) fn tick(
                     .any(|d| d.owner == dot.owner && d.skill == dot.skill)
                 {
                     let mut dot = dot.clone();
-                    dot.left = dot
-                        .left
-                        .max(procs::resolve(&run, spread_key, 0.0, 0.0, 3.0, 0.0, 1).duration);
                     dot.meter_source = burst.spread_source.or(dot.meter_source);
                     en.dots.push(dot);
                 }
@@ -947,6 +955,8 @@ pub(super) fn tick(
             }
         }
     }
+    let stomp = run.talent_runtime.minions.stomp.take();
+    let command = run.talent_runtime.minions.command.take();
     let counts = [
         if active(&run, M::Pack) {
             2
@@ -962,6 +972,14 @@ pub(super) fn tick(
             2
         } else {
             u8::from(active(&run, M::HealTotem))
+        },
+        if run.talent_runtime.minions.tame_active {
+            run.abilities
+                .iter()
+                .find(|a| a.def.key == "tame_beast" && !run.disabled_spells.contains(a.def.key))
+                .map_or(0, |a| if a.level >= 6 { 2 } else { 1 })
+        } else {
+            0
         },
     ];
     if now >= run.talent_runtime.summon {
@@ -1008,6 +1026,8 @@ pub(super) fn tick(
                     carried: None,
                     carry_until: 0.0,
                     harvested: None,
+                    charge: None,
+                    protecting: false,
                 });
                 if let Some(owner) = owner {
                     commands
@@ -1017,11 +1037,54 @@ pub(super) fn tick(
             }
         }
     }
+    let owner_has_boss = enemies
+        .iter()
+        .any(|(_, tf, en)| !en.dead && en.boss && within_pet_leash(tf.translation, pos));
+    let mut owner_dangers = if pets
+        .iter()
+        .any(|(_, _, pet, _)| pet.owner == owner && !pet.stationary)
+    {
+        enemies
+            .iter()
+            .filter(|(_, tf, en)| {
+                !en.dead
+                    && within_pet_leash(tf.translation, pos)
+                    && super::spell_engine::targeting::threatens_owner(
+                        units::flat(tf.translation - pos).length(),
+                        en.radius,
+                    )
+            })
+            .map(|(e, tf, _)| (e, units::flat(tf.translation - pos).length_squared()))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    owner_dangers.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.to_bits().cmp(&b.0.to_bits())));
+    // Preserve valid existing assignments, then reserve new targets as pets choose them.
+    // Bosses are deliberately shared; totems are not mobile pets.
+    let mut reserved = std::collections::HashMap::new();
+    for (entity, tf, pet, _) in &pets {
+        if pet.owner != owner
+            || pet.stationary
+            || pet.slot >= counts[pet.family as usize]
+            || !within_pet_leash(tf.translation, pos)
+        {
+            continue;
+        }
+        if let Some(target) = pet.target {
+            if enemies.get(target).is_ok_and(|(_, tf, en)| {
+                !en.dead && !en.boss && within_pet_leash(tf.translation, pos)
+            }) {
+                reserved.entry(target).or_insert(entity);
+            }
+        }
+    }
     for (entity, mut tf, mut pet, mut mv) in &mut pets {
         if pet.owner != owner {
             continue;
         }
         let demon = pet.family == 1;
+        let hunter_pet = pet.family == 0 || pet.family == 3;
         if pet.carry_until < now {
             pet.carried = None;
         }
@@ -1029,9 +1092,67 @@ pub(super) fn tick(
             commands.entity(entity).despawn();
             continue;
         }
+        reserved.retain(|_, holder| *holder != entity);
+        let exclusive = !pet.stationary;
+        let available = |target: Entity, enemy: &Enemy| {
+            !exclusive || enemy.boss || !reserved.contains_key(&target)
+        };
+        let danger = if exclusive {
+            owner_dangers
+                .iter()
+                .map(|(e, _)| *e)
+                .find(|e| enemies.get(*e).is_ok_and(|(_, _, en)| available(*e, en)))
+        } else {
+            None
+        };
+        if hunter_pet {
+            if let Some(p) = stomp {
+                let mut targets = Vec::new();
+                for (target, target_tf, enemy) in &enemies {
+                    if !enemy.dead
+                        && units::flat(target_tf.translation - tf.translation).length() <= p.radius
+                    {
+                        let hit = super::minions::attack(&run, "stomp", p, target, &mut rng);
+                        pending.0.push((now, hit));
+                        targets.push(target);
+                    }
+                }
+                fx.area_scale(
+                    entity,
+                    data::ability("stomp").spell,
+                    (p.radius / 6.0).clamp(0.25, 8.0),
+                );
+                fx.cast(entity, data::ability("stomp").spell, &targets, None);
+            }
+            if let Some(p) = command {
+                // Share the basic-attack priorities, including the exact owner threat.
+                let target = danger
+                    .or_else(|| {
+                        pet_target(
+                            enemies
+                                .iter()
+                                .filter(|(e, _, en)| !en.dead && available(*e, en))
+                                .map(|(e, target_tf, en)| (e, target_tf.translation, en.boss)),
+                            tf.translation,
+                            pos,
+                        )
+                    })
+                    .filter(|target| {
+                        enemies.get(*target).is_ok_and(|(_, target_tf, _)| {
+                            units::flat(target_tf.translation - tf.translation).length() <= p.range
+                        })
+                    });
+                if let Some(target) = target {
+                    pet.target = Some(target);
+                    pet.charge = Some((target, p));
+                    pet.retarget = 2.0;
+                }
+            }
+        }
         if !within_pet_leash(tf.translation, pos) {
             tf.translation = pos + Vec3::X * (2.0 + f32::from(pet.slot));
             pet.target = None;
+            pet.charge = None;
             pet.retarget = 0.0;
             pet.cooldown -= dt;
             mv.speed = 0.0;
@@ -1041,29 +1162,52 @@ pub(super) fn tick(
         let ranged = demon || pet.stationary;
         let range = if ranged { 20.0 } else { 3.0 };
         pet.retarget -= dt;
+        let was_protecting = pet.protecting;
+        pet.protecting = danger.is_some();
+        if let Some(target) = danger {
+            if pet.charge.is_some_and(|(old, _)| old != target) {
+                pet.charge = None;
+            }
+            pet.target = Some(target);
+        }
         let valid = pet
             .target
             .and_then(|e| enemies.get(e).ok())
-            .is_some_and(|(_, tf, en)| !en.dead && within_pet_leash(tf.translation, pos));
-        if !valid || pet.retarget <= 0.0 {
+            .is_some_and(|(e, tf, en)| {
+                !en.dead && within_pet_leash(tf.translation, pos) && available(e, en)
+            });
+        if !valid {
+            pet.charge = None;
+        }
+        let focused_boss = pet
+            .target
+            .and_then(|e| enemies.get(e).ok())
+            .is_some_and(|(_, _, en)| en.boss);
+        if !pet.protecting
+            && (was_protecting
+                || !valid
+                || pet.retarget <= 0.0
+                || (owner_has_boss && !focused_boss))
+        {
             pet.target = pet_target(
                 enemies
                     .iter()
-                    .filter(|(_, _, en)| !en.dead)
-                    .map(|(e, tf, _)| (e, tf.translation)),
+                    .filter(|(e, _, en)| !en.dead && available(*e, en))
+                    .map(|(e, tf, en)| (e, tf.translation, en.boss)),
                 tf.translation,
                 pos,
-                range,
-                &mut rng,
             );
+            if pet.charge.is_some_and(|(old, _)| Some(old) != pet.target) {
+                pet.charge = None;
+            }
             pet.retarget = rng.range(1.2, 2.4);
         }
-        let target = pet.target.and_then(|e| enemies.get(e).ok());
-        if !pet.stationary && run.legendary.has(185) {
+        if !pet.stationary && !pet.protecting && !owner_has_boss && run.legendary.has(185) {
             if let Some((e, _, _)) = enemies
                 .iter()
-                .filter(|(_, _, en)| {
+                .filter(|(e, _, en)| {
                     !en.dead
+                        && available(*e, en)
                         && en.dots.iter().any(|d| {
                             d.owner == owner
                                 && super::items::legendary::periodic::family(d)
@@ -1081,31 +1225,74 @@ pub(super) fn tick(
                 }
             }
         }
+        if exclusive {
+            if let Some(target) = pet.target {
+                if enemies.get(target).is_ok_and(|(_, _, en)| !en.boss) {
+                    reserved.insert(target, entity);
+                }
+            }
+        }
+        let target = pet.target.and_then(|e| enemies.get(e).ok());
         let destination = if pet.stationary {
             tf.translation
         } else {
             target.as_ref().map_or(pos, |t| t.1.translation)
         };
-        let destination = if run.legendary.has(188) && !pet.stationary {
-            run.legendary
-                .casting
-                .spirit_destination
-                .unwrap_or(destination)
-        } else {
-            destination
-        };
+        let destination =
+            if run.legendary.has(188) && !pet.stationary && !pet.protecting && !owner_has_boss {
+                run.legendary
+                    .casting
+                    .spirit_destination
+                    .unwrap_or(destination)
+            } else {
+                destination
+            };
         let delta = units::flat(destination - tf.translation);
         let len = delta.length();
-        let move_by = (dt * 8.0).min((len - 1.5).max(0.0));
+        let profile_key = if demon {
+            "proc_demon_bolt"
+        } else if pet.stationary {
+            if active(&run, M::SpiritTotem) {
+                "proc_spirit_bolt"
+            } else {
+                "proc_totem_bolt"
+            }
+        } else {
+            "proc_pet_bite"
+        };
+        let profile = procs::resolve(&run, profile_key, 18.0, 0.0, 0.0, 0.0, 1);
+        let speed = if pet.charge.is_some() { 30.0 } else { 8.0 }
+            * (run.stats().speed / super::server::BASE_SPEED)
+            * profile.movement_speed;
+        let move_by = (dt * speed).min((len - 1.5).max(0.0));
         tf.translation += delta.normalize_or_zero() * move_by;
         if !pet.stationary {
             tf.translation.y = pos.y;
+            let facing = target.map_or(delta, |(_, target_tf, _)| {
+                units::flat(target_tf.translation - tf.translation)
+            });
+            if facing.length_squared() > 0.0001 {
+                let rotation = Quat::from_rotation_y(units::yaw_toward(facing));
+                tf.rotation = tf.rotation.slerp(rotation, (dt * 20.0).min(1.0));
+            }
         }
-        mv.speed = if move_by > 0.0 { 8.0 } else { 0.0 };
+        mv.speed = if move_by > 0.0 { speed } else { 0.0 };
         mv.flags = if move_by > 0.0 { 1 } else { 0 };
         pet.cooldown -= dt;
         if !pet.stationary {
             run.legendary.casting.pet = Some(tf.translation);
+        }
+        if let Some((target, p)) = pet.charge {
+            if let Ok((_, target_tf, enemy)) = enemies.get(target) {
+                if !enemy.dead
+                    && units::flat(target_tf.translation - tf.translation).length() <= 3.0
+                {
+                    let hit = super::minions::attack(&run, "kill_command", p, target, &mut rng);
+                    pending.0.push((now, hit));
+                    fx.cast(entity, data::ability("kill_command").spell, &[target], None);
+                    pet.charge = None;
+                }
+            }
         }
         if let Some((target, target_tf, _)) = target {
             if pet.cooldown <= 0.0
@@ -1162,12 +1349,22 @@ pub(super) fn tick(
                         continue;
                     }
                 }
-                let damage = (if pet.stationary { 24.0 } else { 18.0 })
-                    * if demon && active(&run, M::DemonLord) {
-                        2.0
-                    } else {
-                        1.0
-                    };
+                let damage = (if pet.family == 3 {
+                    let level = run
+                        .abilities
+                        .iter()
+                        .find(|a| a.def.key == "tame_beast")
+                        .map_or(1, |a| a.level);
+                    super::minions::tame_damage(level)
+                } else if pet.stationary {
+                    24.0
+                } else {
+                    18.0
+                }) * if demon && active(&run, M::DemonLord) {
+                    2.0
+                } else {
+                    1.0
+                };
                 let skill = if demon {
                     "proc_demon_bolt"
                 } else if pet.stationary {
@@ -1179,7 +1376,7 @@ pub(super) fn tick(
                 } else {
                     "proc_pet_bite"
                 };
-                pet.cooldown = procs::resolve(&run, skill, damage, 0.0, 0.0, 0.0, 1).cooldown;
+                pet.cooldown = profile.cooldown;
                 let mut hit = Hit::direct(skill, target, damage, false);
                 hit.owner = owner;
                 hit.triggered = true;
@@ -1205,16 +1402,30 @@ pub(super) fn tick(
                         M::Pet
                     },
                 );
-                if (!demon && !pet.stationary && active(&run, M::Pack))
-                    || (demon && active(&run, M::Demons))
-                {
+                if !demon && !pet.stationary && active(&run, M::Pack) {
+                    hit.meter_source = Some(super::minions::PACK_ATTACK_SOURCE);
+                }
+                if demon && active(&run, M::Demons) {
                     hit.dot = damage * 0.2;
                     hit.dot_dur = 4.0;
                 }
                 if demon && active(&run, M::DemonLord) {
                     hit.splash = 4.0;
                 }
-                pending.0.push((now, hit.clone()));
+                if pet.family == 3 {
+                    let p = procs::resolve(&run, skill, damage, hit.dot, hit.dot_dur, 0.0, 1);
+                    let mut single = super::minions::attack(&run, skill, p, target, &mut rng);
+                    single.meter_source = Some("Tame Beast");
+                    let repeats =
+                        super::spell_engine::recast_count(p.recast, rng.f32(), false).min(64);
+                    for repeat in 0..repeats {
+                        let at = now + super::spell_engine::RECAST_DELAY * (repeat + 1) as f32;
+                        pending.0.push((at, single.clone()));
+                    }
+                    pending.0.push((now, single));
+                } else {
+                    pending.0.push((now, hit.clone()));
+                }
                 fx.cast(entity, data::ability(skill).spell, &[target], None);
             }
         }
@@ -1370,6 +1581,400 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
 
+    fn hunter_world(nodes: &[usize], tame: bool) -> World {
+        use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
+        let mut world = World::new();
+        let mut hunter = run(2, 0, nodes);
+        if tame {
+            hunter.abilities.push(Owned {
+                def: data::ability("tame_beast"),
+                level: 1,
+                cd: 0.0,
+            });
+            hunter.talent_runtime.minions.tame_active = true;
+        }
+        world.insert_resource(hunter);
+        world.insert_resource(Rng(42));
+        world.init_resource::<Time>();
+        world.init_resource::<PendingHits>();
+        world.init_resource::<PlaySeq>();
+        world.init_resource::<Messages<CastEvent>>();
+        world.init_resource::<Messages<SpellGoTargets>>();
+        world.init_resource::<Messages<SwingMessage>>();
+        world.init_resource::<Messages<crate::combat_text::CombatTextSpawn>>();
+        world.spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
+        pet_step(&mut world);
+        world
+    }
+    fn pet_step(world: &mut World) {
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(100));
+        world.resource_mut::<Run>().elapsed += 0.1;
+        world.run_system_once(tick).unwrap();
+    }
+    #[test]
+    fn minions_immediately_protect_their_owner_then_resume_normal_targeting() {
+        for owner_x in [0.0, 50.0] {
+            let mut world = hunter_world(&[8], false);
+            let hero = world
+                .query_filtered::<Entity, With<Hero>>()
+                .single(&world)
+                .unwrap();
+            world.get_mut::<Transform>(hero).unwrap().translation.x = owner_x;
+            let pet = world
+                .query_filtered::<Entity, With<Summon>>()
+                .single(&world)
+                .unwrap();
+            world.get_mut::<Transform>(pet).unwrap().translation.x = owner_x + 15.0;
+            let distant = world
+                .spawn((Transform::from_xyz(owner_x + 15.0, 0.0, 0.0), enemy()))
+                .id();
+            let danger = world
+                .spawn((Transform::from_xyz(owner_x + 1.0, 0.0, 0.0), enemy()))
+                .id();
+            {
+                let mut minion = world.get_mut::<Summon>(pet).unwrap();
+                minion.target = Some(distant);
+                minion.retarget = 999.0;
+                minion.cooldown = 999.0;
+            }
+            pet_step(&mut world);
+            assert_eq!(world.get::<Summon>(pet).unwrap().target, Some(danger));
+            assert!(world.get::<Summon>(pet).unwrap().protecting);
+            assert!(world.get::<Transform>(pet).unwrap().translation.x < owner_x + 15.0);
+            world.get_mut::<Transform>(danger).unwrap().translation.x = owner_x + 10.0;
+            pet_step(&mut world);
+            assert!(!world.get::<Summon>(pet).unwrap().protecting);
+            assert_eq!(world.get::<Summon>(pet).unwrap().target, Some(distant));
+        }
+    }
+    #[test]
+    fn tame_beast_inherits_bow_damage_after_summoning_and_equipment_swaps() {
+        use super::super::items::{weapons::DamageRange, Config, EquipmentType, Inventory};
+        let mut world = hunter_world(&[], true);
+        let pet = world
+            .query_filtered::<Entity, With<Summon>>()
+            .single(&world)
+            .unwrap();
+        world.spawn((Transform::from_xyz(2.0, 0.0, 0.0), enemy()));
+        world.resource_mut::<Run>().replace_spell_modifiers(
+            906,
+            [super::super::spell_engine::Modifier {
+                source: 906,
+                filter: super::super::spell_engine::Filter::default(),
+                change: super::super::spell_engine::Change::CriticalChance(-1.0),
+            }],
+        );
+        let config = Config::builtin();
+        let mut rng = Rng(123);
+        let mut bow = (0..1000)
+            .find_map(|_| {
+                let item = config.generate(1, &mut rng).unwrap();
+                (item.equipment_type == EquipmentType::Bow).then_some(item)
+            })
+            .expect("bow in the item pool");
+        bow.affixes.clear();
+        bow.base_damage = Some(DamageRange {
+            min: 20.0,
+            max: 30.0,
+        });
+        let mut inventory = Inventory::fixture(vec![bow]);
+        let mut damage = Vec::new();
+        for equipped in [false, true, false] {
+            if equipped {
+                inventory.equip(1, "Ranged").unwrap();
+            } else if !damage.is_empty() {
+                inventory.unequip("Ranged").unwrap();
+            }
+            inventory.apply(&mut world.resource_mut::<Run>());
+            world.resource_mut::<PendingHits>().0.clear();
+            world.get_mut::<Summon>(pet).unwrap().cooldown = 0.0;
+            pet_step(&mut world);
+            damage.push(world.resource::<PendingHits>().0[0].1.damage);
+            assert_eq!(world.query::<&Summon>().iter(&world).count(), 1);
+        }
+        assert!(damage[1] > damage[0]);
+        assert!((damage[2] - damage[0]).abs() < 0.001);
+        let multiplier = world.resource::<Run>().balance.multiplier_tagged(
+            world.resource::<Run>().class,
+            "proc_pet_bite",
+            Tags::MINION
+                | Tags::PHYSICAL
+                | Tags::ATTACK
+                | Tags::DAMAGE
+                | Tags::MELEE
+                | Tags::DOT
+                | Tags::DURATION,
+        );
+        assert!((damage[1] - damage[0] - 25.0 * multiplier).abs() < 0.001);
+    }
+
+    #[test]
+    fn tame_beast_updates_existing_pet_stats_and_repeats_without_extra_targets() {
+        use super::super::spell_engine::{Change, Filter, Modifier};
+        let mut world = hunter_world(&[], true);
+        let pet = world
+            .query_filtered::<Entity, With<Summon>>()
+            .single(&world)
+            .unwrap();
+        for x in [2.0, 3.0, 4.0] {
+            world.spawn((Transform::from_xyz(x, 0.0, 0.0), enemy()));
+        }
+        let update = |world: &mut World, changes: Vec<Change>| {
+            world.resource_mut::<Run>().replace_spell_modifiers(
+                902,
+                changes.into_iter().map(|change| Modifier {
+                    source: 902,
+                    filter: Filter::default(),
+                    change,
+                }),
+            );
+        };
+        update(&mut world, vec![Change::CriticalChance(-1.0)]);
+        world.get_mut::<Summon>(pet).unwrap().cooldown = 0.0;
+        pet_step(&mut world);
+        let baseline = world.resource::<PendingHits>().0[0].1.damage;
+        let cooldown = world.get::<Summon>(pet).unwrap().cooldown;
+        world.resource_mut::<PendingHits>().0.clear();
+        update(
+            &mut world,
+            vec![
+                Change::IncreasedDamage(1.0),
+                Change::CriticalChance(1.0),
+                Change::RecastChance(2.0),
+                Change::IncreasedAttackSpeed(1.0),
+                Change::IncreasedMovementSpeed(1.0),
+                Change::AdditionalMeleeTargets(10),
+            ],
+        );
+        world.get_mut::<Summon>(pet).unwrap().cooldown = 0.0;
+        pet_step(&mut world);
+        let hits = &world.resource::<PendingHits>().0;
+        assert_eq!(hits.len(), 3, "one attack plus two repeats");
+        assert!(hits.iter().all(|(_, h)| h.target == hits[0].1.target
+            && h.proc_resolved
+            && h.crit
+            && h.damage >= baseline * 3.9));
+        let now = world.resource::<Run>().elapsed;
+        assert_eq!(hits.iter().filter(|(at, _)| *at > now).count(), 2);
+        assert!(world.get::<Summon>(pet).unwrap().cooldown < cooldown * 0.6);
+        world.get_mut::<Transform>(pet).unwrap().translation.x = 20.0;
+        pet_step(&mut world);
+        assert!(
+            world
+                .get::<crate::creature_anim::MovementState>(pet)
+                .unwrap()
+                .speed
+                >= 15.9
+        );
+        assert_eq!(world.query::<&Summon>().iter(&world).count(), 1);
+    }
+
+    #[test]
+    fn tame_beast_is_untargetable_single_target_and_rank_six_adds_one_wolf() {
+        let mut world = hunter_world(&[], true);
+        let pet = world
+            .query_filtered::<Entity, With<Summon>>()
+            .single(&world)
+            .unwrap();
+        assert!(world.get::<Hero>(pet).is_none());
+        assert!(world.get::<Enemy>(pet).is_none());
+        assert!(world
+            .get::<super::super::multiplayer::RemoteOwner>(pet)
+            .is_none());
+        for x in [2.0, 3.0, 4.0] {
+            world.spawn((Transform::from_xyz(x, 0.0, 0.0), enemy()));
+        }
+        world.get_mut::<Summon>(pet).unwrap().cooldown = 0.0;
+        world.resource_mut::<Run>().replace_spell_modifiers(
+            901,
+            [super::super::spell_engine::Modifier {
+                source: 901,
+                filter: super::super::spell_engine::Filter::requiring(Tags::MINION),
+                change: super::super::spell_engine::Change::AdditionalMeleeTargets(10),
+            }],
+        );
+        pet_step(&mut world);
+        let hits = &world.resource::<PendingHits>().0;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1.meter_source, Some("Tame Beast"));
+        assert!(hits[0].1.proc_resolved);
+        assert_eq!(hits[0].1.splash, 0.0);
+        let base_damage = hits[0].1.damage;
+        world.resource_mut::<PendingHits>().0.clear();
+        world
+            .resource_mut::<Run>()
+            .abilities
+            .iter_mut()
+            .find(|a| a.def.key == "tame_beast")
+            .unwrap()
+            .level = 6;
+        world.get_mut::<Summon>(pet).unwrap().cooldown = 0.0;
+        pet_step(&mut world);
+        assert_eq!(world.resource::<PendingHits>().0.len(), 1);
+        assert!(world.resource::<PendingHits>().0[0].1.damage > base_damage * 2.0);
+        for _ in 0..20 {
+            pet_step(&mut world);
+        }
+        let pets: Vec<_> = world
+            .query::<(Entity, &Summon)>()
+            .iter(&world)
+            .map(|(entity, summon)| (entity, summon.family, summon.slot))
+            .collect();
+        assert_eq!(pets.len(), 2);
+        assert!(pets.iter().any(|(entity, _, _)| *entity == pet));
+        assert!(pets.iter().all(|(_, family, _)| *family == 3));
+        assert!(pets.iter().any(|(_, _, slot)| *slot == 0));
+        assert!(pets.iter().any(|(_, _, slot)| *slot == 1));
+        world
+            .resource_mut::<Run>()
+            .abilities
+            .iter_mut()
+            .find(|a| a.def.key == "tame_beast")
+            .unwrap()
+            .level = 5;
+        pet_step(&mut world);
+        assert_eq!(world.query::<&Summon>().iter(&world).count(), 1);
+    }
+    #[test]
+    fn stomp_uses_each_owned_pet_origin_instead_of_the_hunter_or_foreign_pets() {
+        let mut world = hunter_world(&[8, 12], false);
+        let pets: Vec<_> = world
+            .query_filtered::<Entity, With<Summon>>()
+            .iter(&world)
+            .collect();
+        for (entity, x) in pets.iter().zip([-20.0, 20.0]) {
+            world.get_mut::<Transform>(*entity).unwrap().translation.x = x;
+            world.get_mut::<Summon>(*entity).unwrap().cooldown = 999.0;
+        }
+        let left = world
+            .spawn((Transform::from_xyz(-21.0, 0.0, 0.0), enemy()))
+            .id();
+        let right = world
+            .spawn((Transform::from_xyz(21.0, 0.0, 0.0), enemy()))
+            .id();
+        let center = world.spawn((Transform::default(), enemy())).id();
+        let p = world
+            .resource::<Run>()
+            .resolve_spell(data::ability("stomp"), 6);
+        world.resource_mut::<Run>().talent_runtime.minions.stomp = Some(p);
+        pet_step(&mut world);
+        let hits = &world.resource::<PendingHits>().0;
+        assert_eq!(hits.len(), 2);
+        for (_, hit) in hits {
+            assert!(hit.target == left || hit.target == right);
+            assert_ne!(hit.target, center);
+            assert!(matches!(hit.effect, data::Effect::Slow(0.5, _)));
+        }
+        world.resource_mut::<PendingHits>().0.clear();
+        world.get_mut::<Summon>(pets[1]).unwrap().owner = Some(99);
+        world.resource_mut::<Run>().talent_runtime.minions.stomp = Some(p);
+        pet_step(&mut world);
+        assert_eq!(world.resource::<PendingHits>().0.len(), 1);
+    }
+    #[test]
+    fn kill_command_charges_and_each_pet_selects_its_own_target() {
+        let mut world = hunter_world(&[8, 12], false);
+        let pets: Vec<_> = world
+            .query_filtered::<Entity, With<Summon>>()
+            .iter(&world)
+            .collect();
+        for (entity, x) in pets.iter().zip([-20.0, 20.0]) {
+            world.get_mut::<Transform>(*entity).unwrap().translation.x = x;
+            world.get_mut::<Summon>(*entity).unwrap().cooldown = 999.0;
+        }
+        let left = world
+            .spawn((Transform::from_xyz(-35.0, 0.0, 0.0), enemy()))
+            .id();
+        let right = world
+            .spawn((Transform::from_xyz(35.0, 0.0, 0.0), enemy()))
+            .id();
+        world.spawn((Transform::from_xyz(0.0, 0.0, 10.0), enemy()));
+        let p = world
+            .resource::<Run>()
+            .resolve_spell(data::ability("kill_command"), 1);
+        world.resource_mut::<Run>().talent_runtime.minions.command = Some(p);
+        pet_step(&mut world);
+        assert!(world.resource::<PendingHits>().0.is_empty());
+        for entity in &pets {
+            assert!(world.get::<Summon>(*entity).unwrap().charge.is_some());
+            assert!(
+                world
+                    .get::<crate::creature_anim::MovementState>(*entity)
+                    .unwrap()
+                    .speed
+                    > 8.0
+            );
+        }
+        for _ in 0..6 {
+            pet_step(&mut world);
+        }
+        let hits = &world.resource::<PendingHits>().0;
+        assert_eq!(
+            hits.iter()
+                .filter(|(_, h)| h.skill == "kill_command")
+                .count(),
+            2
+        );
+        assert!(hits.iter().any(|(_, h)| h.target == left));
+        assert!(hits.iter().any(|(_, h)| h.target == right));
+    }
+
+    #[test]
+    fn kill_command_shares_basic_attack_priorities_and_owner_defense_target() {
+        let mut world = hunter_world(&[8], false);
+        let pet = world
+            .query_filtered::<Entity, With<Summon>>()
+            .single(&world)
+            .unwrap();
+        world.get_mut::<Transform>(pet).unwrap().translation.x = 20.0;
+        let near = world
+            .spawn((Transform::from_xyz(21.0, 0.0, 0.0), enemy()))
+            .id();
+        let boss = world
+            .spawn((
+                Transform::from_xyz(30.0, 0.0, 0.0),
+                Enemy {
+                    boss: true,
+                    ..enemy()
+                },
+            ))
+            .id();
+        let owner_threat = world
+            .spawn((Transform::from_xyz(-1.0, 0.0, 0.0), enemy()))
+            .id();
+        let other_threat = world
+            .spawn((
+                Transform::from_xyz(2.0, 0.0, 0.0),
+                Enemy {
+                    boss: true,
+                    ..enemy()
+                },
+            ))
+            .id();
+        for expected in [owner_threat, other_threat, boss, near] {
+            let p = world
+                .resource::<Run>()
+                .resolve_spell(data::ability("kill_command"), 1);
+            world.resource_mut::<Run>().talent_runtime.minions.command = Some(p);
+            world.get_mut::<Summon>(pet).unwrap().cooldown = 999.0;
+            pet_step(&mut world);
+            let summon = world.get::<Summon>(pet).unwrap();
+            assert_eq!(summon.target, Some(expected));
+            if let Some((target, _)) = summon.charge {
+                assert_eq!(target, expected);
+            } else {
+                assert!(world
+                    .resource::<PendingHits>()
+                    .0
+                    .iter()
+                    .any(|(_, h)| h.skill == "kill_command" && h.target == expected));
+            }
+            world.get_mut::<Enemy>(expected).unwrap().dead = true;
+        }
+    }
+
     fn restoration_world() -> (World, Entity) {
         use crate::creature_anim::{CastEvent, PlaySeq, SpellGoTargets, SwingMessage};
         let mut world = World::new();
@@ -1514,67 +2119,181 @@ mod tests {
     }
 
     #[test]
-    fn pet_targets_vary_between_nearby_enemies_without_ignoring_reach() {
-        let mut rng = Rng(42);
+    fn pet_targets_prioritize_bosses_then_distance_from_the_pet_within_owner_leash() {
         let foes = [
-            (Entity::from_bits(1), Vec3::X),
-            (Entity::from_bits(2), Vec3::X * 2.0),
-            (Entity::from_bits(3), Vec3::X * 3.0),
-            (Entity::from_bits(4), Vec3::X * 50.0),
-        ];
-        let chosen: std::collections::HashSet<_> = (0..64)
-            .map(|_| pet_target(foes.into_iter(), Vec3::ZERO, Vec3::ZERO, 3.0, &mut rng).unwrap())
-            .collect();
-        assert_eq!(chosen.len(), 3);
-        assert!(!chosen.contains(&foes[3].0));
-        let ranged = [
-            (Entity::from_bits(1), Vec3::X * 19.0),
-            (Entity::from_bits(2), Vec3::X * 21.0),
-        ];
-        for _ in 0..16 {
-            assert_eq!(
-                pet_target(ranged.into_iter(), Vec3::ZERO, Vec3::ZERO, 20.0, &mut rng),
-                Some(ranged[0].0)
-            );
-        }
-        assert_eq!(
-            pet_target(std::iter::empty(), Vec3::ZERO, Vec3::ZERO, 3.0, &mut rng),
-            None
-        );
-        let follow = [
-            (Entity::from_bits(1), Vec3::X),
-            (Entity::from_bits(2), Vec3::X * 51.0),
+            (Entity::from_bits(1), Vec3::X * 5.0, false),
+            (Entity::from_bits(2), Vec3::X * 39.0, false),
+            (Entity::from_bits(3), Vec3::X * 70.0, true),
+            (Entity::from_bits(4), Vec3::X * 101.0, true),
         ];
         assert_eq!(
-            pet_target(
-                follow.into_iter(),
-                Vec3::ZERO,
-                Vec3::X * 50.0,
-                3.0,
-                &mut rng
-            ),
-            Some(follow[1].0)
+            pet_target(foes.into_iter(), Vec3::X * 40.0, Vec3::ZERO),
+            Some(foes[2].0)
         );
+        assert_eq!(
+            pet_target(foes[..2].iter().copied(), Vec3::X * 40.0, Vec3::ZERO),
+            Some(foes[1].0)
+        );
+        assert_eq!(pet_target(std::iter::empty(), Vec3::ZERO, Vec3::ZERO), None);
         let edge = Entity::from_bits(9);
         assert_eq!(
             pet_target(
-                [(edge, Vec3::X * 100.0)].into_iter(),
+                [(edge, Vec3::X * 100.0, false)].into_iter(),
                 Vec3::X * 99.0,
-                Vec3::ZERO,
-                3.0,
-                &mut rng
+                Vec3::ZERO
             ),
             Some(edge)
         );
         assert_eq!(
             pet_target(
-                [(edge, Vec3::X * 100.1)].into_iter(),
+                [(edge, Vec3::X * 100.1, true)].into_iter(),
                 Vec3::X * 99.0,
-                Vec3::ZERO,
-                3.0,
-                &mut rng
+                Vec3::ZERO
             ),
             None
+        );
+    }
+
+    #[test]
+    fn pet_targets_favor_the_owner_direction_without_ignoring_proximity_or_bosses() {
+        let away = (Entity::from_bits(1), Vec3::X * 46.0, false);
+        let toward = (Entity::from_bits(2), Vec3::X * 32.0, false);
+        let distant = (Entity::from_bits(3), Vec3::X * 20.0, false);
+        let boss = (Entity::from_bits(4), Vec3::X * 60.0, true);
+        let origin = Vec3::X * 40.0;
+        assert_eq!(
+            pet_target([away, toward].into_iter(), origin, Vec3::ZERO),
+            Some(toward.0)
+        );
+        assert_eq!(
+            pet_target([away, distant].into_iter(), origin, Vec3::ZERO),
+            Some(away.0)
+        );
+        assert_eq!(
+            pet_target([away, toward, boss].into_iter(), origin, Vec3::ZERO),
+            Some(boss.0)
+        );
+        // Direction follows the owner's current position, rather than a fixed world axis.
+        assert_eq!(
+            pet_target([away, toward].into_iter(), origin, Vec3::X * 80.0),
+            Some(away.0)
+        );
+        assert_eq!(
+            pet_target([away, toward].into_iter(), origin, origin),
+            Some(away.0)
+        );
+    }
+
+    #[test]
+    fn pets_focus_bosses_but_interrupt_them_to_defend_the_owner() {
+        let mut world = hunter_world(&[8], false);
+        let pet = world
+            .query_filtered::<Entity, With<Summon>>()
+            .single(&world)
+            .unwrap();
+        world.get_mut::<Transform>(pet).unwrap().translation.x = 20.0;
+        let nearby = world
+            .spawn((Transform::from_xyz(21.0, 0.0, 0.0), enemy()))
+            .id();
+        let boss = world
+            .spawn((
+                Transform::from_xyz(30.0, 0.0, 0.0),
+                Enemy {
+                    boss: true,
+                    ..enemy()
+                },
+            ))
+            .id();
+        {
+            let mut summon = world.get_mut::<Summon>(pet).unwrap();
+            summon.target = Some(nearby);
+            summon.retarget = 999.0;
+            summon.cooldown = 999.0;
+        }
+        pet_step(&mut world);
+        assert_eq!(world.get::<Summon>(pet).unwrap().target, Some(boss));
+        let danger = world
+            .spawn((Transform::from_xyz(1.0, 0.0, 0.0), enemy()))
+            .id();
+        pet_step(&mut world);
+        assert_eq!(world.get::<Summon>(pet).unwrap().target, Some(danger));
+        assert!(world.get::<Summon>(pet).unwrap().protecting);
+        world.get_mut::<Enemy>(danger).unwrap().dead = true;
+        pet_step(&mut world);
+        assert_eq!(world.get::<Summon>(pet).unwrap().target, Some(boss));
+        assert!(!world.get::<Summon>(pet).unwrap().protecting);
+        world.get_mut::<Enemy>(boss).unwrap().dead = true;
+        pet_step(&mut world);
+        assert_eq!(world.get::<Summon>(pet).unwrap().target, Some(nearby));
+    }
+
+    #[test]
+    fn pets_reserve_distinct_mobs_share_bosses_and_ignore_other_owners_reservations() {
+        let mut world = hunter_world(&[8, 12], true);
+        let pets: Vec<_> = world
+            .query_filtered::<Entity, With<Summon>>()
+            .iter(&world)
+            .collect();
+        assert_eq!(pets.len(), 3);
+        let danger = world
+            .spawn((Transform::from_xyz(1.0, 0.0, 0.0), enemy()))
+            .id();
+        let normal = world
+            .spawn((Transform::from_xyz(10.0, 0.0, 0.0), enemy()))
+            .id();
+        for pet in &pets {
+            world.get_mut::<Summon>(*pet).unwrap().cooldown = 999.0;
+        }
+        pet_step(&mut world);
+        let targets: Vec<_> = pets
+            .iter()
+            .filter_map(|pet| world.get::<Summon>(*pet).unwrap().target)
+            .collect();
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&danger) && targets.contains(&normal));
+        let p = world
+            .resource::<Run>()
+            .resolve_spell(data::ability("kill_command"), 1);
+        world.resource_mut::<Run>().talent_runtime.minions.command = Some(p);
+        pet_step(&mut world);
+        let targets: Vec<_> = pets
+            .iter()
+            .filter_map(|pet| world.get::<Summon>(*pet).unwrap().target)
+            .collect();
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&danger) && targets.contains(&normal));
+        // All three can focus a boss, including when it threatens the owner.
+        world.get_mut::<Enemy>(danger).unwrap().boss = true;
+        pet_step(&mut world);
+        assert!(pets
+            .iter()
+            .all(|pet| world.get::<Summon>(*pet).unwrap().target == Some(danger)));
+        world.get_mut::<Enemy>(danger).unwrap().dead = true;
+        pet_step(&mut world);
+        assert_eq!(
+            pets.iter()
+                .filter(|pet| world.get::<Summon>(**pet).unwrap().target == Some(normal))
+                .count(),
+            1
+        );
+        // A guest's assignment does not reserve this mob for the host.
+        {
+            let mut foreign = world.get_mut::<Summon>(pets[0]).unwrap();
+            foreign.owner = Some(7);
+            foreign.target = Some(normal);
+        }
+        for pet in &pets[1..] {
+            let mut summon = world.get_mut::<Summon>(*pet).unwrap();
+            summon.target = None;
+            summon.retarget = 0.0;
+        }
+        pet_step(&mut world);
+        assert_eq!(
+            pets[1..]
+                .iter()
+                .filter(|pet| world.get::<Summon>(**pet).unwrap().target == Some(normal))
+                .count(),
+            1
         );
     }
 
@@ -1956,7 +2675,7 @@ mod tests {
         }
     }
     #[test]
-    fn poison_refreshes_by_owner_and_cannot_reenter_its_own_proc_chain() {
+    fn poison_stacks_without_refreshing_old_applications_and_cannot_reenter_its_proc_chain() {
         let mut run = run(3, 0, &[8]);
         run.owner = Some(7);
         let mut enemy = enemy();
@@ -1991,9 +2710,18 @@ mod tests {
         );
         assert_eq!(
             enemy.dots[0].tick, 0.25,
-            "Refreshing must not postpone the next damage tick"
+            "Adding a stack must not postpone the next damage tick"
         );
-        assert_eq!(enemy.dots[0].left, 6.0);
+        assert_eq!(enemy.dots.len(), 2);
+        assert_eq!(enemy.dots[0].left, 2.0);
+        assert_eq!(enemy.dots[1].left, 6.0);
+        assert_eq!(enemy.dots[1].tick, 0.25);
+        for _ in 0..10 {
+            run.elapsed += 0.5;
+            on_hit(&mut run, &hit, &mut enemy, Vec3::ZERO, &mut rng, &mut pending);
+        }
+        assert_eq!(enemy.dots.len(), 12);
+        assert!(enemy.dots.iter().all(|d| d.skill == "proc_poison" && d.owner == Some(7) && d.dps == 18.0));
         hit.triggered = true;
         hit.proc_chain = chain_bit(M::Poison);
         enemy.dots.clear();
@@ -2007,6 +2735,39 @@ mod tests {
         );
         assert!(enemy.dots.is_empty());
     }
+    #[test]
+    fn all_milestone_proliferation_preserves_remaining_lifetime_and_tick_timing() {
+        for (class, tree, node, skill) in [
+            (3, 0, 12, "deadly_poison"), (6, 1, 12, "proc_ignite"),
+            (7, 0, 12, "corruption"), (4, 2, 18, "corruption"),
+            (2, 2, 18, "explosive_trap"),
+        ] {
+            let mut world = hunter_world(&[], false);
+            let mut player = run(class, tree, &[node]);
+            let mut corpse = enemy();
+            corpse.dots.push(Dot {
+                owner: None, skill, meter_source: None, tags: None, item_source: None,
+                origin: super::super::items::legendary::events::Origin::Skill,
+                meta: Default::default(), dps: 7.0, left: 1.2, tick: 0.4,
+            });
+            on_death(&mut player, &corpse, Vec3::ZERO);
+            assert_eq!(player.talent_runtime.bursts[0].dots.len(), 1, "{skill}");
+            world.insert_resource(player);
+            let target = world.spawn((Transform::from_xyz(2.0, 0.0, 0.0), enemy())).id();
+            pet_step(&mut world);
+            let copied = &world.get::<Enemy>(target).unwrap().dots[0];
+            assert_eq!(copied.skill, skill);
+            assert_eq!(copied.dps, 7.0);
+            assert!((copied.left - 1.1).abs() < 0.001, "{skill}: {}", copied.left);
+            assert!((copied.tick - 0.3).abs() < 0.001, "{skill}");
+            let mut next_corpse = enemy();
+            next_corpse.dots.push(copied.clone());
+            next_corpse.dots[0].left = 0.0;
+            world.resource_scope(|_, mut player: Mut<Run>| on_death(&mut player, &next_corpse, Vec3::ZERO));
+            assert!(world.resource::<Run>().talent_runtime.bursts.iter().all(|b| b.dots.is_empty()));
+        }
+    }
+
     #[test]
     fn proliferation_and_death_bursts_require_the_owners_condition() {
         let mut run = run(3, 0, &[8, 12, 18]);
@@ -2034,6 +2795,43 @@ mod tests {
         assert_eq!(burst.dots[0].owner, Some(7));
         assert_eq!(burst.meter_source, Some("Poison Bomb"));
         assert_eq!(burst.spread_source, Some("Toxic Contagion"));
+    }
+
+    #[test]
+    fn unstable_affliction_stacks_with_independent_durations_without_recursive_procs() {
+        let mut run = run(7, 0, &[8]);
+        let spec = &super::super::talents::TREES[7][0];
+        run.replace_spell_modifiers(908, super::super::talent_effects::effects(spec, 8, 1)
+            .into_iter().map(|change| super::super::spell_engine::Modifier {
+                source: 908,
+                filter: super::super::talent_effects::filter(spec, 8, change),
+                change,
+            }));
+        let mut target = enemy();
+        let mut rng = Rng(42);
+        let mut pending = PendingHits::default();
+        let mut hit = Hit::direct("shadow_bolt", Entity::from_bits(1), 100.0, false);
+        on_hit(&mut run, &hit, &mut target, Vec3::ZERO, &mut rng, &mut pending);
+        assert_eq!(target.dots.len(), 1);
+        target.dots[0].left = 2.0;
+        target.dots[0].tick = 0.25;
+        run.elapsed += 0.5;
+        on_hit(&mut run, &hit, &mut target, Vec3::ZERO, &mut rng, &mut pending);
+        assert_eq!(target.dots.len(), 2);
+        assert_eq!(target.dots[0].left, 2.0);
+        assert_eq!(target.dots[1].left, 6.0);
+        assert_eq!(target.dots[1].tick, 0.25);
+        for _ in 0..10 {
+            run.elapsed += 0.5;
+            on_hit(&mut run, &hit, &mut target, Vec3::ZERO, &mut rng, &mut pending);
+        }
+        assert_eq!(target.dots.len(), 12);
+        assert!(target.dots.iter().all(|d| d.skill == "proc_plague" && (d.dps - 22.5).abs() < 0.001));
+        target.dots.clear();
+        hit.triggered = true;
+        run.elapsed += 0.5;
+        on_hit(&mut run, &hit, &mut target, Vec3::ZERO, &mut rng, &mut pending);
+        assert!(target.dots.is_empty());
     }
     #[test]
     fn bleeding_death_explosions_use_the_specializations_milestone_name() {
@@ -2063,6 +2861,98 @@ mod tests {
                 burst.skill, "arcane_explosion",
                 "Changing the meter label must not replace spell rules or visuals"
             );
+        }
+    }
+
+    #[test]
+    fn death_explosions_cap_health_base_then_apply_source_modifiers_and_crit_once() {
+        use super::super::spell_engine::{Change, Filter, Modifier};
+        for (class, tree, node, dot, frozen, school, name) in [
+            (0, 1, 12, "rend", false, Tags::PHYSICAL, "Bloodbath"),
+            (2, 0, 18, "rend", false, Tags::PHYSICAL, "Pack Frenzy"),
+            (8, 1, 18, "rend", false, Tags::PHYSICAL, "Savage Carnage"),
+            (2, 2, 18, "corruption", false, Tags::FIRE, "Death Trap"),
+            (
+                3,
+                0,
+                18,
+                "deadly_poison",
+                false,
+                Tags::NATURE,
+                "Poison Bomb",
+            ),
+            (6, 1, 18, "fireball", false, Tags::FIRE, "Combustion"),
+            (7, 0, 18, "corruption", false, Tags::SHADOW, "Doom Eruption"),
+            (
+                4,
+                2,
+                18,
+                "corruption",
+                false,
+                Tags::SHADOW,
+                "Shadow Pandemic",
+            ),
+            (6, 2, 18, "corruption", true, Tags::COLD, "Endless Winter"),
+        ] {
+            for max_hp in [100.0, 10_000.0] {
+                let mut world = hunter_world(&[], false);
+                let mut player = run(class, tree, &[node]);
+                let pack = name == "Pack Frenzy";
+                player.replace_spell_modifiers(
+                    907,
+                    [
+                        (Tags(0), Change::IncreasedDamage(1.0)),
+                        (school, Change::IncreasedDamage(1.0)),
+                        (Tags::ARCANE, Change::MoreDamage(99.0)),
+                        (Tags(0), Change::CriticalChance(1.0)),
+                        (Tags(0), Change::CriticalMultiplier(1.0)),
+                        (Tags::MINION, Change::IncreasedDamage(1.0)),
+                    ]
+                    .into_iter()
+                    .map(|(tags, change)| Modifier {
+                        source: 907,
+                        filter: Filter::requiring(tags),
+                        change,
+                    }),
+                );
+                let mut corpse = enemy();
+                corpse.max_hp = max_hp;
+                corpse.root_t = if frozen { 1.0 } else { 0.0 };
+                corpse.dots.push(Dot {
+                    owner: None,
+                    skill: dot,
+                    meter_source: None,
+                    tags: None,
+                    item_source: None,
+                    origin: super::super::items::legendary::events::Origin::Skill,
+                    meta: Default::default(),
+                    dps: 5.0,
+                    left: 4.0,
+                    tick: 1.0,
+                });
+                on_death(&mut player, &corpse, Vec3::ZERO);
+                let base = (max_hp * 0.3).min(1000.0);
+                assert_eq!(player.talent_runtime.bursts.len(), 1, "{name}");
+                assert!((player.talent_runtime.bursts[0].damage - base).abs() < 0.001);
+                assert!((player.talent_runtime.bursts[0].radius.powi(2) - 72.0).abs() < 0.001);
+                world.insert_resource(player);
+                world.spawn((Transform::from_xyz(8.0, 0.0, 0.0), enemy()));
+                world.spawn((Transform::from_xyz(12.0, 0.0, 0.0), enemy()));
+                pet_step(&mut world);
+                let hits = &world.resource::<PendingHits>().0;
+                assert_eq!(hits.len(), 1, "{name}");
+                let hit = &hits[0].1;
+                assert_eq!(hit.meter_source, Some(name));
+                assert!(hit.tags.unwrap().contains(school), "{name}");
+                assert_eq!(hit.tags.unwrap().contains(Tags::MINION), pack);
+                assert!(hit.crit && hit.proc_resolved, "{name}");
+                let expected = base * if pack { 4.0 } else { 3.0 } * 3.0;
+                assert!(
+                    (hit.damage - expected).abs() < 0.01,
+                    "{name}: {} != {expected}",
+                    hit.damage
+                );
+            }
         }
     }
     #[test]

@@ -256,7 +256,7 @@ fn to_command(input: &wire::Input) -> session::Command {
         return default();
     }
     session::Command {
-        axes: Vec2::from_array(input.axes),
+        axes: Vec2::from_array(input.axes).clamp_length_max(1.0),
         turn: input.turn,
         facing: input
             .facing
@@ -279,7 +279,7 @@ fn pump(world: &mut World) {
             warn!("Survivors disconnected: {error}");
             rooms::close(world, &mut network);
             if let Some(mut lobby) = world.get_resource_mut::<super::lobby::Lobby>() {
-                lobby.fail(format!("Connexion au salon interrompue : {error}"));
+                lobby.fail(format!("Game connection interrupted: {error}"));
             }
             world.resource_mut::<Run>().banner = Some((format!("Disconnected: {error}"), 60.0));
             world.resource_mut::<NextState<Phase>>().set(Phase::Menu);
@@ -343,7 +343,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
                 wire::ToServer::Join { version, profile } if peer.session.is_none() => {
                     if version != wire::VERSION || !valid_profile(&profile) {
                         let _ = peer.socket.send(&wire::ToClient::Error(
-                            "Personnage ou version du jeu incompatible.".into(),
+                            "Incompatible character or game version.".into(),
                         ));
                         failed = true;
                         break;
@@ -380,11 +380,9 @@ fn pump_host(world: &mut World, network: &mut Network) {
                     // Edge actions survive multiple packets received in one server frame.
                     let jump = peer.held.jump || input.jump;
                     let mobility = peer.held.mobility || input.mobility;
-                    let release = peer.held.release_levels || input.release_levels;
                     peer.held = input;
                     peer.held.jump = jump;
                     peer.held.mobility = mobility;
-                    peer.held.release_levels = release;
                 }
                 wire::ToServer::Pick { offer, index } => {
                     if let Some(session) = &peer.session {
@@ -423,6 +421,14 @@ fn pump_host(world: &mut World, network: &mut Network) {
                         profile.save = Some(save);
                     }
                 }
+                wire::ToServer::CardDraw { automatic, open } => {
+                    let in_hub = world.resource::<Selection>().in_hub;
+                    if let Some(session) = &peer.session {
+                        if let Some(companion) = world.resource_mut::<Companions>().0.get_mut(&session.wire_id()) {
+                            game::card_draw::apply(&mut companion.run, automatic, open && !in_hub);
+                        }
+                    }
+                }
                 wire::ToServer::ResetMeter => {
                     if peer.session.is_some() {
                         world.resource_scope(|world, mut players: Mut<Companions>| {
@@ -448,7 +454,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
                                     });
                             world
                                 .get_resource_mut::<game::shared_chest::Store>()
-                                .ok_or_else(|| "Coffre indisponible.".to_string())?
+                                .ok_or_else(|| "Chest unavailable.".to_string())?
                                 .request_for(
                                     &peer.trade.identity,
                                     &peer.trade.pending_deposits,
@@ -483,18 +489,6 @@ fn pump_host(world: &mut World, network: &mut Network) {
             continue;
         }
         if let Some(session) = &peer.session {
-            if let Some(companion) = world
-                .resource_mut::<Companions>()
-                .0
-                .get_mut(&session.wire_id())
-            {
-                game::level_prompt::hold_levels(
-                    &mut companion.run,
-                    peer.held.hold_levels,
-                    peer.held.release_levels,
-                );
-            }
-            peer.held.release_levels = false;
             let mut command = to_command(&peer.held);
             if peer.since_input > 0.25 {
                 command = default();
@@ -787,7 +781,7 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
             .and_then(|r| r.active)
             != Some(key.0)
         {
-            return Err(std::io::Error::other("Le personnage a quitté le salon."));
+            return Err(std::io::Error::other("The character has left the game."));
         }
     }
     let phase = *world.resource::<State<Phase>>().get();
@@ -865,6 +859,11 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
             for request in chest_requests {
                 guest.socket.send(&wire::ToServer::Chest(request))?;
             }
+            let automatic = world.get_resource::<game::options::Settings>()
+                .is_none_or(|settings| settings.auto_draw_cards);
+            let open = world.get_resource_mut::<game::card_draw::Request>()
+                .is_some_and(|mut request| std::mem::take(&mut request.0));
+            guest.socket.send(&wire::ToServer::CardDraw { automatic, open })?;
             guest.sequence += 1;
             guest.socket.send(&wire::ToServer::Input(wire::Input {
                 sequence: guest.sequence,
@@ -875,10 +874,6 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
                 jump: std::mem::take(&mut guest.pending_jump),
                 mobility: std::mem::take(&mut guest.pending_mobility),
                 active: command.active,
-                hold_levels: world.resource::<GuestActions>().hold_levels,
-                release_levels: std::mem::take(
-                    &mut world.resource_mut::<GuestActions>().release_levels,
-                ),
             }))?;
             if let Some(index) = world.resource_mut::<GuestActions>().pick.take() {
                 guest.socket.send(&wire::ToServer::Pick {
@@ -963,6 +958,8 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         taken_meter: run.taken_meter.clone(),
         movement_speed: run.stats().speed * run.haste_mult(),
         meter: run.meter.clone(),
+        effect_meter: run.effect_meter.clone(),
+        boss_meter: run.boss_meter.clone(),
         earned: game::talents::earned(run),
         hp: run.hp,
         max_hp: run.stats().max_hp,
@@ -988,7 +985,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
             .collect(),
         offer_id,
         draft_uses: run.draft_uses,
-        held_levels: run.held_levels,
+        stored_cards: run.stored_cards,
         choices: offer.choices().iter().map(encode_choice).collect(),
         mobility: [
             run.mobile.cd,
@@ -1067,7 +1064,7 @@ fn publish(world: &mut World) {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
                 inventory
                     .config
-                    .generate_loot(level, class, magic_find, &mut rng)
+                    .generate_loot(level, class, game::items::compensated_magic_find(magic_find), &mut rng)
                     .ok()
             });
             if let Some(item) = item {
@@ -1218,7 +1215,7 @@ fn publish(world: &mut World) {
     let host_name = world
         .get_resource::<game::characters::Roster>()
         .and_then(|r| r.current())
-        .map_or_else(|| "Hôte".into(), |c| c.name.clone());
+        .map_or_else(|| "Host".into(), |c| c.name.clone());
     let summary = |id, name, run: &Run| {
         let rows = run.meter.rows(run.elapsed);
         game::combat_ui::PartyRow {
@@ -1567,7 +1564,6 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.level = stats.level;
         run.meta_level = stats.character_level.max(1);
         run.draft_uses = stats.draft_uses;
-        run.held_levels = stats.held_levels;
         run.xp = stats.xp;
         run.kills = stats.kills;
         run.won = stats.won;
@@ -1582,7 +1578,10 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.immune_t = stats.immune;
         game::healer_buffs::restore(&mut run, stats.support_bonuses);
         run.damage_done = stats.damage_done;
+        run.stored_cards = stats.stored_cards;
         run.meter = stats.meter.clone();
+        run.effect_meter = stats.effect_meter.clone();
+        run.boss_meter = stats.boss_meter.clone();
         run.healing_meter = stats.healing_meter.clone();
         run.taken_meter = stats.taken_meter.clone();
         run.dead_t = stats.dead.then_some(0.0);
@@ -2070,19 +2069,19 @@ mod tests {
             .resource::<Network>()
             .peers
             .values()
-            .all(|p| p.money_earned == 100003));
+            .all(|p| p.money_earned == 50001));
         publish(&mut host);
         assert!(host
             .resource::<Network>()
             .peers
             .values()
-            .all(|p| p.money_earned == 100003));
+            .all(|p| p.money_earned == 50001));
         let mut seen = [false; 2];
         while !seen.iter().all(|s| *s) {
             for (i, client) in clients.iter_mut().enumerate() {
                 for message in client.receive::<wire::ToClient>().unwrap() {
                     if let wire::ToClient::Snapshot(snapshot) = message {
-                        if snapshot.money_earned == 100003 {
+                        if snapshot.money_earned == 50001 {
                             seen[i] = true;
                         }
                     }
@@ -2179,6 +2178,50 @@ mod tests {
             .peers
             .values()
             .all(|p| p.loot.len() == 1));
+    }
+
+    #[test]
+    fn tcp_guest_can_open_all_banked_cards_in_one_request() {
+        let mut host = world();
+        host.resource_mut::<Selection>().in_hub = false;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        host.insert_resource(network(listener));
+        let mut client = Socket::new(TcpStream::connect(address).unwrap()).unwrap();
+        join(&mut client, 0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while host.resource::<Companions>().0.is_empty() {
+            tick(&mut host);
+            client.receive::<wire::ToClient>().unwrap();
+            assert!(Instant::now() < deadline);
+        }
+        client.send(&wire::ToServer::CardDraw { automatic:false, open:false }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            tick(&mut host);
+            client.receive::<wire::ToClient>().unwrap();
+            if !host.resource::<Companions>().0.values().next().unwrap().run.auto_draw_cards { break; }
+            assert!(Instant::now() < deadline);
+        }
+        {
+            let mut companions = host.resource_mut::<Companions>();
+            let run = &mut companions.0.values_mut().next().unwrap().run;
+            for _ in 0..3 { game::card_draw::bank(run); }
+            assert_eq!((run.pending_levels,run.stored_cards),(0,3));
+        }
+        client.send(&wire::ToServer::CardDraw { automatic:false, open:true }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            tick(&mut host);
+            if client.receive::<wire::ToClient>().unwrap().into_iter().any(|message| {
+                matches!(message, wire::ToClient::Snapshot(s) if s.stats.stored_cards == 0 && !s.stats.choices.is_empty())
+            }) { break; }
+            assert!(Instant::now() < deadline);
+        }
+        let companions = host.resource::<Companions>();
+        let run = &companions.0.values().next().unwrap().run;
+        assert_eq!((run.pending_levels,run.stored_cards),(3,0));
+        assert_eq!(host.resource::<Run>().pending_levels,0);
     }
 
     #[test]

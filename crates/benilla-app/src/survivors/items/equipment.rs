@@ -33,7 +33,7 @@ impl EquipmentType {
             Self::Leather => matches!(class, 1 | 2 | 3 | 4 | 7 | 11),
             Self::Shield => matches!(class, 1 | 2 | 7),
             Self::Wand => matches!(class, 2 | 5 | 7 | 8 | 9 | 11),
-            Self::Bow => matches!(class, 1 | 2 | 3 | 4 | 7),
+            Self::Bow => matches!(class, 1 | 2 | 3 | 4 | 7 | 11),
             _ => true,
         }
     }
@@ -142,6 +142,7 @@ impl Effect {
 }
 
 impl Item {
+    pub fn required_level(&self) -> u32 { self.level.saturating_sub(5).clamp(1, 60) }
     /// Old saved rolls above the base cap remain readable, but cannot grant extra block.
     pub fn intrinsic_block(&self) -> f32 {
         if self.equipment_type == EquipmentType::Shield {
@@ -199,6 +200,28 @@ impl Item {
 mod tests {
     use super::*;
     #[test]
+    fn required_level_tracks_ilvl_and_blocks_equipping_until_character_reaches_it() {
+        let mut item = super::super::tests::item(SlotKind::Head, vec![]);
+        for (ilvl, required) in [(1,1),(5,1),(6,1),(22,17),(60,55),(65,60),(100,60),(u32::MAX,60)] {
+            item.level = ilvl; assert_eq!(item.required_level(), required);
+        }
+        item.level = 22;
+        let mut inventory = Inventory::fixture(vec![item]);
+        inventory.character_level = 16;
+        assert!(!inventory.equippable(inventory.item(1).unwrap()));
+        assert!(inventory.equip(1, "Head").is_err());
+        assert!(inventory.item(1).unwrap().tooltip_lines(&inventory).iter().any(|(line,color)| line == "Requires level: 17" && *color == Color::srgb(1.0,0.15,0.15)));
+        inventory.character_level = 17;
+        inventory.equip(1, "Head").unwrap();
+        inventory.character_level = 16;
+        assert!(inventory.validate_loadout(&inventory.save).is_err());
+        #[cfg(not(target_arch = "wasm32"))] {
+            let save = inventory.shared_save().unwrap();
+            assert!(Inventory::from_shared(1, 16, &save).unwrap().save.equipped.is_empty());
+            assert_eq!(Inventory::from_shared(1, 17, &save).unwrap().save.equipped.len(), 1);
+        }
+    }
+    #[test]
     fn armour_shield_wand_and_dual_wield_permissions_follow_class() {
         for (kind, allowed) in [
             (EquipmentType::Plate, &[1, 2][..]),
@@ -207,7 +230,7 @@ mod tests {
             (EquipmentType::Cloth, &[1, 2, 3, 4, 5, 7, 8, 9, 11][..]),
             (EquipmentType::Shield, &[1, 2, 7][..]),
             (EquipmentType::Wand, &[2, 5, 7, 8, 9, 11][..]),
-            (EquipmentType::Bow, &[1, 2, 3, 4, 7][..]),
+            (EquipmentType::Bow, &[1, 2, 3, 4, 7, 11][..]),
             (EquipmentType::MeleeOneHand, &[1, 2, 3, 4, 7, 11][..]),
             (EquipmentType::HybridOneHand, &[1, 2, 3, 4, 7, 11][..]),
             (EquipmentType::TwoHand, &[1, 2, 3, 7, 11][..]),
@@ -545,11 +568,10 @@ impl Inventory {
         }
     }
     pub fn can_equip(&self, item: &Item, slot: SlotKind) -> bool {
-        item.usable(self.class, slot)
-            || item.equipment_type.can_equip(self.class)
-                && self.save.titan_grip
-                && item.equipment_type == EquipmentType::TwoHand
-                && slot == SlotKind::OffHand
+        self.character_level >= item.required_level()
+            && (item.usable(self.class, slot)
+                || item.equipment_type.can_equip(self.class) && self.save.titan_grip
+                    && item.equipment_type == EquipmentType::TwoHand && slot == SlotKind::OffHand)
     }
     /// Whether the current class can wear `item` in at least one slot.
     pub fn equippable(&self, item: &Item) -> bool {
@@ -569,6 +591,7 @@ impl Inventory {
                 .find(|(s, _)| s == name)
                 .map(|(_, s)| *s)
                 .ok_or("Invalid equipment slot")?;
+            if self.character_level < item.required_level() { return Err(format!("Requires level {} to equip this item.", item.required_level())); }
             if !item.usable(self.class, slot)
                 && !(save.titan_grip
                     && slot == SlotKind::OffHand

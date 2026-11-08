@@ -75,6 +75,7 @@ pub(super) fn description(spec: &Spec, node: usize, rank: u8) -> String {
             | Change::CriticalMultiplier(v)
             | Change::RecastChance(v)
             | Change::LifeLeech(v)
+            | Change::DodgeChance(v)
             | Change::DamageAgainstBosses(v)
             | Change::DamageAgainstFullLife(v)
             | Change::DamageAgainstLowLife(v)

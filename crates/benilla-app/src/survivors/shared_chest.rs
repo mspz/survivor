@@ -9,6 +9,10 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod ui;
+type OtherView = super::bank::View;
+const TITLE: &str = "Shared chest";
+const OPEN_LABEL: &str = "Open shared chest";
+const PROMPT_OFFSET: f32 = -115.0;
 
 pub(super) fn nonce() -> String {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -60,13 +64,26 @@ impl Default for Save {
         }
     }
 }
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub(super) struct Store {
+    file: &'static str,
     save: Save,
     pub error: String,
     blocked: bool,
     loaded: bool,
     revision: u64,
+}
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            file: "shared-chest.toml",
+            save: Save::default(),
+            error: String::new(),
+            blocked: false,
+            loaded: false,
+            revision: 0,
+        }
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct Replica {
@@ -106,28 +123,42 @@ pub(super) fn near(pos: Vec3) -> bool {
 }
 
 impl Store {
-    fn persist(save: &Save) -> Result<(), String> {
+    pub(super) fn personal() -> Self {
+        Self {
+            file: "account-bank.toml",
+            ..default()
+        }
+    }
+    pub(super) fn loaded(&self) -> bool {
+        self.loaded
+    }
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub(super) fn identity(&self) -> &str {
+        &self.save.identity
+    }
+    fn persist(&self, save: &Save) -> Result<(), String> {
         let Some(home) = crate::local_state::home() else {
             return Ok(());
         };
         let text = toml::to_string_pretty(save).map_err(|e| e.to_string())?;
-        crate::local_state::write_queued(&home.join("shared-chest.toml"), &text)
-            .map_err(|e| e.to_string())
+        crate::local_state::write_queued(&home.join(self.file), &text).map_err(|e| e.to_string())
     }
     fn commit(&mut self, save: Save) -> Result<(), String> {
         if self.blocked {
             return Err(self.error.clone());
         }
-        Self::persist(&save)?;
+        self.persist(&save)?;
         self.save = save;
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
-    fn load(&mut self) {
+    pub(super) fn load(&mut self) {
         self.loaded = true;
         self.revision = self.revision.wrapping_add(1);
         let result = crate::local_state::home().and_then(|h| {
-            match crate::local_state::read_to_string(&h.join("shared-chest.toml")) {
+            match crate::local_state::read_to_string(&h.join(self.file)) {
                 Ok(text) => Some(toml::from_str::<Save>(&text).map_err(|e| e.to_string())),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => Some(Err(e.to_string())),
@@ -137,10 +168,10 @@ impl Store {
             Some(Ok(save)) if save.version == 1 && !save.identity.is_empty() => self.save = save,
             Some(_) => {
                 self.blocked = true;
-                self.error = "Sauvegarde du coffre illisible ; aucun transfert autorisé.".into();
+                self.error = "The chest save cannot be read; transfers are disabled.".into();
             }
             None => {
-                if let Err(e) = Self::persist(&self.save) {
+                if let Err(e) = self.persist(&self.save) {
                     self.blocked = true;
                     self.error = e;
                 }
@@ -199,18 +230,18 @@ impl Store {
                     return Ok(());
                 }
                 if !accessible {
-                    return Err("Approchez du coffre dans le Hub pour déposer un objet.".into());
+                    return Err("Move closer to the chest in the hub to deposit an item.".into());
                 }
                 let transfer = pending
                     .iter()
                     .find(|t| t.token == token)
-                    .ok_or("Transfert introuvable dans l'inventaire.")?;
+                    .ok_or("Transfer not found in the inventory.")?;
                 if transfer.vault != self.save.identity {
-                    return Err("Ce dépôt appartient à un autre coffre.".into());
+                    return Err("This deposit belongs to another chest.".into());
                 }
                 let mut save = self.save.clone();
                 let id = save.next_id;
-                save.next_id = id.checked_add(1).ok_or("Coffre plein.")?;
+                save.next_id = id.checked_add(1).ok_or("Chest full.")?;
                 save.entries.push(Entry {
                     id,
                     item: transfer.item.clone(),
@@ -220,10 +251,10 @@ impl Store {
             }
             Request::Withdraw { vault, entry } => {
                 if !accessible || vault != self.save.identity {
-                    return Err("Approchez du coffre dans le Hub pour récupérer un objet.".into());
+                    return Err("Move closer to the chest in the hub to withdraw an item.".into());
                 }
                 if identity.is_empty() {
-                    return Err("Identité de transfert manquante.".into());
+                    return Err("Missing transfer identity.".into());
                 }
                 if self
                     .save
@@ -238,10 +269,10 @@ impl Store {
                     .entries
                     .iter()
                     .position(|e| e.id == entry)
-                    .ok_or("Cet objet a déjà été récupéré.")?;
+                    .ok_or("This item has already been withdrawn.")?;
                 let item = save.entries.remove(index).item;
                 let token = format!("{}:{}", save.identity, save.next_id);
-                save.next_id = save.next_id.checked_add(1).ok_or("Identifiants épuisés.")?;
+                save.next_id = save.next_id.checked_add(1).ok_or("No more identifiers available.")?;
                 save.deliveries.push(Delivery {
                     identity: identity.into(),
                     entry,
@@ -365,6 +396,7 @@ pub(super) fn plugin(app: &mut App) {
             Update,
             ui::input
                 .after(super::combat_ui::input)
+                .after(super::hub_interact::click)
                 .before(super::client::input)
                 .before(hud::keys),
         )
@@ -399,6 +431,14 @@ pub(super) fn fixture_item() -> Item {
 mod tests {
     use super::*;
     #[test]
+    fn personal_bank_and_shared_chest_use_separate_files_and_vault_identities() {
+        let shared = Store::default();
+        let bank = Store::personal();
+        assert_eq!(shared.file, "shared-chest.toml");
+        assert_eq!(bank.file, "account-bank.toml");
+        assert_ne!(shared.identity(), bank.identity());
+    }
+    #[test]
     fn transfers_survive_retries_reloads_and_competing_withdrawals_without_duplication() {
         let mut store = Store::default();
         let mut sender = Inventory::fixture(vec![fixture_item(), fixture_item()]);
@@ -419,7 +459,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.save.entries.len(), 1);
         store.save = toml::from_str(&toml::to_string(&store.save).unwrap()).unwrap();
-        let pending_sender = Inventory::from_shared(1, &sender.shared_save().unwrap()).unwrap();
+        let pending_sender = Inventory::from_shared(1, 60, &sender.shared_save().unwrap()).unwrap();
         assert_eq!(store.replica(&pending_sender).accepted, vec![token.clone()]);
         sender.finish_deposit(&token).unwrap();
         let mut receiver = Inventory::fixture(vec![fixture_item(), fixture_item()]);
@@ -467,7 +507,7 @@ mod tests {
         receive(replica.clone(), &mut receiver, &mut view);
         receive(replica.clone(), &mut receiver, &mut view);
         assert_eq!(receiver.all().len(), 3);
-        let reloaded = Inventory::from_shared(1, &receiver.shared_save().unwrap()).unwrap();
+        let reloaded = Inventory::from_shared(1, 60, &receiver.shared_save().unwrap()).unwrap();
         let mut reloaded = reloaded;
         reloaded.receive_trade(&replica.deliveries[0]).unwrap();
         assert_eq!(reloaded.all().len(), 3);

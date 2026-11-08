@@ -1,3 +1,4 @@
+pub(super) mod crafting;
 use super::*;
 pub(super) const DEFAULT_BASES: &str =
     include_str!("../../../../../config/survivors-item-bases.toml");
@@ -20,6 +21,7 @@ pub(in crate::survivors) enum Tag {
     Dot,
     Duration,
     Totem,
+    Minion,
     Trap,
     Damage,
     Physical,
@@ -43,6 +45,7 @@ impl Tag {
             Self::Dot => Tags::DOT,
             Self::Duration => Tags::DURATION,
             Self::Totem => Tags::TOTEM,
+            Self::Minion => Tags::MINION,
             Self::Trap => Tags::TRAP,
             Self::Damage => Tags::DAMAGE,
             Self::Physical => Tags::PHYSICAL,
@@ -150,7 +153,8 @@ struct AffixDef {
 }
 impl AffixDef {
     fn compatible_base(&self, base: &Base) -> bool {
-        self.slots.contains(&base.slot)
+        !matches!(self.effect, Effect::Experience | Effect::MagicFind | Effect::Luck)
+            && self.slots.contains(&base.slot)
             && self.effect.valid_equipment_type(base.equipment_type)
             && !(matches!(
                 base.equipment_type,
@@ -458,6 +462,7 @@ impl Config {
     fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
         self.roll_for_target(level, class_id, 0.0, rng)
     }
+    #[cfg(test)]
     pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind, class: u8) -> bool {
         self.bases.iter().any(|b| {
             b.slot == slot
@@ -468,6 +473,7 @@ impl Config {
                     && !super::equipment::dual_wield(class))
         })
     }
+    #[cfg(test)]
     pub(in crate::survivors) fn generate_gamble(
         &self,
         level: u32,
@@ -476,7 +482,7 @@ impl Config {
         rng: &mut Rng,
     ) -> Result<Item, String> {
         if !self.gamble_available(slot, class) {
-            return Err("Aucun objet disponible pour cette classe et cet emplacement.".into());
+            return Err("No items available for this class and slot.".into());
         }
         let mut pool = self.clone();
         pool.bases.retain(|b| {
@@ -1430,7 +1436,7 @@ mod tests {
     }
     #[test]
     fn split_tables_apply_base_settings_and_affix_ranges_independently() {
-        let bases = DEFAULT_BASES.replace("boss_drop_chance = 1.0", "boss_drop_chance = 0.25");
+        let bases = DEFAULT_BASES.replace("boss_drop_chance = 0.5", "boss_drop_chance = 0.25");
         let affixes = DEFAULT_AFFIXES.replace("max = 40", "max = 41");
         let config = Config::parse_parts(&bases, &affixes).unwrap();
         assert_eq!(config.boss_drop_chance, 0.25);
@@ -1448,6 +1454,36 @@ mod tests {
             &DEFAULT_AFFIXES.replace("max = 40", "max = -1")
         )
         .is_err());
+    }
+    #[test]
+    fn druids_drop_intelligence_and_agility_gear_and_can_drop_and_equip_bows() {
+        let mut config = Config::builtin();
+        let mut rng = Rng(11011);
+        let (mut intelligence, mut agility) = (false, false);
+        for _ in 0..1000 {
+            let item = config.generate_for_target(60, 11, &mut rng).unwrap();
+            intelligence |= item
+                .affixes
+                .iter()
+                .any(|a| a.effect == Effect::Intelligence);
+            agility |= item.affixes.iter().any(|a| a.effect == Effect::Agility);
+        }
+        assert!(intelligence && agility);
+        for base in &mut config.bases {
+            base.weight = if base.equipment_type == EquipmentType::Bow {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let bow = config.generate_for_target(60, 11, &mut rng).unwrap();
+        assert_eq!(bow.equipment_type, EquipmentType::Bow);
+        assert!(bow.valid_equipment());
+        let mut inventory = Inventory::fixture(vec![bow]);
+        let id = inventory.all()[0].id;
+        inventory.class = 11;
+        inventory.equip(id, "Ranged").unwrap();
+        assert_eq!(inventory.equipped("Ranged").unwrap().id, id);
     }
     #[test]
     fn targeted_loot_obeys_material_stat_rules_and_the_eighty_twenty_split() {
@@ -1468,7 +1504,7 @@ mod tests {
                     EquipmentType::Cloth => &[5, 8, 9, 11],
                     EquipmentType::Shield => &[1, 2, 7],
                     EquipmentType::Wand => &[2, 5, 7, 8, 9, 11],
-                    EquipmentType::Bow => &[1, 2, 3, 4, 7],
+                    EquipmentType::Bow => &[1, 2, 3, 4, 7, 11],
                     EquipmentType::MeleeOneHand | EquipmentType::HybridOneHand => {
                         &[1, 2, 3, 4, 7, 11]
                     }
@@ -1751,6 +1787,12 @@ mod tests {
     #[test]
     fn new_effects_have_configured_pools_and_jewellery_proc_restrictions_are_enforced() {
         let c = Config::builtin();
+        for effect in [Effect::Experience, Effect::MagicFind, Effect::Luck] {
+            let mut affix = c.affixes.iter().find(|a| a.effect == effect).unwrap().clone();
+            assert_eq!(affix.weight, 0.0);
+            affix.weight = 100.0; // Old/custom tables cannot re-enable these drop stats.
+            assert!(c.bases.iter().all(|base| !affix.compatible_base(base)));
+        }
         for id in [
             "vampiric",
             "life_on_kill",
@@ -1767,9 +1809,6 @@ mod tests {
             "knockback_chance",
             "armour_penetration",
             "pickup_radius",
-            "experience",
-            "luck",
-            "magic_find",
             "proc_class_spell",
         ] {
             assert!(
@@ -1810,7 +1849,8 @@ mod tests {
             assert!(item
                 .affixes
                 .iter()
-                .all(|a| !matches!(a.effect, Effect::Life | Effect::Damage | Effect::FlatDamage)));
+                .all(|a| !matches!(a.effect, Effect::Life | Effect::Damage | Effect::FlatDamage
+                    | Effect::Experience | Effect::MagicFind | Effect::Luck)));
             let mut groups = BTreeSet::new();
 
             for a in &item.affixes {
@@ -1843,25 +1883,28 @@ mod tests {
     }
     #[test]
     fn config_rejects_invalid_weights_weapon_mods_and_incomplete_affix_pools() {
-        assert!(Config::parse(&DEFAULT_FILE.replace(
-            "equipment_type = \"universal\"",
-            "equipment_type = \"legacy\""
-        ))
-        .is_err());
-        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 5", "legendary = -1")).is_err());
-        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 5", "legendary = 1")).is_ok());
-        assert!(Config::parse(
-            &DEFAULT_FILE.replace("boss_drop_chance = 1.0", "boss_drop_chance = 2.0")
-        )
-        .is_err());
-        assert!(Config::parse(
-            &DEFAULT_FILE.replace("effect = \"stamina\"", "effect = \"flat_damage\"")
-        )
-        .is_err());
-        assert!(
-            Config::parse(&DEFAULT_FILE.replace("kind = \"suffix\"", "kind = \"prefix\"")).is_err()
-        );
-        assert!(Config::parse(&DEFAULT_FILE.replace("max = 40", "max = -1")).is_err());
+        let config = Config::builtin();
+        let mut invalid = config.clone();
+        invalid.bases[0].equipment_type = EquipmentType::Legacy;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.rarities.legendary = -1.0;
+        assert!(invalid.validate().is_err());
+        let mut valid = config.clone();
+        valid.rarities.legendary = 1.0;
+        assert!(valid.validate().is_ok());
+        let mut invalid = config.clone();
+        invalid.boss_drop_chance = 2.0;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.affixes.iter_mut().find(|a| a.kind == AffixKind::Suffix).unwrap().effect = Effect::FlatDamage;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.affixes.iter_mut().find(|a| a.kind == AffixKind::Suffix).unwrap().kind = AffixKind::Prefix;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config;
+        invalid.affixes[0].max = -1.0;
+        assert!(invalid.validate().is_err());
     }
     #[test]
     fn disabled_bases_and_affixes_never_roll_and_rarity_is_independent_of_pool_size() {

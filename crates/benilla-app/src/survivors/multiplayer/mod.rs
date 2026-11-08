@@ -71,14 +71,13 @@ pub(super) fn simulating(
 pub(super) struct GuestActions {
     pub pick: Option<usize>,
     pub reset_meter: bool,
-    /// Manual level ups: the preference and a request to open the cards, sent with each input.
-    pub hold_levels: bool,
-    pub release_levels: bool,
 }
 
 pub(super) fn reset_meters(run: &mut super::Run, players: Option<&mut Companions>) {
     fn clear(run: &mut super::Run) {
+        run.effect_meter = default();
         run.meter = default();
+        run.boss_meter = default();
         run.healing_meter = default();
         run.taken_meter = default();
     }

@@ -2,6 +2,7 @@
 use super::super::items::{Inventory, Item, SLOTS};
 use super::*;
 use bevy::ui::RelativeCursorPosition;
+mod auto_salvage;
 mod gestures;
 mod grid;
 #[derive(Component, Clone, Copy)]
@@ -17,11 +18,17 @@ enum Action {
     Equip(u64, &'static str),
     Unequip(&'static str),
     Page(i32),
-    /// The first press arms it, the second destroys the item.
+    /// The first press arms it, the second sells the item.
     Delete(u64),
 }
 #[derive(Component)]
 pub(in crate::survivors) struct ItemTip(pub u64);
+/// A detached display object: deliberately has no inventory identity or drag/drop target.
+#[derive(Component)]
+pub(in crate::survivors) struct ReadOnlyItemTip {
+    pub item: Item,
+    pub extra_lines: Vec<(String, Color)>,
+}
 #[derive(Component)]
 struct Tooltip;
 const BAG_COLUMNS: usize = 14;
@@ -30,11 +37,12 @@ const BAG_PAGE_SIZE: usize = BAG_COLUMNS * BAG_ROWS;
 const BAG_GRID_WIDTH: f32 = 474.0;
 const BAG_GRID_HEIGHT: f32 = 270.0;
 const BAG_WIDTH: f32 = 498.0;
-const BAG_HEIGHT: f32 = 364.0;
+const BAG_HEIGHT: f32 = 380.0;
 #[derive(Component)]
 struct BagRoot;
 pub(super) fn plugin(app: &mut App) {
     gestures::plugin(app);
+    auto_salvage::plugin(app);
     app.add_systems(
         Update,
         input
@@ -102,7 +110,12 @@ fn input(
         inventory.apply(&mut run);
     }
 }
-pub(super) fn icon(ui: &mut ChildSpawnerCommands, item: &Item, size: f32, usable: bool) {
+pub(in crate::survivors) fn icon(
+    ui: &mut ChildSpawnerCommands,
+    item: &Item,
+    size: f32,
+    usable: bool,
+) {
     ui.spawn((
         ImageNode::default(),
         if usable {
@@ -222,12 +235,13 @@ fn render(
             root.spawn(Node {
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
-                ..skin::rect(12.0, 30.0, BAG_GRID_WIDTH, 326.0)
+                ..skin::rect(12.0, 30.0, BAG_GRID_WIDTH, 342.0)
             })
             .with_children(|body| panel(body, &font.0, &view, inventory.as_deref()));
         });
 }
 fn tooltip(
+    vendor: Option<Res<super::super::gambling::View>>,
     mut commands: Commands,
     inventory: Option<Res<Inventory>>,
     selection: Res<Selection>,
@@ -235,11 +249,20 @@ fn tooltip(
     windows: Query<&Window, With<PrimaryWindow>>,
     scale: Option<Res<UiScale>>,
     items: Query<(&Interaction, &ItemTip)>,
+    previews: Query<(Entity, &Interaction, &ReadOnlyItemTip)>,
     roots: Query<Entity, With<Tooltip>>,
-    mut cache: Local<Option<(u64, u64, bool)>>,
+    mut cache: Local<Option<(u64, u64, bool, bool)>>,
     gesture: Res<gestures::DragState>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
 ) {
+    let preview = if !gesture.dragging() {
+        previews
+            .iter()
+            .find(|(_, interaction, _)| **interaction == Interaction::Hovered)
+            .map(|(entity, _, tip)| (entity, tip))
+    } else {
+        None
+    };
     let id = if (selection.sheet_open || selection.bags_open) && !gesture.dragging() {
         items
             .iter()
@@ -251,7 +274,17 @@ fn tooltip(
     let compare = keys
         .as_ref()
         .is_some_and(|keys| keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]));
-    let key = id.map(|id| (id, inventory.as_ref().map_or(0, |i| i.revision), compare));
+    let key = preview
+        .map(|(entity, _)| entity.to_bits())
+        .or(id)
+        .map(|id| {
+            (
+                id,
+                inventory.as_ref().map_or(0, |i| i.revision),
+                compare,
+                preview.is_some(),
+            )
+        });
     if key == *cache {
         return;
     }
@@ -260,9 +293,11 @@ fn tooltip(
         commands.entity(e).despawn();
     }
     let (Some(item), Some(font)) = (
-        inventory
-            .as_ref()
-            .and_then(|i| id.and_then(|id| i.item(id))),
+        preview.map(|(_, tip)| &tip.item).or_else(|| {
+            inventory
+                .as_ref()
+                .and_then(|i| id.and_then(|id| i.item(id)))
+        }),
         font,
     ) else {
         return;
@@ -278,6 +313,11 @@ fn tooltip(
         },
     );
     let mut lines = item.tooltip_lines(inventory.as_ref().unwrap());
+    // Keep the shared price footer below optional equipment comparisons.
+    let sale_price = lines.pop();
+    if let Some((_, tip)) = preview {
+        lines.extend(tip.extra_lines.clone());
+    }
     let mut comparison_start = None;
     if compare {
         let comparison = item.comparison_lines(inventory.as_ref().unwrap());
@@ -285,6 +325,22 @@ fn tooltip(
             comparison_start = Some(lines.len());
             lines.extend(comparison);
         }
+    }
+    if preview.is_some() {
+        lines.push(("Preview only - cannot be collected".into(), GREY));
+    } else {
+        lines.push((
+            if vendor.as_ref().is_some_and(|v| v.open) {
+                "Right-click: sell"
+            } else {
+                "Alt-click: sell"
+            }
+            .to_owned(),
+            GREY,
+        ));
+    }
+    if let Some(sale_price) = sale_price {
+        lines.push(sale_price);
     }
     let estimated_height = lines
         .iter()
@@ -351,6 +407,57 @@ mod tests {
     use super::*;
     #[derive(Component)]
     struct TestRoot;
+    #[test]
+    fn detached_preview_uses_real_item_tooltip_and_has_no_inventory_or_drag_identity() {
+        use super::super::super::items::{
+            CraftProfile, CraftRequest, EquipmentType, Rarity, SlotKind,
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.insert_resource(Inventory::fixture(vec![]));
+        world.init_resource::<Selection>();
+        world.init_resource::<gestures::DragState>();
+        world.insert_resource(hud::HudFont(Handle::default()));
+        let request = CraftRequest {
+            slot: SlotKind::Chest,
+            equipment: EquipmentType::Plate,
+            profile: CraftProfile::Agility,
+            rarity: Rarity::Epic,
+            affixes: Some(vec!["agility".into()]),
+        };
+        let item = world
+            .resource::<Inventory>()
+            .craft_preview(&request, 22)
+            .unwrap();
+        let name = item.name.clone();
+        let expected_affix = item.affixes[0].description();
+        let entity = world
+            .spawn((
+                Interaction::Hovered,
+                ReadOnlyItemTip {
+                    item,
+                    extra_lines: vec![],
+                },
+            ))
+            .id();
+        world.run_system_once(tooltip).unwrap();
+        let texts: Vec<_> = world
+            .query::<&Text>()
+            .iter(&world)
+            .map(|t| t.0.as_str())
+            .collect();
+        assert!(texts.contains(&name.as_str()));
+        assert!(texts.contains(&"Ilvl 22"));
+        assert!(texts.contains(&expected_affix.as_str()));
+        assert!(texts.iter().any(|text| text.contains("cannot be collected")));
+        assert!(!texts.iter().any(|text| text.contains("sell")));
+        assert!(world.get::<ItemTip>(entity).is_none());
+        assert!(world.get::<DropTarget>(entity).is_none());
+        assert!(world.resource::<Inventory>().all().is_empty());
+        *world.get_mut::<Interaction>(entity).unwrap() = Interaction::Pressed;
+        world.run_system_once(tooltip).unwrap();
+        assert!(world.resource::<Inventory>().all().is_empty());
+    }
     #[test]
     fn bag_money_refreshes_when_only_the_wallet_changes() {
         let mut app = App::new();
@@ -468,6 +575,7 @@ mod tests {
         press(&mut app, Action::Delete(2));
         assert_eq!(count(&app), 1);
         assert!(app.world().resource::<Inventory>().item(2).is_none());
+        assert!(app.world().resource::<Inventory>().money() > 0);
         assert_eq!(app.world().resource::<View>().selected_item, None);
     }
     #[test]

@@ -16,6 +16,8 @@ pub(super) struct Debuffs;
 pub(super) struct DebuffIcon(pub u32);
 #[derive(Component)]
 pub(super) struct DebuffTimer(u32);
+#[derive(Component)]
+pub(super) struct DebuffStacks(u32);
 #[derive(Resource, Default)]
 pub(super) struct Cache {
     spells: Vec<u32>,
@@ -188,13 +190,17 @@ pub(super) fn refresh(
     mut frames: Query<(&Frame, &mut Node), Without<Fill>>,
     mut fills: Query<(&Fill, &mut Node, &mut BackgroundColor, &mut ImageNode), Without<Frame>>,
     mut shields: Query<&mut Node, (With<Shield>, Without<Fill>, Without<Frame>)>,
-    mut captions: Query<(&Caption, &mut Text)>,
-    mut timers: Query<(&DebuffTimer, &mut Text), Without<Caption>>,
+    mut captions: Query<(&Caption, &mut Text), Without<DebuffStacks>>,
+    labels: (
+        Query<(&DebuffTimer, &mut Text), (Without<Caption>, Without<DebuffStacks>)>,
+        Query<(&DebuffStacks, &mut Text), (Without<Caption>, Without<DebuffTimer>)>,
+    ),
     debuffs: Query<Entity, With<Debuffs>>,
     mut cache: ResMut<Cache>,
     windows: Query<&Window, With<PrimaryWindow>>,
     scale: Res<UiScale>,
 ) {
+    let (mut timers, mut stacks) = labels;
     let show = !matches!(*phase.get(), Phase::Menu | Phase::GameOver);
     let player = heroes.single().ok().and_then(|e| units.get(e).ok());
     let victim = target.entity.and_then(|e| units.get(e).ok());
@@ -291,6 +297,17 @@ pub(super) fn refresh(
             }
         }
     }
+    let stack_label = |spell| {
+        victim
+            .and_then(|s| s.debuff_stacks.iter().find(|(id, _)| *id == spell))
+            .map_or_else(String::new, |(_, count)| count.to_string())
+    };
+    for (counter, mut label) in &mut stacks {
+        let value = stack_label(counter.0);
+        if label.0 != value {
+            label.0 = value;
+        }
+    }
     if cache.spells != spells {
         cache.spells = spells;
         for parent in &debuffs {
@@ -318,6 +335,11 @@ pub(super) fn refresh(
                                 ImageNode::default(),
                                 hud::SpellIcon(spell),
                                 FocusPolicy::Pass,
+                            ));
+                            slot.spawn((
+                                DebuffStacks(spell),
+                                rect(12.0, 10.0, 14.0, 16.0),
+                                text(&font.0, &stack_label(spell), 14.0),
                             ));
                             slot.spawn((
                                 DebuffTimer(spell),
@@ -355,6 +377,7 @@ mod tests {
             level: 60,
             friendly: true,
             debuffs: vec![],
+            debuff_stacks: vec![],
         };
         app.world_mut()
             .spawn((Hero { vy: 0.0, air: 0.0 }, status.clone()));
@@ -364,7 +387,8 @@ mod tests {
                 name: "Target".into(),
                 health: 25.0,
                 friendly: false,
-                debuffs: vec![(589, 4.0)],
+                debuffs: vec![(1943, 4.0)],
+                debuff_stacks: vec![(1943, 3)],
                 ..status
             })
             .id();
@@ -398,21 +422,36 @@ mod tests {
             .query_filtered::<Entity, With<DebuffIcon>>()
             .single(app.world())
             .unwrap();
+        assert!(app
+            .world_mut()
+            .query::<(&DebuffStacks, &Text)>()
+            .iter(app.world())
+            .any(|(s, t)| s.0 == 1943 && t.0 == "3"));
         *app.world_mut().get_mut::<Interaction>(icon).unwrap() = Interaction::Hovered;
         app.update();
         assert!(app
             .world_mut()
             .query::<&Text>()
             .iter(app.world())
-            .any(|t| t.0 == "Temps restant : 4.0 s"));
+            .any(|t| t.0 == "Time remaining: 4.0 s"));
         app.world_mut().get_mut::<Status>(enemy).unwrap().debuffs[0].1 = 2.4;
+        app.world_mut()
+            .get_mut::<Status>(enemy)
+            .unwrap()
+            .debuff_stacks[0]
+            .1 = 1;
         app.update();
         assert!(app.world().get::<DebuffIcon>(icon).is_some());
         assert!(app
             .world_mut()
+            .query::<(&DebuffStacks, &Text)>()
+            .iter(app.world())
+            .any(|(_, t)| t.0 == "1"));
+        assert!(app
+            .world_mut()
             .query::<&Text>()
             .iter(app.world())
-            .any(|t| t.0 == "Temps restant : 2.4 s"));
+            .any(|t| t.0 == "Time remaining: 2.4 s"));
         app.world_mut()
             .get_mut::<Status>(enemy)
             .unwrap()
@@ -423,7 +462,7 @@ mod tests {
             .world_mut()
             .query::<&Text>()
             .iter(app.world())
-            .any(|t| t.0.starts_with("Temps restant :")));
+            .any(|t| t.0.starts_with("Time remaining:")));
         assert_eq!(
             app.world_mut()
                 .query::<&hud::SpellIcon>()

@@ -19,6 +19,7 @@ const TAGS: &[(&str, Tags)] = &[
     ("dot", Tags::DOT),
     ("duration", Tags::DURATION),
     ("totem", Tags::TOTEM),
+    ("minion", Tags::MINION),
     ("trap", Tags::TRAP),
     ("aura", Tags::AURA),
     ("guard", Tags::GUARD),

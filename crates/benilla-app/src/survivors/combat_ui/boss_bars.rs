@@ -178,6 +178,7 @@ mod tests {
                 level: 1,
                 friendly: false,
                 debuffs: vec![],
+                debuff_stacks: vec![],
             },
         )
     }

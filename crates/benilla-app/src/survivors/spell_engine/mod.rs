@@ -28,6 +28,7 @@ pub enum Change {
     IncreasedDotDamage(f32),
     MoreDotDamage(f32),
     AdditionalProjectiles(u32),
+    AdditionalTotems(u32),
     AdditionalChains(u32),
     Fork(u32),
     AdditionalMeleeTargets(u32),
@@ -36,15 +37,20 @@ pub enum Change {
     ChainChance(f32),
     ForkChance(f32),
     IncreasedArea(f32),
+    MoreArea(f32),
     FlatRadius(f32),
     FlatRange(f32),
     IncreasedDuration(f32),
     IncreasedCooldownRecovery(f32),
+    LessCooldown(f32),
     IncreasedAttackSpeed(f32),
+    IncreasedMovementSpeed(f32),
+    MoreActionSpeed(f32),
     CriticalChance(f32),
     CriticalMultiplier(f32),
     RecastChance(f32),
     LifeLeech(f32),
+    DodgeChance(f32),
     DamageAgainstBosses(f32),
     DamageAgainstFullLife(f32),
     DamageAgainstLowLife(f32),
@@ -72,21 +78,27 @@ impl Change {
             Self::IncreasedDotDamage(v) => Self::IncreasedDotDamage(v * r),
             Self::MoreDotDamage(v) => Self::MoreDotDamage(v * r),
             Self::AdditionalProjectiles(v) => Self::AdditionalProjectiles(v.saturating_mul(count)),
+            Self::AdditionalTotems(v) => Self::AdditionalTotems(v.saturating_mul(count)),
             Self::AdditionalChains(v) => Self::AdditionalChains(v.saturating_mul(count)),
             Self::Fork(v) => Self::Fork(v.saturating_mul(count)),
             Self::AdditionalMeleeTargets(v) => {
                 Self::AdditionalMeleeTargets(v.saturating_mul(count))
             }
             Self::IncreasedArea(v) => Self::IncreasedArea(v * r),
+            Self::MoreArea(v) => Self::MoreArea(v * r),
             Self::FlatRadius(v) => Self::FlatRadius(v * r),
             Self::FlatRange(v) => Self::FlatRange(v * r),
             Self::IncreasedDuration(v) => Self::IncreasedDuration(v * r),
             Self::IncreasedCooldownRecovery(v) => Self::IncreasedCooldownRecovery(v * r),
+            Self::LessCooldown(v) => Self::LessCooldown(v * r),
             Self::IncreasedAttackSpeed(v) => Self::IncreasedAttackSpeed(v * r),
+            Self::IncreasedMovementSpeed(v) => Self::IncreasedMovementSpeed(v * r),
+            Self::MoreActionSpeed(v) => Self::MoreActionSpeed(v * r),
             Self::CriticalChance(v) => Self::CriticalChance(v * r),
             Self::CriticalMultiplier(v) => Self::CriticalMultiplier(v * r),
             Self::RecastChance(v) => Self::RecastChance(v * r),
             Self::LifeLeech(v) => Self::LifeLeech(v * r),
+            Self::DodgeChance(v) => Self::DodgeChance(v * r),
             Self::DamageAgainstBosses(v) => Self::DamageAgainstBosses(v * r),
             Self::DamageAgainstFullLife(v) => Self::DamageAgainstFullLife(v * r),
             Self::DamageAgainstLowLife(v) => Self::DamageAgainstLowLife(v * r),
@@ -112,19 +124,27 @@ impl Change {
             Self::IncreasedDotDamage(v) => format!("+{:.0}% damage over time", v * 100.0),
             Self::MoreDotDamage(v) => format!("{:+.0}% more damage over time", v * 100.0),
             Self::AdditionalProjectiles(n) => format!("+{n} projectiles"),
+            Self::AdditionalTotems(n) => format!("+{n} maximum totems for every totem spell"),
             Self::AdditionalChains(n) => format!("+{n} chain jumps"),
             Self::Fork(n) => format!("+{n} fork generations"),
             Self::AdditionalMeleeTargets(n) => format!("+{n} melee targets"),
+            Self::MoreArea(v) => format!("{:+.0}% more area of effect", v * 100.0),
             Self::IncreasedArea(v) => format!("+{:.0}% area of effect", v * 100.0),
             Self::FlatRadius(v) => format!("+{v:.1} yd radius"),
             Self::FlatRange(v) => format!("+{v:.0} attack range (yd)"),
             Self::IncreasedDuration(v) => format!("+{:.0}% duration", v * 100.0),
+            Self::LessCooldown(v) => format!("{:.0}% less cooldown", v * 100.0),
             Self::IncreasedCooldownRecovery(v) => format!("+{:.0}% cooldown recovery", v * 100.0),
             Self::IncreasedAttackSpeed(v) => format!("+{:.0}% attack speed", v * 100.0),
+            Self::IncreasedMovementSpeed(v) => format!("+{:.0}% movement speed", v * 100.0),
+            Self::MoreActionSpeed(v) => {
+                format!("{:+.0}% more action speed (attack and movement)", v * 100.0)
+            }
             Self::CriticalChance(v) => format!("+{:.0}% critical strike chance", v * 100.0),
             Self::CriticalMultiplier(v) => format!("+{:.0}% critical strike multiplier", v * 100.0),
             Self::RecastChance(v) => format!("+{:.0}% repeat chance", v * 100.0),
             Self::LifeLeech(v) => format!("{:.1}% attack damage leeched as life", v * 100.0),
+            Self::DodgeChance(v) => format!("+{:.0}% dodge against physical and magical damage, including boss areas (75% total cap)", v * 100.0),
             Self::DamageAgainstBosses(v) => {
                 format!("+{:.1}% more damage against bosses", v * 100.0)
             }
@@ -177,6 +197,8 @@ pub struct PeriodicSnapshot {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Resolved {
+    pub movement_speed: f32,
+    pub max_totems: usize,
     pub effect: Effect,
     pub buff_effect: f32,
     /// Projectile, melee target, chain and fork chances; rolled once per cast.
@@ -265,9 +287,11 @@ pub(super) fn resolve_tagged(
     if tags.contains(Tags::ATTACK) && def.damage > 0.0 {
         flat += finite(weapon_damage);
     }
+    let mut more_area = 1.0;
+    let mut cooldown_multiplier = 1.0;
     let (mut area, mut radius, mut duration, mut recovery) = (0.0, 0.0, 0.0, 0.0);
     let mut attack_range = 0.0;
-    let mut attack_speed = if tags.contains(Tags::ATTACK) {
+    let mut attack_speed = if tags.intersects(Tags::ATTACK | Tags::MINION) {
         finite(stats.attack_speed)
     } else {
         0.0
@@ -276,7 +300,14 @@ pub(super) fn resolve_tagged(
     let (mut crit, mut recast) = (finite(stats.crit), 0.0);
     let mut crit_multiplier = 2.0;
     let mut extra_chances = [0.0; 4];
-    let mut buff_effect = 0.0;
+    let mut buff_effect = if def.key == "bestial_wrath" {
+        0.1 * rank
+    } else {
+        0.0
+    };
+    let mut additional_totems = 0u32;
+    let mut movement_speed = 0.0;
+    let mut action_speed = 1.0;
     for modifier in modifiers.iter().filter(|m| {
         // Absorption uses spell/school power filters without becoming a damaging hit.
         let power_tags = if spell_shield
@@ -295,6 +326,9 @@ pub(super) fn resolve_tagged(
     }) {
         use Change::*;
         match modifier.change {
+            AdditionalTotems(n) if tags.contains(Tags::TOTEM) && def.totem.0 != 0 => {
+                additional_totems = additional_totems.saturating_add(n);
+            }
             IncreasedBuffEffect(v) if tags.contains(Tags::BUFF) => buff_effect += finite(v),
             ProjectileChance(v) if tags.contains(Tags::PROJECTILE) => extra_chances[0] += finite(v),
             MeleeTargetChance(v)
@@ -307,7 +341,12 @@ pub(super) fn resolve_tagged(
                 extra_chances[2] += finite(v)
             }
             ForkChance(v) if tags.contains(Tags::PROJECTILE) => extra_chances[3] += finite(v),
-            IncreasedEffect(v) => increased += finite(v),
+            IncreasedEffect(v) => {
+                increased += finite(v);
+                if def.kind == Kind::Buff && tags.contains(Tags::TOTEM | Tags::BUFF) {
+                    buff_effect += finite(v);
+                }
+            }
             FlatDamage(v) if tags.contains(Tags::DAMAGE) && def.damage > 0.0 => flat += finite(v),
             FlatSpellDamage(v)
                 if (tags.contains(Tags::SPELL | Tags::DAMAGE) || spell_shield)
@@ -337,6 +376,7 @@ pub(super) fn resolve_tagged(
             }
             Fork(n) if tags.contains(Tags::PROJECTILE) => forks = forks.saturating_add(n),
             IncreasedArea(v) if tags.contains(Tags::AREA) => area += finite(v),
+            MoreArea(v) if tags.contains(Tags::AREA) => more_area *= (1.0 + finite(v)).max(0.0),
             FlatRadius(v) if tags.contains(Tags::AREA) => radius += finite(v),
             FlatRange(v)
                 if tags.contains(Tags::ATTACK)
@@ -356,7 +396,14 @@ pub(super) fn resolve_tagged(
             }
             IncreasedDuration(v) if tags.contains(Tags::DURATION) => duration += finite(v),
             IncreasedCooldownRecovery(v) => recovery += finite(v),
-            IncreasedAttackSpeed(v) if tags.contains(Tags::ATTACK) => attack_speed += finite(v),
+            LessCooldown(v) => cooldown_multiplier *= (1.0 - finite(v)).max(0.0),
+            IncreasedAttackSpeed(v) if tags.intersects(Tags::ATTACK | Tags::MINION) => {
+                attack_speed += finite(v)
+            }
+            IncreasedMovementSpeed(v) if tags.contains(Tags::MINION) => movement_speed += finite(v),
+            MoreActionSpeed(v) if tags.contains(Tags::MINION) => {
+                action_speed *= (1.0 + finite(v)).max(0.05)
+            }
             CriticalMultiplier(v)
                 if tags.contains(Tags::DAMAGE)
                     && !tags.contains(Tags::GUARD)
@@ -412,7 +459,7 @@ pub(super) fn resolve_tagged(
     };
     // Area modifiers scale surface area, hence sqrt; legacy `stats.area` remains a radius bonus.
     let radius = (((def.radius + rank_radius) * stats.area + radius).max(0.0)
-        * (1.0 + area).max(0.0).sqrt())
+        * ((1.0 + area).max(0.0) * more_area).sqrt())
     .min(100.0);
     let signature_power = if level >= 6
         && !tags.contains(Tags::AREA)
@@ -425,8 +472,18 @@ pub(super) fn resolve_tagged(
         1.0
     };
     Resolved {
+        movement_speed: (1.0 + movement_speed).max(0.05) * action_speed,
+        max_totems: if tags.contains(Tags::TOTEM) && def.totem.0 != 0 {
+            1usize.saturating_add(additional_totems as usize)
+        } else {
+            0
+        },
         effect: ranked_effect(def.effect, rank, duration),
-        buff_effect: buff_effect.max(0.0),
+        buff_effect: if def.key == "bestial_wrath" && level >= 6 {
+            (1.0 + buff_effect.max(0.0)) * super::specialization::SIGNATURE_POWER - 1.0
+        } else {
+            buff_effect.max(0.0)
+        },
         extra_chances,
         triggered: false,
         direct_dot: None,
@@ -453,15 +510,22 @@ pub(super) fn resolve_tagged(
         },
         radius,
         duration: ((def.duration + rank_duration) * (1.0 + duration).max(0.0)).min(300.0),
-        cooldown: (((def.cooldown - 0.1 * super::specialization::cooldown_steps(level)).max(0.0)
+        cooldown: (((def.cooldown
+            - if def.key == "bestial_wrath" {
+                0.0
+            } else {
+                0.1 * super::specialization::cooldown_steps(level)
+            })
+        .max(0.0)
             * if def.key == "totemic_recall" && level >= 6 {
                 0.75
             } else {
                 1.0
             }
             * (1.0 - stats.haste).max(0.35))
-            / ((1.0 + recovery).max(0.05) * (1.0 + attack_speed).max(0.05)))
-        .max(0.2)
+            / ((1.0 + recovery).max(0.05) * (1.0 + attack_speed).max(0.05) * action_speed)
+            * cooldown_multiplier)
+            .max(0.2)
             * COOLDOWN_MULTIPLIER,
         range: (def.range + attack_range).clamp(0.0, def.range.max(100.0)),
         crit: crit.clamp(0.0, 1.0),
@@ -607,12 +671,18 @@ pub fn resolve_mobility(
     modifiers: &[Modifier],
 ) -> ResolvedMobility {
     let (key, tags) = tags::mobility(def.spell).unwrap_or(("unknown", Tags::UTILITY));
+    let mut more_area = 1.0;
+    let mut cooldown_multiplier = 1.0;
     let (mut recovery, mut duration, mut area, mut radius) = (0.0, 0.0, 0.0, 0.0);
     for modifier in modifiers.iter().filter(|m| m.filter.matches(key, tags)) {
         match modifier.change {
             Change::IncreasedCooldownRecovery(v) => recovery += finite(v),
+            Change::LessCooldown(v) => cooldown_multiplier *= (1.0 - finite(v)).max(0.0),
             Change::IncreasedDuration(v) if tags.contains(Tags::DURATION) => duration += finite(v),
             Change::IncreasedArea(v) if tags.contains(Tags::AREA) => area += finite(v),
+            Change::MoreArea(v) if tags.contains(Tags::AREA) => {
+                more_area *= (1.0 + finite(v)).max(0.0)
+            }
             Change::FlatRadius(v) if tags.contains(Tags::AREA) => radius += finite(v),
             _ => {}
         }
@@ -624,9 +694,10 @@ pub fn resolve_mobility(
     };
     ResolvedMobility {
         tags,
-        cooldown: (def.cooldown / (1.0 + recovery).max(0.05)).max(0.2) * COOLDOWN_MULTIPLIER,
+        cooldown: (def.cooldown / (1.0 + recovery).max(0.05) * cooldown_multiplier).max(0.2) * COOLDOWN_MULTIPLIER,
         duration: (def.secs * (1.0 + duration).max(0.0)).min(300.0),
-        radius: ((base_radius + radius).max(0.0) * (1.0 + area).max(0.0).sqrt()).min(100.0),
+        radius: ((base_radius + radius).max(0.0) * ((1.0 + area).max(0.0) * more_area).sqrt())
+            .min(100.0),
     }
 }
 fn ranked_effect(effect: Effect, rank: f32, duration: f32) -> Effect {

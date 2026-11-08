@@ -68,6 +68,194 @@ pub(super) struct SweepUiMaterial {
 #[cfg(test)]
 mod passive_offer_tests {
     #[test]
+    fn dodge_cards_roll_one_two_three_four_percent_only_for_hunter_druid_and_rogue() {
+        let passive = data::PASSIVES.iter().find(|p| p.key == "dodge").unwrap();
+        for class in data::CLASSES.iter() {
+            let mut run = run("arcane_shot");
+            run.class = class;
+            let allowed = matches!(class.id, 3 | 4 | 11);
+            let buckets = reward_buckets(&run);
+            for strength in 1..=4 {
+                assert_eq!(buckets[usize::from(strength - 1)].iter().any(
+                    |choice| matches!(choice, Choice::NumericPassive(p, s) if p.key == "dodge" && *s == strength)
+                ), allowed, "{} tier {strength}", class.name);
+            }
+            if !allowed { continue; }
+            let mut total = 0u64;
+            for strength in 1..=4 {
+                let mut offer = Offer {
+                    choices: vec![Choice::NumericPassive(passive, strength)],
+                    config: super::super::reward_config::Config::builtin(),
+                };
+                let text = describe_card(offer.choices[0], &run, None);
+                assert!(text.desc.contains("75%") && text.desc.to_lowercase().contains("dodge"));
+                assert!(text.desc.contains(&format!("+{}%", total + u64::from(strength))));
+                pick(0, &mut run, &mut offer, &mut Rng(42), &mut NextState::default());
+                total += u64::from(strength);
+                assert!((super::super::extra_spells::dodge_chance(&run) - total as f32 * 0.01).abs() < 0.0001);
+            }
+            run.passives.iter_mut().find(|(p, _)| p.key == "dodge").unwrap().1 = 100;
+            super::super::passives::sync(&mut run);
+            assert_eq!(super::super::extra_spells::dodge_chance(&run), 0.75);
+            assert!(!choice_pool(&run).iter().any(|c| matches!(c, Choice::NumericPassive(p, _) if p.key == "dodge")));
+            run.passives.clear();
+            super::super::passives::sync(&mut run);
+            assert_eq!(super::super::extra_spells::dodge_chance(&run), 0.0);
+        }
+    }
+
+    #[test]
+    fn tame_beast_and_stomp_can_be_drawn_in_real_hunter_offers() {
+        let config = super::super::reward_config::Config::builtin();
+        let mut run = run("arcane_shot");
+        run.class = &data::CLASSES[2];
+        let drawn = |run: &Run, key: &str| {
+            let mut rng = Rng(42);
+            (0..2000).any(|_| {
+                choices_for(run, &mut rng, &config).iter().any(
+                    |choice| matches!(choice, Choice::NewAbility(def) if def.key == key),
+                )
+            })
+        };
+        assert!(drawn(&run, "tame_beast"));
+        run.abilities.push(Owned {
+            def: data::ability("tame_beast"),
+            level: 1,
+            cd: 0.0,
+        });
+        assert!(drawn(&run, "stomp"));
+        run.abilities.pop();
+        run.talent_build[0][8] = 1;
+        super::super::talent_runtime::configure(&mut run);
+        assert!(drawn(&run, "stomp"));
+    }
+
+    #[test]
+    fn pet_commands_only_enter_the_actual_reward_pool_with_a_pet_source() {
+        let mut run = run("arcane_shot");
+        run.class = &data::CLASSES[2];
+        let commands = ["stomp", "kill_command", "bestial_wrath"];
+        let offered = |run: &Run, key| {
+            choice_pool(run)
+                .iter()
+                .any(|c| matches!(c, Choice::NewAbility(d) if d.key == key))
+        };
+        for key in commands {
+            assert!(!offered(&run, key));
+        }
+        assert!(offered(&run, "tame_beast"));
+        run.abilities.push(Owned {
+            def: data::ability("tame_beast"),
+            level: 1,
+            cd: 0.0,
+        });
+        for key in commands {
+            assert!(offered(&run, key));
+        }
+        run.abilities.pop();
+        run.talent_build[0][8] = 1;
+        super::super::talent_runtime::configure(&mut run);
+        for key in commands {
+            // Kill Command becomes the starting spell instead of another offer.
+            assert!(offered(&run, key) || run.abilities.iter().any(|a| a.def.key == key));
+        }
+    }
+    #[test]
+    fn regeneration_cards_offer_only_one_percent_epic_and_two_percent_legendary() {
+        let passive = data::PASSIVES.iter().find(|p| p.key == "renew").unwrap();
+        for strength in 1..=2 {
+            let mut run = run("fireball");
+            let buckets = reward_buckets(&run);
+            for bucket in &buckets[..2] {
+                assert!(!bucket.iter().any(|c| matches!(c, Choice::NumericPassive(p, _) if p.key == "renew")));
+            }
+            assert!(buckets[usize::from(strength + 1)].iter().any(
+                |c| matches!(c, Choice::NumericPassive(p, s) if p.key == "renew" && *s == strength)
+            ));
+            let choice = Choice::NumericPassive(passive, strength);
+            let card = describe_card(choice, &run, None);
+            assert!(card.desc.contains(&format!("+{}%", strength)));
+            assert!(card.desc.contains("per second"));
+            assert!(passive_text(Stat::Regen, 0.01 * f32::from(strength))
+                .contains("of maximum health every second"));
+            let mut offer = Offer {
+                choices: vec![choice],
+                ..Default::default()
+            };
+            pick(
+                0,
+                &mut run,
+                &mut offer,
+                &mut Rng::default(),
+                &mut NextState::default(),
+            );
+            let stats = run.stats();
+            assert!((stats.regen - stats.max_hp * 0.01 * f32::from(strength)).abs() < 0.0001);
+        }
+    }
+    #[test]
+    fn thick_skin_cards_roll_two_four_six_eight_percent_and_stop_at_cap() {
+        let passive = data::PASSIVES.iter().find(|p| p.key == "wild").unwrap();
+        for strength in 1..=4 {
+            let mut run = run("fireball");
+            let buckets = reward_buckets(&run);
+            assert!(buckets[usize::from(strength - 1)].iter().any(
+                |c| matches!(c, Choice::NumericPassive(p, s) if p.key == "wild" && *s == strength)
+            ));
+            let choice = Choice::NumericPassive(passive, strength);
+            let card = describe_card(choice, &run, None);
+            assert!(card.desc.contains(&format!("+{}%", strength * 2)));
+            assert!(card.desc.contains("75% cap"));
+            let mut offer = Offer {
+                choices: vec![choice],
+                ..Default::default()
+            };
+            pick(
+                0,
+                &mut run,
+                &mut offer,
+                &mut Rng::default(),
+                &mut NextState::default(),
+            );
+            assert!((run.stats().damage_reduction - 0.02 * f32::from(strength)).abs() < 0.00001);
+            assert_eq!(run.stats().armor, 0.0);
+            run.passives = vec![(passive, 37)];
+            let card = describe_card(Choice::NumericPassive(passive, 4), &run, None);
+            assert!(card.desc.contains("+74% » +75%"));
+            run.passives = vec![(passive, 38)];
+            assert!(!choice_pool(&run)
+                .iter()
+                .any(|c| c.card_key(&run).1 == "wild"));
+        }
+    }
+    #[test]
+    fn totem_limit_cards_only_offer_their_epic_and_legendary_versions() {
+        use super::super::cards::{rarity, Rarity};
+        let mut run = run("searing_totem");
+        for (key, tier) in [
+            ("totem_limit_epic", Rarity::Epic),
+            ("totem_limit_legendary", Rarity::Legendary),
+        ] {
+            let choices: Vec<_> = choice_pool(&run)
+                .into_iter()
+                .filter(|c| c.card_key(&run).1 == key)
+                .collect();
+            assert_eq!(choices.len(), 1);
+            assert!(matches!(choices[0], Choice::NewPassive(_)));
+            assert_eq!(rarity(choices[0], &run), tier);
+            let p = data::PASSIVES.iter().find(|p| p.key == key).unwrap();
+            run.passives.push((p, 1));
+            super::super::passives::sync(&mut run);
+            let choices: Vec<_> = choice_pool(&run)
+                .into_iter()
+                .filter(|c| c.card_key(&run).1 == key)
+                .collect();
+            assert_eq!(choices.len(), 1);
+            assert!(matches!(choices[0], Choice::UpPassive(_)));
+            assert_eq!(rarity(choices[0], &run), tier);
+        }
+    }
+    #[test]
     fn specialized_upgrade_cards_keep_the_same_compact_stat_deltas_as_ordinary_ranks() {
         let mut run = run("fireball");
         for rank in 1..=5 {
@@ -926,6 +1114,9 @@ pub(super) fn spell_name(
     spell: u32,
     fallback: &str,
 ) -> String {
+    if let Some(name) = super::minions::name(fallback) {
+        return name.to_owned();
+    }
     if let Some(name) = super::extra_spells::name(fallback) {
         return name.to_owned();
     }
@@ -1055,7 +1246,7 @@ pub(super) fn setup_hud(
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Percent(50.0),
-                    bottom: Val::Px(24.0),
+                    bottom: Val::Px(56.0),
                     margin: UiRect::left(Val::Px(-MOBILITY_SIZE / 2.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
@@ -1555,21 +1746,23 @@ fn choice_pool(run: &Run) -> Vec<Choice> {
     }
     if run.abilities.len() < data::MAX_ABILITIES {
         for key in run.class.pool {
-            if !run.abilities.iter().any(|o| o.def.key == *key) {
+            if !run.abilities.iter().any(|o| o.def.key == *key)
+                && super::minions::eligible(run, key)
+            {
                 pool.push(Choice::NewAbility(data::ability(key)));
             }
         }
     }
     for (i, (p, _)) in run.passives.iter().enumerate() {
-        if super::passives::legendary(p) && super::passives::eligible(p, run) {
+        if super::passives::discrete(p) && super::passives::eligible(p, run) {
             pool.push(Choice::UpPassive(i));
         }
     }
     {
         for p in data::PASSIVES {
-            if !super::passives::legendary(p) {
+            if !super::passives::discrete(p) {
                 if super::passives::eligible(p, run) {
-                    for strength in 1..=4 {
+                    for strength in 1..=if p.key == "renew" { 2 } else { 4 } {
                         pool.push(Choice::NumericPassive(p, strength));
                     }
                 }
@@ -1813,7 +2006,7 @@ pub(super) fn buttons(
                 }),
                 (UiAction::MainMenu, Phase::Paused | Phase::GameOver) => next.set(Phase::Hub),
                 (UiAction::Logout, Phase::Paused | Phase::GameOver) => next.set(Phase::Menu),
-                (UiAction::Quit, Phase::Paused | Phase::GameOver) => {
+                (UiAction::Quit, Phase::Menu | Phase::Paused | Phase::GameOver) => {
                     exit.write(AppExit::Success);
                 }
                 _ => {}
@@ -1937,9 +2130,9 @@ pub(super) fn describe_card(
                 tag_color: new,
                 desc: if def.kind == Kind::Buff {
                     super::support_spells::tooltip(def.key, 1, &c)
-                        .unwrap_or_else(|| ability_body(def, &c))
+                        .unwrap_or_else(|| ability_body(def, &c, 1))
                 } else {
-                    format!("{}.", ability_body(def, &c))
+                    format!("{}.", ability_body(def, &c, 1))
                 },
                 ranks: Some((0, 3)),
             }
@@ -1953,7 +2146,24 @@ pub(super) fn describe_card(
             );
             // What actually changes, as before → after.
             let mut lines = Vec::new();
+            if o.def.key == "tame_beast" {
+                if next == 6 {
+                    lines.push("Summons 2 permanent wolves (up from 1).".into());
+                }
+                lines.push(format!(
+                    "Beast base damage {} » {}",
+                    num(super::minions::tame_damage(o.level)),
+                    num(super::minions::tame_damage(next))
+                ));
+            }
             lines.extend(effect_changes(a.effect, b.effect));
+            if o.def.key == "bestial_wrath" {
+                lines.push(format!(
+                    "Pet damage, attack and movement speed +{:.1}% -> +{:.1}%",
+                    20.0 * (1.0 + a.buff_effect),
+                    20.0 * (1.0 + b.buff_effect)
+                ));
+            }
             if super::support_spells::magnitude(o.def.key, 1) > 0.0 {
                 lines.push(format!(
                     "Bonus {} » {}",
@@ -1969,7 +2179,7 @@ pub(super) fn describe_card(
             if db > da {
                 lines.push(format!("Damage {} » {}", num(da), num(db)));
             }
-            if b.cooldown < a.cooldown - 0.01 {
+            if o.def.key != "tame_beast" && b.cooldown < a.cooldown - 0.01 {
                 lines.push(format!(
                     "Cooldown {}s » {}s",
                     num(a.cooldown),
@@ -2608,7 +2818,10 @@ fn effect_changes(before: Effect, after: Effect) -> Vec<String> {
 }
 
 /// What an ability does at these numbers, in the voice of a spell description.
-fn ability_body(def: &AbilityDef, c: &Cast) -> String {
+fn ability_body(def: &AbilityDef, c: &Cast, level: u8) -> String {
+    if let Some(text) = super::minions::description(def, c, level) {
+        return text;
+    }
     if let Some(text) = super::extra_spells::description(def.key) {
         let mut values = Vec::new();
         if c.dmg > 0.0 {
@@ -2810,15 +3023,24 @@ fn ability_tip(o: &Owned, run: &Run, spells: Option<&crate::ui_action::Spells>) 
     }
     lines.push(cast);
     lines.push(TipLine::new(now.tags.labels(), DIM));
+    if now.max_totems > 0 {
+        lines.push(TipLine::new(
+            format!(
+                "Maximum {} active totems for this spell; new summons replace the oldest.",
+                now.max_totems
+            ),
+            DIM,
+        ));
+    }
     lines.push(
         TipLine::new("Instant", Color::WHITE)
             .right(format!("{} sec cooldown", num(now.cooldown)), Color::WHITE),
     );
     lines.push(TipLine::new(
         if def.kind == Kind::Buff {
-            support_description.unwrap_or_else(|| ability_body(def, &now))
+            support_description.unwrap_or_else(|| ability_body(def, &now, o.level))
         } else {
-            ability_body(def, &now)
+            ability_body(def, &now, o.level)
         },
         GOLD,
     ));
@@ -2901,7 +3123,7 @@ fn stat_label(stat: Stat) -> &'static str {
         Stat::Might => "All damage",
         Stat::MaxHp => "Maximum health",
         Stat::Speed => "Movement speed",
-        Stat::Regen => "Health per second",
+        Stat::Regen => "Max health regenerated per second",
         Stat::Haste => "Recharge speed",
         Stat::Area => "Area size",
         Stat::Magnet => "Pickup range",
@@ -2917,11 +3139,14 @@ fn passive_text(stat: Stat, v: f32) -> String {
             "Adds {} percentage points to every elemental resistance.",
             num(v)
         ),
-        Stat::DamageReduction => format!("Reduces all damage taken by {}.", pct(v)),
+        Stat::DamageReduction => format!(
+            "Reduces all damage taken by {} (75% cap). Multiplicative with armour and resistances.",
+            pct(v.clamp(0.0, 0.75))
+        ),
         Stat::Might => format!("Increases all damage you deal by {}.", pct(v)),
         Stat::MaxHp => format!("Increases your maximum health by {}.", pct(v)),
         Stat::Speed => format!("Increases your movement speed by {}.", pct(v)),
-        Stat::Regen => format!("Restores {} health every second.", num(v)),
+        Stat::Regen => format!("Restores {} of maximum health every second.", pct(v)),
         Stat::Haste => format!("Your abilities recharge {} faster.", pct(v)),
         Stat::Area => format!("Increases the size of your areas of effect by {}.", pct(v)),
         Stat::Magnet => format!("Increases your pickup range by {}.", pct(v)),
@@ -2971,13 +3196,22 @@ fn passive_card_delta(p: &PassiveDef, before: u64, after: u64) -> String {
         data::PassiveEffect::Stat(stat, amount) => {
             let value = |rank| {
                 let v = amount * rank as f32;
-                if matches!(stat, Stat::Armor | Stat::Regen) {
+                let v = if matches!(stat, Stat::DamageReduction) {
+                    v.clamp(0.0, 0.75)
+                } else {
+                    v
+                };
+                if matches!(stat, Stat::Armor) {
                     format!("+{}", num(v))
                 } else {
                     format!("+{}", pct(v))
                 }
             };
-            format!("{} {} » {}", stat_label(stat), value(before), value(after))
+            let mut text = format!("{} {} » {}", stat_label(stat), value(before), value(after));
+            if matches!(stat, Stat::DamageReduction) {
+                text.push_str("\n75% cap; multiplicative with armour and resistances.");
+            }
+            text
         }
         data::PassiveEffect::Modifier(filter, change) => {
             // Engine descriptions consistently start with the numeric bonus, followed by its label.

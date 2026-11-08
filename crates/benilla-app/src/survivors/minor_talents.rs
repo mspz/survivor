@@ -348,62 +348,30 @@ static MINORS: [[Minor; 16]; 27] = [
     ],
     [
         // Hunter / Beast Mastery
-        m!("Focused Power", Tags(T::ATTACK.0), C::IncreasedDamage(0.04)),
-        k!(
-            "Savage Companion",
-            "proc_pet_bite",
-            C::IncreasedDamage(0.05)
-        ),
-        k!(
-            "Pack Rhythm",
-            "proc_pet_bite",
-            C::IncreasedAttackSpeed(0.03)
-        ),
-        k!(
-            "Predatory Instinct",
-            "proc_pet_bite",
-            C::CriticalChance(0.01)
-        ),
-        k!(
-            "Crushing Fangs",
-            "proc_pet_bite",
-            C::CriticalMultiplier(0.05)
-        ),
-        k!(
-            "Rending Fangs",
-            "proc_pet_bite",
-            C::IncreasedDotDamage(0.05)
-        ),
-        k!("Deep Bites", "proc_pet_bite", C::IncreasedDuration(0.04)),
-        m!(
-            "Deepening Wounds",
-            Tags(T::PHYSICAL.0),
-            C::IncreasedDotDamage(0.05)
-        ),
+        m!("Focused Power", T::MINION, C::IncreasedDamage(0.04)),
+        m!("Savage Companion", T::MINION, C::IncreasedDamage(0.05)),
+        m!("Pack Rhythm", T::MINION, C::IncreasedAttackSpeed(0.03)),
+        m!("Predatory Instinct", T::MINION, C::CriticalChance(0.01)),
+        m!("Crushing Fangs", T::MINION, C::CriticalMultiplier(0.05)),
+        m!("Rending Fangs", T::MINION, C::IncreasedDotDamage(0.05)),
+        m!("Deep Bites", T::MINION, C::IncreasedDuration(0.04)),
+        m!("Deepening Wounds", T::MINION, C::IncreasedDotDamage(0.05)),
         m!(
             "Persistent Wounds",
-            Tags(T::PHYSICAL.0 | T::DOT.0),
+            Tags(T::MINION.0 | T::DOT.0),
             C::IncreasedDuration(0.04)
         ),
         m!(
             "Relentless Assault",
-            Tags(T::ATTACK.0),
+            T::MINION,
             C::IncreasedAttackSpeed(0.025)
         ),
-        m!("Precision", Tags(T::ATTACK.0), C::CriticalChance(0.01)),
-        m!(
-            "Giant Slayer",
-            Tags(T::ATTACK.0),
-            C::DamageAgainstBosses(0.04)
-        ),
+        m!("Precision", T::MINION, C::CriticalChance(0.01)),
+        m!("Giant Slayer", T::MINION, C::DamageAgainstBosses(0.04)),
         s!("Enduring Spirit", MaxHp, 0.03),
         s!("Second Breath", Regen, 0.4),
-        s!("Light Footwork", Speed, 0.02),
-        m!(
-            "Exposed Armour",
-            Tags(T::PHYSICAL.0),
-            C::ArmourPenetration(0.025)
-        ),
+        m!("Light Footwork", T::MINION, C::IncreasedMovementSpeed(0.02)),
+        m!("Exposed Armour", T::MINION, C::ArmourPenetration(0.025)),
     ],
     [
         // Hunter / Marksmanship
@@ -470,58 +438,38 @@ static MINORS: [[Minor; 16]; 27] = [
     ],
     [
         // Hunter / Survival
-        m!(
-            "Martial Training",
-            Tags(T::PHYSICAL.0),
-            C::IncreasedDamage(0.04)
-        ),
-        m!("Wide Swings", Tags(T::MELEE.0), C::IncreasedArea(0.04)),
-        m!("Trap Mastery", Tags(T::TRAP.0), C::IncreasedDamage(0.04)),
-        m!("Widened Traps", Tags(T::TRAP.0), C::IncreasedArea(0.04)),
+        s!("Survivor's Vitality", MaxHp, 0.04),
+        s!("Thick Hide", Armor, 0.08),
+        m!("Trap Mastery", Tags(T::TRAP.0), C::IncreasedDamage(0.06)),
+        m!("Widened Traps", Tags(T::TRAP.0), C::IncreasedArea(0.06)),
         m!(
             "Patient Trapper",
             Tags(T::TRAP.0),
-            C::IncreasedDuration(0.04)
+            C::IncreasedDuration(0.06)
         ),
         m!(
             "Prepared Traps",
             Tags(T::TRAP.0),
-            C::IncreasedCooldownRecovery(0.025)
+            C::IncreasedCooldownRecovery(0.04)
         ),
+        s!("Elemental Endurance", AllResistance, 1.5),
+        s!("Survival Instincts", DamageReduction, 0.01),
         m!(
-            "Venomous Growth",
-            Tags(T::NATURE.0),
-            C::IncreasedDotDamage(0.05)
+            "Burning Traps",
+            Tags(T::TRAP.0),
+            C::IncreasedDotDamage(0.08)
         ),
-        m!(
-            "Enduring Venom",
-            Tags(T::NATURE.0 | T::DOT.0),
-            C::IncreasedDuration(0.04)
-        ),
-        m!(
-            "Deepening Wounds",
-            Tags(T::PHYSICAL.0),
-            C::IncreasedDotDamage(0.05)
-        ),
-        m!(
-            "Persistent Wounds",
-            Tags(T::PHYSICAL.0 | T::DOT.0),
-            C::IncreasedDuration(0.04)
-        ),
+        m!("Deadly Traps", Tags(T::TRAP.0), C::CriticalChance(0.02)),
         s!("Enduring Spirit", MaxHp, 0.03),
+        s!("Second Breath", Regen, 0.6),
         s!("Armour Training", Armor, 0.06),
-        s!("Second Breath", Regen, 0.4),
         s!("Light Footwork", Speed, 0.02),
         m!(
-            "Practiced Rhythm",
-            Tags(T::ATTACK.0),
-            C::IncreasedCooldownRecovery(0.025)
+            "Monster Traps",
+            Tags(T::TRAP.0),
+            C::DamageAgainstBosses(0.05)
         ),
-        m!(
-            "Finishing Touch",
-            Tags(T::ATTACK.0),
-            C::DamageAgainstLowLife(0.04)
-        ),
+        m!("Lethal Traps", Tags(T::TRAP.0), C::MoreDamage(0.03)),
     ],
     [
         // Rogue / Assassination
@@ -584,7 +532,7 @@ static MINORS: [[Minor; 16]; 27] = [
         ),
         s!("Enduring Spirit", MaxHp, 0.03),
         s!("Light Footwork", Speed, 0.02),
-        s!("Second Breath", Regen, 0.4),
+        m!("Evasion", Tags(0), C::DodgeChance(0.03)),
     ],
     [
         // Rogue / Combat
@@ -630,7 +578,7 @@ static MINORS: [[Minor; 16]; 27] = [
             C::DamageAgainstLowLife(0.04)
         ),
         s!("Enduring Spirit", MaxHp, 0.03),
-        s!("Armour Training", Armor, 0.06),
+        m!("Evasion", Tags(0), C::DodgeChance(0.03)),
         s!("Light Footwork", Speed, 0.02),
     ],
     [
@@ -679,7 +627,7 @@ static MINORS: [[Minor; 16]; 27] = [
             C::IncreasedAttackSpeed(0.025)
         ),
         s!("Enduring Spirit", MaxHp, 0.03),
-        s!("Armour Training", Armor, 0.06),
+        m!("Evasion", Tags(0), C::DodgeChance(0.03)),
         s!("Light Footwork", Speed, 0.02),
         s!("Second Breath", Regen, 0.4),
         m!(
@@ -1334,7 +1282,7 @@ static MINORS: [[Minor; 16]; 27] = [
             Tags(T::PHYSICAL.0 | T::MELEE.0),
             C::IncreasedCooldownRecovery(0.025)
         ),
-        s!("Armour Training", Armor, 0.06),
+        m!("Feral Evasion", Tags(0), C::DodgeChance(0.03)),
         s!("Enduring Spirit", MaxHp, 0.03),
         s!("Light Footwork", Speed, 0.02),
     ],
@@ -1384,6 +1332,145 @@ mod tests {
     use super::super::{data, procs, talent_effects, talents, Run};
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn rogue_and_feral_trees_have_three_percent_dodge_per_passive_rank() {
+        for (class, tree) in [(3, 0), (3, 1), (3, 2), (8, 1)] {
+            let spec = &talents::TREES[class][tree];
+            let nodes: Vec<_> = (0..talents::NODES)
+                .filter(|&node| talent_design::milestone(node).is_none())
+                .filter(|&node| matches!(minor(spec, node).change, Some(C::DodgeChance(_))))
+                .collect();
+            assert_eq!(nodes.len(), 1);
+            for rank in 1..=5 {
+                let run = apply_tree(class, tree, &[(nodes[0], rank)]);
+                assert!(
+                    (super::super::extra_spells::dodge_chance(&run) - 0.03 * f32::from(rank)).abs()
+                        < 0.0001
+                );
+                let tooltip = talent_effects::description(spec, nodes[0], rank);
+                assert!(tooltip.contains("dodge") && tooltip.contains("75%"));
+            }
+        }
+    }
+
+    #[test]
+    fn beast_mastery_modifiers_use_minion_tags_and_buff_commands_demons_and_pets() {
+        let spec = &talents::TREES[2][0];
+        let nodes: Vec<_> = (0..talents::NODES)
+            .filter(|&node| talent_design::milestone(node).is_none())
+            .map(|node| (node, 1))
+            .collect();
+        for &(node, _) in &nodes {
+            let talent = minor(spec, node);
+            if talent.change.is_some() {
+                assert!(talent.filter.all.contains(T::MINION), "{}", talent.name);
+                assert!(talent.filter.skill.is_none(), "{}", talent.name);
+                assert!(talent_effects::description(spec, node, 1).contains("Minion"));
+            }
+        }
+        let trained = apply_tree(2, 0, &nodes);
+        let base = Run {
+            class: trained.class,
+            ..Default::default()
+        };
+        for key in ["proc_pet_bite", "proc_demon_bolt"] {
+            let a = procs::resolve(&base, key, 18.0, 4.0, 4.0, 0.0, 1);
+            let b = procs::resolve(&trained, key, 18.0, 4.0, 4.0, 0.0, 1);
+            assert!(b.dmg > a.dmg);
+            assert!(b.dot > a.dot);
+            assert!(b.duration > a.duration);
+            assert!(b.cooldown < a.cooldown);
+            assert!(b.crit > a.crit);
+            assert!(b.crit_multiplier > a.crit_multiplier);
+            assert!(b.movement_speed > a.movement_speed);
+        }
+        for key in ["stomp", "kill_command"] {
+            let a = base.resolve_spell(data::ability(key), 1);
+            let b = trained.resolve_spell(data::ability(key), 1);
+            assert!(b.dmg > a.dmg);
+            assert!(b.cooldown < a.cooldown);
+            assert!(b.crit > a.crit);
+        }
+        assert!(
+            trained
+                .resolve_spell(data::ability("bestial_wrath"), 1)
+                .duration
+                > base
+                    .resolve_spell(data::ability("bestial_wrath"), 1)
+                    .duration
+        );
+        for key in ["arcane_shot", "multi_shot", "raptor_strike"] {
+            assert_eq!(
+                trained.resolve_spell(data::ability(key), 1),
+                base.resolve_spell(data::ability(key), 1),
+                "{key}"
+            );
+        }
+        assert_eq!(trained.stats().speed, base.stats().speed);
+    }
+
+    #[test]
+    fn survival_minors_add_defenses_and_only_improve_trap_offense() {
+        let nodes: Vec<_> = (0..talents::NODES)
+            .filter(|&node| talent_design::milestone(node).is_none())
+            .map(|node| (node, 1))
+            .collect();
+        let mut trained = apply_tree(2, 2, &nodes);
+        let mut baseline = Run {
+            class: trained.class,
+            ..Default::default()
+        };
+        trained.equipment_armour = 250.0;
+        baseline.equipment_armour = 250.0;
+        let before = baseline.stats();
+        let after = trained.stats();
+        assert!(after.max_hp > before.max_hp);
+        assert!(after.armor > before.armor);
+        assert!(after.regen > before.regen);
+        assert!(after.resistances.fire > before.resistances.fire);
+        assert!(after.damage_reduction > before.damage_reduction);
+        for tags in [T::PHYSICAL, T::FIRE, T::SHADOW | T::DOT] {
+            assert!(trained.damage_reduction_tagged(tags) > baseline.damage_reduction_tagged(tags));
+        }
+        for key in ["frost_trap", "explosive_trap"] {
+            let def = data::ability(key);
+            let a = baseline.resolve_spell(def, 1);
+            let b = trained.resolve_spell(def, 1);
+            assert!(b.tags.contains(T::TRAP));
+            assert!(b.tags.labels().contains("Trap"));
+            assert!(b.radius > a.radius);
+            assert!(b.cooldown < a.cooldown);
+            if key == "frost_trap" {
+                assert!(b.duration > a.duration);
+            } else {
+                assert!(b.dmg > a.dmg);
+                assert!(b.dot > a.dot);
+                assert!(b.crit > a.crit);
+            }
+        }
+        for key in [
+            "arcane_shot",
+            "raptor_strike",
+            "serpent_sting",
+            "kill_command",
+        ] {
+            assert_eq!(
+                trained.resolve_spell(data::ability(key), 1),
+                baseline.resolve_spell(data::ability(key), 1),
+                "{key}"
+            );
+        }
+        talents::Account::fresh().apply(2, &mut trained);
+        assert_eq!(trained.stats().armor, before.armor);
+        assert_eq!(trained.stats().max_hp, before.max_hp);
+        assert_eq!(trained.stats().damage_reduction, before.damage_reduction);
+        assert_eq!(
+            trained.resolve_spell(data::ability("explosive_trap"), 1),
+            baseline.resolve_spell(data::ability("explosive_trap"), 1)
+        );
+        assert!(data::PASSIVES.iter().all(|p| !matches!(p.effect, data::PassiveEffect::Modifier(filter, _) if filter.all.contains(T::TRAP))));
+    }
 
     #[test]
     fn every_specialization_has_sixteen_named_scaled_and_distinct_minors() {
@@ -1538,7 +1625,8 @@ mod tests {
             let trained = run.resolve_spell(data::ability(key), 1);
             let untrained = base.resolve_spell(data::ability(key), 1);
             assert!(trained.dmg > untrained.dmg * 1.35);
-            assert!(trained.duration > untrained.duration * 1.5);
+            assert!((trained.duration - untrained.duration * 1.2).abs() < 0.001);
+            assert_eq!(trained.max_totems, untrained.max_totems + 1);
             assert!(trained.cooldown < untrained.cooldown);
         }
         let trained = run.resolve_spell(data::ability("healing_stream_totem"), 1);

@@ -76,9 +76,9 @@ pub(super) fn panel(
         if let Some(item) = view.selected_item.and_then(|id| inventory.item(id)) {
             // Two clicks: the rolled item cannot be recovered.
             let label = if view.delete_armed == Some(item.id) {
-                "Confirm delete"
+                "Confirm"
             } else {
-                "Delete"
+                "Sell"
             };
             action(footer, font, label, Action::Delete(item.id));
             for &(slot, kind) in &SLOTS {
@@ -118,7 +118,7 @@ pub(super) fn panel(
     let (gold, silver, copper) = super::super::super::currency::split(inventory.money());
     ui.spawn(Node {
         width: Val::Percent(100.0),
-        height: Val::Px(18.0),
+        height: Val::Px(26.0),
         flex_shrink: 0.0,
         justify_content: JustifyContent::FlexEnd,
         align_items: AlignItems::Center,
@@ -126,6 +126,11 @@ pub(super) fn panel(
         ..default()
     })
     .with_children(|money| {
+        super::auto_salvage::button(money, font);
+        money.spawn(Node {
+            flex_grow: 1.0,
+            ..default()
+        });
         // MoneyFrame.xml: gold, silver and copper occupy successive quarters of this atlas.
         for (amount, coords) in [
             (gold, [0.0, 0.25, 0.0, 1.0]),

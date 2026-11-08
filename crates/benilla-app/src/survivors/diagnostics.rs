@@ -172,7 +172,7 @@ impl Session {
             timeline: Vec::new(),
             hitches: Vec::new(),
             previous_cpu: None,
-            panel: "Diagnostic en cours…".into(),
+            panel: "Collecting diagnostics…".into(),
         }
     }
 
@@ -247,11 +247,11 @@ impl Session {
         let p99 = percentile(&sorted, 0.99);
         let fps = |ms: f32| if ms > 0.0 { 1000.0 / ms } else { 0.0 };
         let mut out = String::new();
-        let _ = writeln!(out, "Azeroth Survivors - rapport de performance");
+        let _ = writeln!(out, "Azeroth Survivors - Performance report");
         let _ = writeln!(
             out,
-            "Duree {:.0} s, {} images\n\nTEMPS D'IMAGE\n  moyenne {mean:.2} ms ({:.0} FPS)\n  \
-             p50 {:.2} ms, p95 {:.2} ms, p99 {p99:.2} ms (1 % bas : {:.0} FPS), pire {:.2} ms",
+            "Duration {:.0} s, {} frames\n\nFRAME TIME\n  average {mean:.2} ms ({:.0} FPS)\n  \
+             p50 {:.2} ms, p95 {:.2} ms, p99 {p99:.2} ms (1% low: {:.0} FPS), worst {:.2} ms",
             self.elapsed,
             sorted.len(),
             fps(mean),
@@ -263,8 +263,8 @@ impl Session {
         let table = |out: &mut String, title: &str, kinds: &[Kind]| {
             let _ = writeln!(
                 out,
-                "\n{title}\n{:>9} {:>9} {:>9} {:>8}  nom\n",
-                "ms/image", "pic 1 s", "pire run", "appels/i"
+                "\n{title}\n{:>9} {:>9} {:>9} {:>8}  name\n",
+                "ms/frame", "1 s peak", "run worst", "calls/f"
             );
             let mut rows: Vec<_> = self
                 .spans
@@ -290,11 +290,11 @@ impl Session {
         };
         table(
             &mut out,
-            "ETAPES (chaque ligne inclut ses systemes)",
+            "STAGES (each row includes its systems)",
             &[Kind::Schedule],
         );
         if !self.gpu.is_empty() {
-            let _ = writeln!(out, "\nPASSES GPU (ms/image)");
+            let _ = writeln!(out, "\nGPU PASSES (ms/frame)");
             let mut rows: Vec<_> = self.gpu.iter().collect();
             rows.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
             for (pass, (sum, seconds)) in rows {
@@ -303,13 +303,13 @@ impl Session {
         }
         table(
             &mut out,
-            "SYSTEMES (temps CPU cumule sur tous les threads)",
+            "SYSTEMS (CPU time summed across all threads)",
             &[Kind::System, Kind::Commands],
         );
         if !self.hitches.is_empty() {
             let _ = writeln!(
                 out,
-                "\nGELS (images de plus de {HITCH_MS:.0} ms)\nt_s,phase,image_ms,sonde_ms,ecriture,systemes"
+                "\nHITCHES (frames longer than {HITCH_MS:.0} ms)\nt_s,phase,frame_ms,probe_ms,writing,systems"
             );
         }
         for h in &self.hitches {
@@ -325,13 +325,13 @@ impl Session {
                 h.phase,
                 h.ms,
                 h.probe_ms,
-                if h.writing { "oui" } else { "non" },
+                if h.writing { "yes" } else { "no" },
                 spans.join(" | "),
             );
         }
         let _ = writeln!(
             out,
-            "\nCHRONOLOGIE\nt_s,phase,fps,mean_ms,worst_ms,cpu_ms,gpu_ms,enemies,gems,entities"
+            "\nTIMELINE\nt_s,phase,fps,mean_ms,worst_ms,cpu_ms,gpu_ms,enemies,gems,entities"
         );
         let cell = |value: Option<f64>| value.map_or(String::new(), |v| format!("{v:.2}"));
         for s in &self.timeline {
@@ -371,8 +371,8 @@ fn panel(
 ) -> String {
     let ms = |value: Option<f64>| value.map_or("?".to_owned(), |v| format!("{v:.1} ms"));
     let mut out = format!(
-        "DIAGNOSTIC PERF · {:.0} s\n{:.0} FPS · moyenne {:.1} ms · pire {:.1} ms\n\
-         CPU {} · GPU {}\nEnnemis {} · Gemmes {} · Entités {}\n",
+        "PERFORMANCE DIAGNOSTICS · {:.0} s\n{:.0} FPS · average {:.1} ms · worst {:.1} ms\n\
+         CPU {} · GPU {}\nEnemies {} · Gems {} · Entities {}\n",
         second.at,
         second.fps,
         second.mean,
@@ -388,15 +388,15 @@ fn panel(
     by_cost(&mut systems);
     if systems.is_empty() {
         out.push_str(
-            "\nDétail par système absent de cette build :\nlancez warcraft-survivors-perf.exe.",
+            "\nPer-system details are unavailable in this build.\nRun warcraft-survivors-perf.exe.",
         );
         return out;
     }
-    out.push_str("\nÉtapes (ms/image)\n");
+    out.push_str("\nStages (ms/frame)\n");
     for (name, ms) in stages.iter().take(PANEL_STAGES) {
         let _ = writeln!(out, "{ms:6.2}  {}", short(name));
     }
-    out.push_str("\nSystèmes (ms/image)\n");
+    out.push_str("\nSystems (ms/frame)\n");
     for (name, ms) in systems.iter().take(PANEL_SYSTEMS) {
         let _ = writeln!(out, "{ms:6.2}  {}", short(name));
     }
@@ -643,14 +643,14 @@ mod tests {
         assert_eq!(costly.peak_window, 15.0);
         assert!(session.panel.find("costly").unwrap() < session.panel.find("cheap").unwrap());
         assert!(session.panel.contains("GPU 3.0 ms"));
-        assert!(session.panel.contains("Ennemis 7"));
+        assert!(session.panel.contains("Enemies 7"));
         // Frames of an open window have no span time yet, so they must not dilute the averages.
         session.frame(0.1);
         let report = session.report();
         assert!(report.contains("   10.000    15.000"));
         let at = |needle: &str| report.find(needle).unwrap();
-        assert!(at("TEMPS D'IMAGE") < at("ETAPES") && at("ETAPES") < at("PASSES GPU"));
-        assert!(at("PASSES GPU") < at("SYSTEMES") && at("SYSTEMES") < at("CHRONOLOGIE"));
+        assert!(at("FRAME TIME") < at("STAGES") && at("STAGES") < at("GPU PASSES"));
+        assert!(at("GPU PASSES") < at("SYSTEMS") && at("SYSTEMS") < at("TIMELINE"));
         assert!(at("survivors::costly\n") < at("survivors::cheap\n"));
         assert!(report.contains("costly (commands)"));
         assert!(report.contains("  2.000  opaque"));
@@ -662,7 +662,7 @@ mod tests {
         let mut session = Session::new(None);
         session.frame(1.0);
         session.close_window(vec![], vec![], Counts::default(), None, Phase::Menu);
-        assert!(session.panel.contains("absent de cette build"));
+        assert!(session.panel.contains("unavailable in this build"));
         assert!(session.panel.contains("CPU ? · GPU ?"));
     }
 }

@@ -39,12 +39,12 @@ impl Inventory {
         vault: &str,
     ) -> Result<(), String> {
         if vault.is_empty() {
-            return Err("Le coffre n'est pas encore disponible.".into());
+            return Err("The chest is not available yet.".into());
         }
         if self.worn(id) {
-            return Err("Retirez cet objet de votre équipement avant de le déposer.".into());
+            return Err("Unequip this item before depositing it.".into());
         }
-        let item = self.item(id).cloned().ok_or("Objet introuvable.")?;
+        let item = self.item(id).cloned().ok_or("Item not found.")?;
         let mut save = self.save.clone();
         if save.trade_identity.is_empty() {
             save.trade_identity = crate::survivors::shared_chest::nonce();
@@ -52,7 +52,7 @@ impl Inventory {
         save.trade_sequence = save
             .trade_sequence
             .checked_add(1)
-            .ok_or("Identifiants de transfert épuisés.")?;
+            .ok_or("No more transfer identifiers available.")?;
         let token = format!("{}:{}", save.trade_identity, save.trade_sequence);
         save.items.retain(|i| i.id != id);
         save.pending_deposits.push(Transfer {
@@ -83,7 +83,7 @@ impl Inventory {
         save.next_id = save
             .next_id
             .checked_add(1)
-            .ok_or("Identifiants d'objets épuisés.")?;
+            .ok_or("No more item identifiers available.")?;
         save.items.push(item);
         save.received_trades.insert(transfer.token.clone());
         self.commit(save)

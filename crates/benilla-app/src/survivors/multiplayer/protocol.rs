@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 18;
+pub const VERSION: u32 = 19;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,10 +41,6 @@ pub struct Input {
     pub jump: bool,
     pub mobility: bool,
     pub active: bool,
-    #[serde(default)]
-    pub hold_levels: bool,
-    #[serde(default)]
-    pub release_levels: bool,
 }
 
 impl Input {
@@ -63,6 +59,7 @@ impl Input {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToServer {
+    CardDraw { automatic: bool, open: bool },
     ResetMeter,
     Chest(super::super::shared_chest::Request),
     Join { version: u32, profile: Profile },
@@ -132,6 +129,10 @@ pub struct Stats {
     pub taken_meter: super::super::combat_ui::Meter,
     pub movement_speed: f32,
     pub meter: super::super::combat_ui::Meter,
+    #[serde(default)]
+    pub effect_meter: super::super::combat_ui::EffectMeter,
+    #[serde(default)]
+    pub boss_meter: super::super::combat_ui::Meter,
     pub earned: u64,
     pub hp: f32,
     pub max_hp: f32,
@@ -152,7 +153,7 @@ pub struct Stats {
     #[serde(default)]
     pub draft_uses: [u8; 3],
     #[serde(default)]
-    pub held_levels: u32,
+    pub stored_cards: u32,
     pub offer_id: u64,
     pub choices: Vec<Choice>,
     pub mobility: [f32; 4],
@@ -260,6 +261,7 @@ mod tests {
                 level: 63,
                 friendly: false,
                 debuffs: vec![(589, 4.5), (339, 2.0)],
+                debuff_stacks: vec![(1943, 3), (2818, 2), (133, 1)],
             }),
             guid: 42,
             owner: None,
@@ -281,5 +283,6 @@ mod tests {
         assert_eq!(status.health, 1234.0);
         assert_eq!(status.maximum, 20000.0);
         assert_eq!(status.debuffs, vec![(589, 4.5), (339, 2.0)]);
+        assert_eq!(status.debuff_stacks, vec![(1943, 3), (2818, 2), (133, 1)]);
     }
 }

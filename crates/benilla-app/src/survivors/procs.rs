@@ -79,7 +79,11 @@ pub(super) fn ready_effect(
     ready
 }
 fn trigger_ready(run: &mut Run, key: &'static str, item: Option<u16>, tags: Tags) -> bool {
-    let cd = cooldown(run, key, tags, 0.5);
+    let cd = if key == "proc_arcane_companion" {
+        0.75
+    } else {
+        cooldown(run, key, tags, 0.5)
+    };
     let id = (
         key,
         item,
@@ -345,7 +349,8 @@ pub(super) static SPELLS: &[Spell] = &[
         PHYSICAL,
         DAMAGE,
         DOT,
-        DURATION
+        DURATION,
+        MINION
     ),
     hidden!(
         "proc_demon_bolt",
@@ -357,7 +362,8 @@ pub(super) static SPELLS: &[Spell] = &[
         PROJECTILE,
         DOT,
         DURATION,
-        AREA
+        AREA,
+        MINION
     ),
     hidden!(
         "proc_totem_bolt",
@@ -368,7 +374,8 @@ pub(super) static SPELLS: &[Spell] = &[
         NATURE,
         DAMAGE,
         PROJECTILE,
-        TOTEM
+        TOTEM,
+        BUFF
     ),
     hidden!(
         "proc_spirit_bolt",
@@ -412,7 +419,8 @@ pub(super) static SPELLS: &[Spell] = &[
         HEAL,
         AREA,
         TOTEM,
-        DURATION
+        DURATION,
+        BUFF
     ),
     hidden!("proc_bloom", 774, Heal, SPELL, NATURE, HEAL, AREA, DURATION),
     hidden!("proc_grove", 774, Heal, SPELL, NATURE, HEAL, AREA, DURATION),
@@ -457,6 +465,8 @@ fn key_for_class(class: u8, m: M) -> &'static str {
         M::Bloodburst => "proc_bloodburst",
         M::Poisonburst => "proc_poisonburst",
         M::Fireburst => "proc_fireburst",
+        M::Plagueburst => "proc_plagueburst",
+        M::DeathTrap => "proc_fireburst",
         M::FrostNova => "proc_frostnova",
         M::Proliferate => "proc_poison_spread",
         M::IgniteSpread => "proc_ignite_spread",
@@ -493,6 +503,15 @@ fn key_for_class(class: u8, m: M) -> &'static str {
 
 /// Payloads may be fixed values or a percentage of the triggering hit. Resolve only once;
 /// periodic ticks, splash copies and proliferation retain the resulting snapshot.
+pub(in crate::survivors) fn gameplay_tags(run: &Run, key: &str, mut tags: Tags) -> Tags {
+    if key == "proc_bloodburst"
+        && super::items::legendary::milestones::source_class(run, M::Bloodburst) == 3
+    {
+        tags = Tags(tags.0 & !Tags::SPELL.0) | Tags::MINION | Tags::ATTACK;
+    }
+    tags
+}
+
 pub(super) fn resolve(
     run: &Run,
     key: &str,
@@ -503,13 +522,19 @@ pub(super) fn resolve(
     count: usize,
 ) -> Resolved {
     let mut def = find(key).expect("authored hidden spell").def.clone();
-    def.damage = damage;
+    def.damage = damage
+        + if damage > 0.0 && matches!(key, "proc_pet_bite" | "proc_demon_bolt") {
+            run.minion_weapon_damage()
+        } else {
+            0.0
+        };
     def.dot = dot;
     def.duration = duration;
     def.radius = radius;
     def.count = count as u32;
-    // No second weapon roll: weapon damage is already included in attack-derived payloads.
-    let (def, tags) = super::items::legendary::profile(run, &def);
+    // Only independent pet attacks add owner weapon damage; derived payloads retain it once.
+    let (def, mut tags) = super::items::legendary::profile(run, &def);
+    tags = gameplay_tags(run, key, tags);
     let mut p = spell_engine::resolve_tagged(
         &def,
         1,
@@ -549,6 +574,9 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
         return vec![];
     };
     let mut keys = std::collections::BTreeSet::new();
+    if run.abilities.iter().any(|a| a.def.key == "tame_beast") {
+        keys.insert("proc_pet_bite");
+    }
     for tree in 0..3 {
         for (index, node) in [8, 12, 18].into_iter().enumerate() {
             if run.talent_build[tree][node] == 0 {
@@ -563,6 +591,8 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 | M::ArcaneFocus
                 | M::ArcaneCompanion
                 | M::ArcaneCascade
+                | M::TrapLaunch
+                | M::TrapVolley
                 | M::Shatter
                 | M::SlowCast
                 | M::FeralGuard => continue,
@@ -606,6 +636,8 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 | M::ArcaneFocus
                 | M::ArcaneCompanion
                 | M::ArcaneCascade
+                | M::TrapLaunch
+                | M::TrapVolley
                 | M::Shatter
                 | M::SlowCast
                 | M::FeralGuard
@@ -661,6 +693,22 @@ mod tests {
         spell_engine::{Change, Filter, Modifier},
     };
     use super::*;
+
+    #[test]
+    fn resonant_casting_has_fixed_three_quarter_second_internal_cooldown() {
+        let mut run = run();
+        add(
+            &mut run,
+            &[(Tags::SPELL, Change::IncreasedCooldownRecovery(10.0))],
+        );
+        assert!(ready(&mut run, "proc_arcane_companion", Tags::SPELL));
+        for at in [0.0, 0.5, 0.749] {
+            run.elapsed = at;
+            assert!(!ready(&mut run, "proc_arcane_companion", Tags::SPELL));
+        }
+        run.elapsed = 0.75;
+        assert!(ready(&mut run, "proc_arcane_companion", Tags::SPELL));
+    }
 
     #[test]
     fn proc_rules_keep_cooldowns_per_effect_and_player_and_apply_cdr() {

@@ -45,10 +45,8 @@ pub(in crate::survivors) fn views(run: &Run) -> Vec<ViewSpell> {
                     |m| m.name.to_owned(),
                 )
             };
-            let mut lines = vec![
-                "Talent proc".to_owned(),
-                super::find(def.key).unwrap().tags.labels(),
-            ];
+            let tags = super::gameplay_tags(run, def.key, super::find(def.key).unwrap().tags);
+            let mut lines = vec!["Talent proc".to_owned(), tags.labels()];
             if let Some(source) = source {
                 lines.push(source.description.to_owned());
             }
@@ -62,12 +60,12 @@ pub(in crate::survivors) fn views(run: &Run) -> Vec<ViewSpell> {
                     }
                     "proc_bloodburst" | "proc_poisonburst" | "proc_fireburst"
                     | "proc_plagueburst" | "proc_frostnova" => (
-                        300.,
+                        super::super::talent_runtime::DEATH_EXPLOSION_CAP,
                         0.,
                         if def.key == "proc_frostnova" { 2. } else { 0. },
-                        6.,
+                        super::super::talent_runtime::DEATH_EXPLOSION_RADIUS,
                         64,
-                        "At 1,000 enemy maximum health (base cap)",
+                        "At the 1,000 base damage cap (30% enemy maximum health)",
                     ),
                     "proc_splash" => (40., 0., 0., 4., 64, "Per 100 triggering hit damage"),
                     "proc_flurry" => (80., 0., 0., 6., 64, "Per 100 triggering hit damage"),

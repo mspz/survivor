@@ -35,6 +35,7 @@ impl Tags {
     pub const HOLY: Self = Self(1 << 22);
     pub const SHADOW: Self = Self(1 << 23);
     pub const BUFF: Self = Self(1 << 24);
+    pub const MINION: Self = Self(1 << 25);
     pub fn contains(self, tags: Self) -> bool {
         self.0 & tags.0 == tags.0
     }
@@ -59,6 +60,7 @@ impl Tags {
             (Self::UTILITY, "Utility"),
             (Self::MOVEMENT, "Movement"),
             (Self::BUFF, "Buff"),
+            (Self::MINION, "Minion"),
             (Self::PHYSICAL, "Physical"),
             (Self::FIRE, "Fire"),
             (Self::COLD, "Cold"),
@@ -85,6 +87,12 @@ pub fn weapon_hit(tags: Tags) -> bool {
 
 /// Every authored ability has an explicit damage school. Missing classifications fail tests.
 pub fn school(key: &str) -> Option<Tags> {
+    if matches!(
+        key,
+        "tame_beast" | "stomp" | "kill_command" | "bestial_wrath"
+    ) {
+        return Some(Tags::PHYSICAL);
+    }
     if let Some(school) = super::super::support_spells::school(key) {
         return Some(school);
     }
@@ -175,6 +183,18 @@ pub fn mobility(spell: u32) -> Option<(&'static str, Tags)> {
 }
 
 pub fn for_spell(def: &AbilityDef) -> Tags {
+    if matches!(
+        def.key,
+        "tame_beast" | "stomp" | "kill_command" | "bestial_wrath"
+    ) {
+        let base = Tags::MINION | Tags::PHYSICAL;
+        return match def.key {
+            "stomp" => base | Tags::ATTACK | Tags::DAMAGE | Tags::AREA | Tags::DURATION,
+            "kill_command" => base | Tags::ATTACK | Tags::DAMAGE | Tags::MOVEMENT,
+            "bestial_wrath" => base | Tags::SPELL | Tags::BUFF | Tags::UTILITY | Tags::DURATION,
+            _ => base | Tags::SPELL | Tags::UTILITY,
+        };
+    }
     if def.key == "totemic_recall" {
         return Tags::SPELL | Tags::NATURE | Tags::UTILITY | Tags::TOTEM;
     }
@@ -276,7 +296,7 @@ pub fn for_spell(def: &AbilityDef) -> Tags {
     {
         tags = tags | T::DURATION;
     }
-    if def.kind == Kind::Totem {
+    if def.kind == Kind::Totem || def.totem.0 != 0 {
         tags = tags | T::TOTEM;
     }
     if matches!(def.key, "explosive_trap" | "frost_trap") {

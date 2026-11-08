@@ -71,7 +71,7 @@ pub(in crate::survivors::talent_ui) fn render(
     }
     let level = talents::level(account.xp);
     let (progress, experience) = if level >= 60 {
-        (100.0, "Niveau global 60 · niveau maximum".to_owned())
+        (100.0, "Character level 60 · Maximum level".to_owned())
     } else {
         let earned = account.xp.saturating_sub(talents::threshold(level));
         let required = talents::threshold(level + 1) - talents::threshold(level);
@@ -79,15 +79,15 @@ pub(in crate::survivors::talent_ui) fn render(
         (
             progress,
             format!(
-                "XP globale · niveau {level} → {} : {earned} / {required} ({progress:.0} %)",
+                "Character XP · Level {level} → {}: {earned} / {required} ({progress:.0}%)",
                 level + 1
             ),
         )
     };
     commands.spawn((Root,Button,GlobalZIndex(600),BackgroundColor(Color::srgba(0.0,0.0,0.0,0.94)),Node{position_type:PositionType::Absolute,width:Val::Percent(100.0),height:Val::Percent(100.0),padding:UiRect::all(Val::Px(12.0)),flex_direction:FlexDirection::Column,row_gap:Val::Px(8.0),..default()})).with_children(|modal| {
         modal.spawn(Node{width:Val::Percent(100.0),justify_content:JustifyContent::SpaceBetween,align_items:AlignItems::Center,..default()}).with_children(|header| {
-            header.spawn(text(f,format!("{} · niveau {} · {} points disponibles",data::CLASSES[class].name,talents::level(account.xp),account.available(class)),21.0,GOLD));
-            header.spawn((button(Action::Toggle,Color::srgb(0.2,0.04,0.03)),Node{padding:UiRect::axes(Val::Px(14.0),Val::Px(6.0)),..default()})).with_children(|b|{b.spawn(text(f,"Fermer [T / Échap]",15.0,GOLD));});
+            header.spawn(text(f,format!("{} · Level {} · {} points available",data::CLASSES[class].name,talents::level(account.xp),account.available(class)),21.0,GOLD));
+            header.spawn((button(Action::Toggle,Color::srgb(0.2,0.04,0.03)),Node{padding:UiRect::axes(Val::Px(14.0),Val::Px(6.0)),..default()})).with_children(|b|{b.spawn(text(f,"Close [T / Esc]",15.0,GOLD));});
         });
         modal.spawn((Node{width:Val::Percent(100.0),height:Val::Px(25.0),flex_shrink:0.0,border:UiRect::all(Val::Px(1.0)),overflow:Overflow::clip(),..default()},BackgroundColor(Color::srgb(0.08,0.04,0.12)),BorderColor::all(GOLD))).with_children(|bar| {
             bar.spawn((Node{width:Val::Percent(progress),height:Val::Percent(100.0),..default()},BackgroundColor(Color::srgb(0.48,0.22,0.75))));
@@ -125,9 +125,9 @@ pub(in crate::survivors::talent_ui) fn render(
             }
         });
         modal.spawn(Node{width:Val::Percent(100.0),justify_content:JustifyContent::SpaceBetween,align_items:AlignItems::Center,..default()}).with_children(|footer| {
-            footer.spawn(text(f,"Jalons : 10 / 20 / 30 points dans l’arbre · or : appris · vert : disponible · gris : verrouillé",13.0,GOLD));
-            if editable(*phase.get(),&selection){footer.spawn((button(Action::Reset,Color::srgb(0.25,0.035,0.025)),Node{padding:UiRect::all(Val::Px(8.0)),..default()})).with_children(|b|{b.spawn(text(f,"Réinitialiser gratuitement",14.0,GOLD));});}
-            else {footer.spawn(text(f,"Modification en ville uniquement",13.0,GREY));}
+            footer.spawn(text(f,"Milestones: 10 / 20 / 30 points in the tree · Gold: learned · Green: available · Gray: locked",13.0,GOLD));
+            if editable(*phase.get(),&selection){footer.spawn((button(Action::Reset,Color::srgb(0.25,0.035,0.025)),Node{padding:UiRect::all(Val::Px(8.0)),..default()})).with_children(|b|{b.spawn(text(f,"Reset for free",14.0,GOLD));});}
+            else {footer.spawn(text(f,"Changes are only available in the hub",13.0,GREY));}
         });
         modal.spawn((TipFrame,Visibility::Hidden,GlobalZIndex(700),BackgroundColor(Color::srgba(0.015,0.015,0.025,0.98)),BorderColor::all(GOLD),Node{position_type:PositionType::Absolute,left:Val::Percent(28.0),bottom:Val::Px(50.0),width:Val::Percent(44.0),padding:UiRect::all(Val::Px(14.0)),border:UiRect::all(Val::Px(1.0)),row_gap:Val::Px(6.0),flex_direction:FlexDirection::Column,..default()})).with_children(|tip| {
             tip.spawn((TipTitle,text(f,"",20.0,GOLD)));tip.spawn((TipBody,text(f,"",14.0,Color::WHITE)));

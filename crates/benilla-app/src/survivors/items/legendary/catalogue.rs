@@ -100,7 +100,7 @@ pub(in crate::survivors::items) const DEFINITIONS: &[Definition] = &[
         id: 36,
         name: r#"The Matriarch's Fang"#,
         slot: SlotKind::Neck,
-        description: r#"Grants the Hunter's Wild Companion milestone to any class: a wolf hunts enemies, and Physical skill impacts can apply its bleed. No points are invested in the Hunter talent tree."#,
+        description: r#"Grants the Hunter's Wild Companion milestone to any class: a wolf hunts enemies and Minions gain 20% more action speed, multiplying their attack and movement speed. No points are invested in the Hunter talent tree."#,
     },
     Definition {
         id: 42,

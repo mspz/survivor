@@ -309,7 +309,7 @@ group = "experience"
 effect = "experience"
 min = 0.03
 max = 0.10
-weight = 12
+weight = 0
 slots = ["head", "neck"]
 
 [[affixes]]
@@ -320,7 +320,7 @@ group = "luck"
 effect = "luck"
 min = 0.05
 max = 0.15
-weight = 12
+weight = 0
 slots = ["ring", "neck"]
 
 # A proc consumes one affix. Only one member of this group can roll on each trinket.
@@ -459,7 +459,7 @@ group = "magic_find"
 effect = "magic_find"
 min = 0.05
 max = 0.15
-weight = 12
+weight = 0
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
 [[affixes]]

@@ -38,6 +38,47 @@ const GO_TYPE_GENERIC: u32 = 5;
 /// `GO_STATE_READY`.
 const GO_STATE_READY: u32 = 1;
 
+/// Draw the hunter's ranged weapon for projectiles and melee weapons for other skills.
+pub(super) fn hunter_weapon(
+    commands: &mut Commands,
+    entity: Entity,
+    tags: super::spell_engine::Tags,
+) {
+    let sheath = if tags.contains(super::spell_engine::Tags::PROJECTILE) {
+        2
+    } else {
+        1
+    };
+    commands.queue(move |world: &mut World| {
+        let Some(guid) = world.get::<Guid>(entity).map(|g| g.0) else {
+            return;
+        };
+        let Some(mut store) = world.get_mut::<ObjectStore>(entity) else {
+            return;
+        };
+        let old = store
+            .0
+            .raw_fields()
+            .find(|(index, _)| *index == FIELD_BYTES_2)
+            .map_or(0, |(_, value)| value);
+        let new = (old & !0xff) | sheath;
+        if old == new {
+            return;
+        }
+        store
+            .0
+            .merge(ObjectFields::from_pairs(&[(FIELD_BYTES_2, new)]));
+        world.write_message(FieldChanged {
+            entity,
+            guid,
+            kind: ObjectType::Unit,
+            index: FIELD_BYTES_2,
+            old,
+            new,
+        });
+    });
+}
+
 pub(super) fn wow_to_bevy(p: [f32; 3]) -> Vec3 {
     Vec3::new(-p[1], p[2], -p[0])
 }
@@ -149,7 +190,11 @@ pub(super) fn spawn_object(
 /// Explosive Trap's original GameObjectDisplayInfo model. Type 6 enables WoW's
 /// closed/open state animation; a generic decorative object would never animate.
 pub(super) fn spawn_explosive_trap(commands: &mut Commands, serial: u64, pos: Vec3) -> Entity {
-    let entity = spawn_object(commands, serial, 3072, 1.0, pos);
+    spawn_animated_trap(commands, serial, 3072, pos)
+}
+
+fn spawn_animated_trap(commands: &mut Commands, serial: u64, display: u32, pos: Vec3) -> Entity {
+    let entity = spawn_object(commands, serial, display, 1.0, pos);
     commands
         .entity(entity)
         .insert(ObjectStore(ObjectFields::from_pairs(&[
@@ -157,11 +202,27 @@ pub(super) fn spawn_explosive_trap(commands: &mut Commands, serial: u64, pos: Ve
             (1, ((HIGH_GAMEOBJECT | serial) >> 32) as u32),
             (2, 0x21),
             (4, 1.0f32.to_bits()),
-            (FIELD_GO_DISPLAY, 3072),
+            (FIELD_GO_DISPLAY, display),
             (FIELD_GO_STATE, GO_STATE_READY),
             (FIELD_GO_TYPE, 6),
         ])));
     entity
+}
+
+/// The physical Frost Trap (GameObjectDisplayInfo 3073) and its persistent frost layer.
+pub(super) fn spawn_frost_trap(
+    commands: &mut Commands,
+    serial: u64,
+    radius: f32,
+    scale: f32,
+    pos: Vec3,
+) -> Entity {
+    let trap = spawn_animated_trap(commands, serial, 3073, pos);
+    let aura = spawn_area_object(commands, serial, 13809, radius, scale, pos);
+    commands
+        .entity(aura)
+        .insert((ChildOf(trap), Transform::from_translation(Vec3::Y * 0.03)));
+    trap
 }
 
 /// Zero health: the animation selector plays Death and holds the corpse pose.
@@ -181,6 +242,17 @@ pub(super) fn spawn_area_object(
     scale: f32,
     pos: Vec3,
 ) -> Entity {
+    // Spell.dbc: 13809 only places the trap; 13810's area visual is FrostTrap_Aura.
+    // Its ICESLICK_AREA ground quad spans 25 yd in the shipped M2 (vertices +/-12.5).
+    let (spell, scale, pos) = if spell == 2094 {
+        // Smoke Screen's Blind row has no ground model. Spawn Smoke (10389) has
+        // area_gate=1 and Vanish_Cast_Base, which loops with this zone anchor.
+        (10389, (radius / 2.0).max(0.01), pos)
+    } else if spell == 13809 {
+        (13810, (radius / 12.5).max(0.01), pos + Vec3::Y * 0.03)
+    } else {
+        (spell, scale, pos)
+    };
     let guid = HIGH_DYNAMIC | serial;
     let wow = bevy_to_wow(pos);
     commands
@@ -347,9 +419,50 @@ pub(super) struct Fx<'w> {
 /// More impacts than this per cast only cost frames.
 const MAX_VISUAL_HITS: usize = 12;
 
+fn cast_visual_spell(spell: u32) -> u32 {
+    match spell {
+        // Fan of Knives borrows Whirlwind's spinning blades and body animation;
+        // its authored Slice and Dice row only flashes an aura on the chest.
+        5171 => 1680,
+        // Blind has no cloud; Spawn Smoke supplies the smoke cast and ground model.
+        2094 => 10389,
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod rogue_visual_tests {
+    use super::*;
+
+    #[test]
+    fn rogue_cast_and_smoke_area_surrogates_resolve_to_installed_models() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let spells = benilla_formats::load_spell_catalog(&mut chain).unwrap();
+        let visuals = benilla_formats::load_spell_visual_catalog(&mut chain).unwrap();
+        let knives = cast_visual_spell(super::super::data::ability("fan_of_knives").spell);
+        let stages = visuals.stages(spells.get(knives).unwrap().visual).unwrap();
+        let kit = visuals.kit(stages.cast).unwrap();
+        assert_eq!(kit.anim_id, Some(126));
+        assert!(kit.effects().filter_map(|(_, effect)| visuals.effect_path(effect))
+            .any(|path| path.eq_ignore_ascii_case("Spells\\Whirlwind_State_Base.mdx")));
+        assert!(chain.read_file("Spells\\Whirlwind_State_Base.m2").is_ok());
+        let smoke = cast_visual_spell(super::super::data::ability("smoke_bomb").spell);
+        let stages = visuals.stages(spells.get(smoke).unwrap().visual).unwrap();
+        assert_ne!(stages.cast, 0);
+        assert_ne!(stages.area_gate, 0);
+        assert!(visuals.effect_path(stages.area_effect).unwrap()
+            .eq_ignore_ascii_case("Spells\\Vanish_Cast_Base.mdx"));
+        assert!(chain.read_file("Spells\\Vanish_Cast_Base.m2").is_ok());
+    }
+}
+
 impl Fx<'_> {
     /// Size `caster`'s visuals of `spell` for the radius it will cast at.
     pub fn area_scale(&mut self, caster: Entity, spell: u32, scale: f32) {
+        // Whirlwind_State_Base's shipped horizontal bounds span roughly 6.4 yd.
+        let scale = if spell == 5171 { scale * (5.0 / 3.2) } else { scale };
+        let spell = cast_visual_spell(spell);
         if let Some(scales) = self.area_scales.as_mut() {
             scales.0.insert((caster, spell), scale);
         }
@@ -357,6 +470,7 @@ impl Fx<'_> {
 
     /// The next effects of `spell` on `unit` are an echo: they overlap the running ones.
     pub fn echo(&mut self, unit: Entity, spell: u32) {
+        let spell = cast_visual_spell(spell);
         if let Some(echoes) = self.echoes.as_mut() {
             echoes.0.insert((unit, spell));
         }
@@ -370,6 +484,9 @@ impl Fx<'_> {
         pos: Vec3,
         fields: &mut MessageWriter<FieldChanged>,
     ) {
+        if store.0.gameobject_state() != Some(GO_STATE_READY) {
+            return;
+        }
         store
             .0
             .merge(ObjectFields::from_pairs(&[(FIELD_GO_STATE, 0)]));
@@ -382,10 +499,13 @@ impl Fx<'_> {
             new: 0,
         });
         // 13813 places the trap; 13812 is its actual explosion (visual 7659).
-        self.cast(entity, 13812, &[], Some(pos));
+        if store.0.gameobject_displayid() == Some(3072) {
+            self.cast(entity, 13812, &[], Some(pos));
+        }
     }
     /// `SMSG_SPELL_GO`: the cast kit on the caster, and a missile or an impact at each hit.
     pub fn cast(&mut self, caster: Entity, spell: u32, hits: &[Entity], dest: Option<Vec3>) {
+        let spell = cast_visual_spell(spell);
         let seq = self.seq.next();
         self.casts.write(CastEvent {
             entity: caster,
@@ -406,6 +526,7 @@ impl Fx<'_> {
 
     /// Only the spell's impact kit, on `target`: no cast animation on anyone.
     pub fn impact(&mut self, target: Entity, spell: u32) {
+        let spell = cast_visual_spell(spell);
         let seq = self.seq.next();
         self.casts.write(CastEvent {
             entity: target,
@@ -503,6 +624,80 @@ mod trap_tests {
     use super::*;
 
     #[test]
+    fn frost_trap_has_a_visible_armed_gameobject_and_a_child_frost_layer() {
+        let mut world = World::new();
+        let pos = Vec3::new(3.0, 5.0, 7.0);
+        let trap = spawn_frost_trap(&mut world.commands(), 42, 6.0, 1.0, pos);
+        world.flush();
+        assert_eq!(world.get::<NetEntity>(trap).unwrap().display_id, Some(3073));
+        let store = world.get::<ObjectStore>(trap).unwrap();
+        assert_eq!(store.0.gameobject_state(), Some(GO_STATE_READY));
+        assert_eq!(store.0.gameobject_type_id(), 6);
+        let children: Vec<_> = world
+            .query::<(&ChildOf, &ObjectStore, &Transform)>()
+            .iter(&world)
+            .filter(|(parent, _, _)| parent.parent() == trap)
+            .collect();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].1 .0.dynamicobject_spell_id(), Some(13810));
+        assert_eq!(children[0].2.translation, Vec3::Y * 0.03);
+        world.despawn(trap);
+        assert_eq!(world.query::<&NetEntity>().iter(&world).count(), 0);
+    }
+
+    #[test]
+    fn physical_trap_models_exist_in_the_wow_install() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let catalog = benilla_formats::load_gameobject_catalog(&mut chain).unwrap();
+        for (display, model) in [
+            (3072, "world\\goober\\g_explosivetrap"),
+            (3073, "world\\goober\\g_frosttrap"),
+        ] {
+            assert_eq!(
+                catalog.model_path(display).unwrap().to_ascii_lowercase(),
+                format!("{model}.mdx")
+            );
+            assert!(chain.read_file(&format!("{model}.m2")).is_ok());
+        }
+    }
+
+    #[test]
+    fn frost_trap_arms_its_persistent_wow_frost_layer_at_the_gameplay_radius() {
+        for radius in [6.0, 12.0] {
+            let mut world = World::new();
+            let pos = Vec3::new(3.0, 5.0, 7.0);
+            let entity =
+                spawn_area_object(&mut world.commands(), 42, 13809, radius, radius / 6.0, pos);
+            world.flush();
+            let store = world.get::<ObjectStore>(entity).unwrap();
+            assert_eq!(store.0.dynamicobject_spell_id(), Some(13810));
+            assert_eq!(store.0.dynamicobject_radius(), Some(radius));
+            assert!((store.0.object_scale_x().unwrap() * 12.5 - radius).abs() < 0.001);
+            assert_eq!(
+                world.get::<Transform>(entity).unwrap().translation,
+                pos + Vec3::Y * 0.03
+            );
+        }
+    }
+
+    #[test]
+    fn frost_trap_aura_resolves_to_the_real_iceslick_model_in_the_install() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let spells = benilla_formats::load_spell_catalog(&mut chain).unwrap();
+        let visuals = benilla_formats::load_spell_visual_catalog(&mut chain).unwrap();
+        let place = visuals.stages(spells.get(13809).unwrap().visual).unwrap();
+        assert_eq!(place.area_effect, 0);
+        let aura = visuals.stages(spells.get(13810).unwrap().visual).unwrap();
+        assert_ne!(aura.area_gate, 0);
+        let path = visuals.effect_path(aura.area_effect).unwrap();
+        assert_eq!(path.to_ascii_lowercase(), "spells\\frosttrap_aura.mdx");
+        assert!(chain.read_file("spells\\frosttrap_aura.m2").is_ok());
+        assert!(chain.read_file("SPELLS\\ICESLICK_AREA.BLP").is_ok());
+    }
+
+    #[test]
     fn trap_uses_animated_wow_gameobject_and_explosion() {
         let mut app = App::new();
         app.init_resource::<PlaySeq>()
@@ -553,5 +748,42 @@ mod trap_tests {
         assert!(cursor.read(events).any(|event| event.entity == entity
             && event.index == FIELD_GO_STATE
             && event.new == 0));
+    }
+}
+
+#[cfg(test)]
+mod hunter_weapon_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn casts_switch_hands_preserve_other_bytes_and_skip_redundant_updates() {
+        let mut world = World::new();
+        world.init_resource::<Messages<FieldChanged>>();
+        let entity = world
+            .spawn((
+                Guid(42),
+                ObjectStore(ObjectFields::from_pairs(&[(FIELD_BYTES_2, 0x12340001)])),
+            ))
+            .id();
+        for (skill, expected, events) in [
+            ("arcane_shot", 2, 1),
+            ("serpent_sting", 2, 1),
+            ("raptor_strike", 1, 2),
+            ("explosive_trap", 1, 2),
+        ] {
+            let tags =
+                super::super::spell_engine::tags::for_spell(super::super::data::ability(skill));
+            world
+                .run_system_once(move |mut commands: Commands| {
+                    hunter_weapon(&mut commands, entity, tags)
+                })
+                .unwrap();
+            let store = &world.get::<ObjectStore>(entity).unwrap().0;
+            assert_eq!(store.unit_sheath_state(), Some(expected), "{skill}");
+            assert!(store
+                .raw_fields()
+                .any(|pair| pair == (FIELD_BYTES_2, 0x12340000 | u32::from(expected))));
+            assert_eq!(world.resource::<Messages<FieldChanged>>().len(), events);
+        }
     }
 }

@@ -147,7 +147,7 @@ pub(super) fn apply(
     class: usize,
     save: &wire::ClientSave,
 ) -> Result<(), String> {
-    let inventory = game::items::Inventory::from_shared(run.class.id, &save.inventory)?;
+    let inventory = game::items::Inventory::from_shared(run.class.id, game::talents::level(save.talent_xp), &save.inventory)?;
     // Imported inventories have a fresh local revision: invalidate the previous equipment cache.
     run.equipment_version = None;
     game::talents::Account::from_shared(class, save.talent_xp, save.talents).apply(class, run);
@@ -326,7 +326,7 @@ mod tests {
     fn peer_inventory_is_transient_and_uses_the_clients_actual_item_rolls() {
         let source = game::items::Inventory::fixture(vec![]);
         let encoded = source.shared_save().unwrap();
-        let remote = game::items::Inventory::from_shared(1, &encoded).unwrap();
+        let remote = game::items::Inventory::from_shared(1, 60, &encoded).unwrap();
         assert_eq!(remote.shared_character(), None);
         assert_eq!(remote.shared_save().unwrap(), encoded);
     }
@@ -381,7 +381,7 @@ mod tests {
             .resource::<game::items::Inventory>()
             .shared_save()
             .unwrap();
-        let restored = game::items::Inventory::from_shared(1, &encoded).unwrap();
+        let restored = game::items::Inventory::from_shared(1, 60, &encoded).unwrap();
         assert_eq!(restored.all()[0].name, item.name);
         assert_eq!(restored.money(), 12345);
         let next_zone = game::progression::zone_order()[1];

@@ -5,12 +5,21 @@ use super::{
     Run,
 };
 
+pub(super) fn discrete(passive: &PassiveDef) -> bool {
+    legendary(passive)
+        || matches!(
+            passive.effect,
+            PassiveEffect::Modifier(_, Change::AdditionalTotems(_))
+        )
+}
+
 pub(super) fn legendary(passive: &PassiveDef) -> bool {
     matches!(
         passive.effect,
         PassiveEffect::Modifier(
             _,
             Change::ProjectileChance(_)
+                | Change::AdditionalTotems(2)
                 | Change::MeleeTargetChance(_)
                 | Change::ForkChance(_)
                 | Change::ChainChance(_)
@@ -20,6 +29,16 @@ pub(super) fn legendary(passive: &PassiveDef) -> bool {
 }
 
 pub(super) fn eligible(passive: &PassiveDef, run: &Run) -> bool {
+    if matches!(passive.effect, PassiveEffect::Modifier(_, Change::DodgeChance(_))) {
+        return matches!(run.class.id, 3 | 4 | 11)
+            && super::extra_spells::dodge_chance(run) < 0.75;
+    }
+    if matches!(
+        passive.effect,
+        PassiveEffect::Stat(data::Stat::DamageReduction, _)
+    ) {
+        return run.stats().damage_reduction < 0.75;
+    }
     let PassiveEffect::Modifier(filter, change) = passive.effect else {
         return true;
     };
@@ -50,7 +69,9 @@ pub(super) fn eligible(passive: &PassiveDef, run: &Run) -> bool {
         engine::resolve(owned.def, owned.level, &stats, before)
             != engine::resolve(owned.def, owned.level, &stats, &after)
     }) || super::procs::available(run).iter().any(|def| {
-        engine::resolve(def, 1, &stats, before) != engine::resolve(def, 1, &stats, &after)
+        let tags = super::procs::gameplay_tags(run, def.key, engine::tags::for_spell(def));
+        engine::resolve_tagged(def, 1, &stats, before, 0.0, tags)
+            != engine::resolve_tagged(def, 1, &stats, &after, 0.0, tags)
     }) || run.mobility().is_some_and(|def| {
         engine::resolve_mobility(def, before) != engine::resolve_mobility(def, &after)
     })
@@ -89,6 +110,74 @@ pub(super) fn scope(filter: Filter, change: Change) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn regeneration_cards_restore_a_percentage_of_final_max_health_per_second() {
+        let regeneration = passive("renew");
+        let health = passive("fortitude");
+        let mut run = run(&["fireball"]);
+        run.equipment.regeneration = 5.0;
+        for strength in 1..=4 {
+            for reverse in [false, true] {
+                run.passives = vec![(regeneration, strength), (health, 2)];
+                if reverse {
+                    run.passives.reverse();
+                }
+                let stats = run.stats();
+                let fraction = 0.01 * strength as f32;
+                assert!((stats.regen - (5.0 + stats.max_hp * fraction)).abs() < 0.0001);
+                run.equipment_hp += 100.0;
+                let scaled = run.stats();
+                assert!(scaled.regen > stats.regen);
+                assert!((scaled.regen - (5.0 + scaled.max_hp * fraction)).abs() < 0.0001);
+            }
+        }
+        run.passives = vec![(regeneration, 10)];
+        assert!((run.stats().regen - (5.0 + run.stats().max_hp * 0.1)).abs() < 0.0001);
+    }
+    #[test]
+    fn totem_cards_stack_limits_and_improve_offensive_and_support_totems() {
+        for key in [
+            "searing_totem",
+            "magma_totem",
+            "earthbind_totem",
+            "healing_stream_totem",
+            "strength_of_earth_totem",
+        ] {
+            let mut run = run(&[key]);
+            let def = data::ability(key);
+            assert!(run.resolve_spell(def, 1).tags.contains(engine::Tags::TOTEM));
+            assert_eq!(run.resolve_spell(def, 1).max_totems, 1);
+            for (card, rank) in [("totem_limit_epic", 1), ("totem_limit_legendary", 2)] {
+                assert!(eligible(passive(card), &run));
+                run.passives.push((passive(card), rank));
+            }
+            sync(&mut run);
+            assert_eq!(run.resolve_spell(def, 1).max_totems, 6);
+            assert_eq!(
+                run.resolve_spell(data::ability("fireball"), 1).max_totems,
+                0
+            );
+            assert_eq!(
+                run.resolve_spell(data::ability("totemic_recall"), 1)
+                    .max_totems,
+                0
+            );
+            for card in [
+                "totem_power",
+                "totem_duration",
+                "totem_area",
+                "totem_recovery",
+            ] {
+                let expected = !(card == "totem_area" && key == "searing_totem"
+                    || card == "totem_power" && key == "earthbind_totem");
+                assert_eq!(eligible(passive(card), &run), expected, "{key} {card}");
+            }
+        }
+        assert!(!eligible(
+            passive("totem_limit_epic"),
+            &run(&["fireball", "totemic_recall"])
+        ));
+    }
     #[test]
     fn legendary_attack_range_stacks_and_only_offers_to_attacks_with_target_range() {
         let p = passive("attack_range");
@@ -130,6 +219,36 @@ mod tests {
     fn passive(key: &str) -> &'static PassiveDef {
         data::PASSIVES.iter().find(|p| p.key == key).unwrap()
     }
+    #[test]
+    fn pack_frenzy_is_physical_and_does_not_unlock_arcane_damage_offers() {
+        use super::super::{procs, talent_runtime};
+        for frenzy in [false, true] {
+            let mut run = run(&["kill_command"]);
+            run.class = &data::CLASSES[2];
+            run.talent_build[0][8] = 1;
+            run.talent_build[0][12] = 1;
+            if frenzy { run.talent_build[0][18] = 1; }
+            talent_runtime::configure(&mut run);
+            assert!(!eligible(passive("arcane"), &run), "frenzy={frenzy}");
+            let p = procs::resolve(&run, "proc_bloodburst", 100.0, 0.0, 0.0, 6.0, 64);
+            assert!(p.tags.contains(engine::Tags::PHYSICAL | engine::Tags::MINION | engine::Tags::ATTACK));
+            assert!(!p.tags.intersects(engine::Tags::ARCANE | engine::Tags::SPELL));
+            if frenzy {
+                let view = procs::views(&run).into_iter().find(|v| v.key == "proc_bloodburst").unwrap();
+                assert!(view.lines[1].contains("Attack"));
+                assert!(!view.lines[1].contains("Spell"));
+                let def = procs::available(&run).into_iter().find(|d| d.key == "proc_bloodburst").unwrap();
+                let tags = procs::gameplay_tags(&run, def.key, engine::tags::for_spell(&def));
+                assert_eq!(tags, p.tags);
+            }
+            for key in ["arcane_shot", "volley", "concussive_shot"] {
+                run.abilities.push(Owned { def: data::ability(key), level: 1, cd: 0.0 });
+                assert!(eligible(passive("arcane"), &run), "{key}");
+                run.abilities.pop();
+            }
+        }
+    }
+
     #[test]
     fn legendary_chances_stack_and_are_applied_when_casting() {
         for (key, spell, index) in [

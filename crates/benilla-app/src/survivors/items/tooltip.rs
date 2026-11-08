@@ -45,12 +45,17 @@ impl Affix {
                     ProcKind::AttackSpeed => format!("+{:.0}% Attack speed", p.power * 100.0),
                 };
                 if matches!(p.kind, ProcKind::ClassSpell) {
-                    format!("On hit: {:.0}% chance to cast {effect}", self.value * 100.0)
+                    format!(
+                        "On hit: {:.0}% chance to cast {effect} ({:.1}s cooldown)",
+                        self.value * 100.0,
+                        p.internal_cooldown()
+                    )
                 } else {
                     format!(
-                        "On hit: {:.0}% chance for {effect} ({:.0}s)",
+                        "On hit: {:.0}% chance for {effect} ({:.0}s; {:.1}s cooldown)",
                         self.value * 100.0,
-                        p.duration
+                        p.duration,
+                        p.internal_cooldown()
                     )
                 }
             });
@@ -243,6 +248,8 @@ impl Item {
                 Color::WHITE,
             ),
         ];
+        lines.push((format!("Requires level: {}", self.required_level()),
+            if inventory.character_level < self.required_level() { Color::srgb(1.0,0.15,0.15) } else { Color::WHITE }));
         if self.armour() > 0.0 {
             lines.push((format!("{:.0} Armour", self.armour()), Color::WHITE));
         }
@@ -288,6 +295,11 @@ impl Item {
                 Color::srgb(1.0, 0.15, 0.15),
             ));
         }
+        let (gold, silver, copper) = super::super::currency::split(self.sale_price());
+        lines.push((
+            format!("Sell price: {gold}g {silver}s {copper}c"),
+            Color::srgb(1.0, 0.82, 0.0),
+        ));
         lines
     }
 }

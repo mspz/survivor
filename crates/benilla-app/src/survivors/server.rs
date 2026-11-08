@@ -43,12 +43,7 @@ pub(super) fn plugin(app: &mut App) {
             (
                 enemies::spawn_enemies,
                 training::tick,
-                (
-                    enemies::scale_enemies,
-                    boss_spells::tick,
-                    special_mobs::tick,
-                )
-                    .chain(),
+                (enemies::scale_enemies, boss_spells::tick, special_mobs::tick, enemies::protect_spawns).chain(),
                 enemies::move_enemies,
                 talent_runtime::tick,
                 items::legendary::events::tick,
@@ -65,7 +60,7 @@ pub(super) fn plugin(app: &mut App) {
                 enemies::collect_gems,
                 hero::hero_vitals,
                 healing::credit,
-                revival::tick,
+                (revival::tick, combat_ui::track_effects).chain(),
             )
                 .chain()
                 .after(WorldStage::Input)
@@ -166,7 +161,9 @@ pub(super) struct Run {
     pub(super) expeditions: expedition_config::Config,
     pub(super) expedition_map: usize,
     pub(super) expedition_players: usize,
+    pub effect_meter: combat_ui::EffectMeter,
     pub meter: combat_ui::Meter,
+    pub boss_meter: combat_ui::Meter,
     pub healing_meter: combat_ui::Meter,
     pub taken_meter: combat_ui::Meter,
     pub taken_source: &'static str,
@@ -190,9 +187,6 @@ pub(super) struct Run {
     /// The abilities, by index, waiting for a target rather than cooling down: their short retry
     /// delay is not shown as a cooldown.
     pub(super) retrying: u64,
-    /// Manual level ups (`level_prompt`): whether this player holds them, and how many wait.
-    pub(super) hold_levels: bool,
-    pub(super) held_levels: u32,
     pub class: &'static ClassDef,
     pub race: u8,
     pub elapsed: f32,
@@ -223,6 +217,8 @@ pub(super) struct Run {
     /// The class mobility's cooldown and running effect.
     pub(super) mobile: mobility::MobilityState,
     pub pending_levels: u32,
+    pub stored_cards: u32,
+    pub auto_draw_cards: bool,
     /// Reward categories alternate per confirmed pick, independent of queued XP levels.
     pub(super) next_passive: bool,
     pub bosses: u32,
@@ -251,7 +247,9 @@ impl Default for Run {
             expeditions: expedition_config::Config::default(),
             expedition_map: data::CAMPAIGN[0],
             expedition_players: 1,
+            effect_meter: default(),
             meter: combat_ui::Meter::default(),
+            boss_meter: default(),
             healing_meter: default(),
             taken_meter: default(),
             taken_source: "Damage taken",
@@ -270,8 +268,6 @@ impl Default for Run {
             meta_kill_penalty: 0,
             meta_kills: 0,
             retrying: 0,
-            hold_levels: false,
-            held_levels: 0,
             class: &data::CLASSES[0],
             race: 0,
             elapsed: 0.0,
@@ -300,6 +296,8 @@ impl Default for Run {
             legendary: default(),
             mobile: mobility::MobilityState::default(),
             pending_levels: 0,
+            stored_cards: 0,
+            auto_draw_cards: true,
             next_passive: false,
             bosses: 0,
             rings: 0,
@@ -353,6 +351,7 @@ impl Run {
         s.growth += self.equipment.experience;
         s.speed *= 1.0 + self.rune.movement;
         s.growth += self.rune.experience;
+        let mut passive_regeneration = 0.0;
         for &(p, level) in &self.passives {
             let data::PassiveEffect::Stat(stat, per_level) = p.effect else {
                 continue;
@@ -364,7 +363,7 @@ impl Run {
                 Stat::Might => s.might += v,
                 Stat::MaxHp => s.max_hp *= 1.0 + v,
                 Stat::Speed => s.speed *= 1.0 + v,
-                Stat::Regen => s.regen += v,
+                Stat::Regen => passive_regeneration += v,
                 Stat::Haste => s.haste += v,
                 Stat::Area => s.area += v,
                 Stat::Magnet => s.magnet *= 1.0 + v,
@@ -384,6 +383,7 @@ impl Run {
         s.speed *= 1.0
             + self.support.power(self.elapsed, "aspect_of_the_pack")
             + self.support.power(self.elapsed, "stampeding_roar");
+        s.regen += s.max_hp * passive_regeneration;
         s
     }
 

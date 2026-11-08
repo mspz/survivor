@@ -9,6 +9,10 @@ epic = 8
 legendary =2
 
 [spells]
+tame_beast = 1
+stomp = 1
+kill_command = 1
+bestial_wrath = 1
 mangle = 1
 rip = 1
 ferocious_bite = 1
@@ -148,6 +152,16 @@ thorns = 1
 rejuvenation = 1
 
 [passives]
+dodge = 1
+minion_damage = 1
+minion_attack_speed = 1
+minion_movement_speed = 1
+totem_power = 1
+totem_duration = 1
+totem_area = 1
+totem_recovery = 1
+totem_limit_epic = 1
+totem_limit_legendary = 1
 buff_effect = 1
 crit_multi = 1
 fortitude = 1

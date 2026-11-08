@@ -362,6 +362,7 @@ pub(super) fn compose(
     phase: Res<State<super::Phase>>,
     hero: Query<&Transform, With<Hero>>,
     enemies: Query<(&Transform, &Enemy)>,
+    allies: Query<&Transform, (With<super::unit_frames::PartyPlayer>, Without<Hero>)>,
     mut images: ResMut<Assets<Image>>,
     time: Res<Time<Real>>,
     mut next_at: Local<f32>,
@@ -530,10 +531,48 @@ pub(super) fn compose(
         }
     }
 
+    ally_blips(
+        buf,
+        p,
+        allies.iter().map(|tf| tf.translation),
+        radius,
+        yd_per_px,
+        scale,
+    );
+
     if let Some(image) = images.get_mut(&map.image) {
         if let Some(data) = image.data.as_mut() {
             data.copy_from_slice(&map.buf);
         }
+    }
+}
+
+fn ally_blips(
+    buf: &mut [u8],
+    player: Vec3,
+    allies: impl Iterator<Item = Vec3>,
+    radius: f32,
+    yd_per_px: f32,
+    scale: f32,
+) {
+    let size = DOT_PX * scale;
+    let outer = size * 0.5;
+    let inner = (outer - 1.8 * scale).max(0.0);
+    for ally in allies {
+        let offset = Vec2::new(ally.x - player.x, ally.z - player.z);
+        if offset.length() > radius {
+            continue;
+        }
+        blit(
+            buf,
+            Vec2::splat(SIDE as f32 * 0.5) + offset / yd_per_px,
+            size,
+            |q| {
+                (inner * inner..=outer * outer)
+                    .contains(&q.length_squared())
+                    .then_some([35.0, 255.0, 70.0, 255.0])
+            },
+        );
     }
 }
 
@@ -559,5 +598,47 @@ fn blit(buf: &mut [u8], at: Vec2, size: f32, shade: impl Fn(Vec2) -> Option<[f32
                 buf[o + k] = (dst + (src[k] - dst) * a) as u8;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ally_circles_track_positions_keep_their_centers_clear_and_respect_map_mask() {
+        let mut buf = vec![0; SIDE * SIDE * 4];
+        for pixel in buf.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        let player = Vec3::new(100.0, 5.0, 100.0);
+        ally_blips(
+            &mut buf,
+            player,
+            [
+                player + Vec3::X * 20.0,
+                player - Vec3::Z * 20.0,
+                player - Vec3::X * 80.0,
+            ]
+            .into_iter(),
+            50.0,
+            1.0,
+            1.0,
+        );
+        let pixel = |x: usize, y: usize| &buf[(y * SIDE + x) * 4..(y * SIDE + x) * 4 + 4];
+        assert_eq!(pixel(SIDE / 2 + 23, SIDE / 2), &[35, 255, 70, 255]);
+        assert_eq!(pixel(SIDE / 2, SIDE / 2 - 17), &[35, 255, 70, 255]);
+        assert_eq!(pixel(SIDE / 2 + 20, SIDE / 2), &[0, 0, 0, 255]);
+        assert_eq!(pixel(SIDE / 2 - 77, SIDE / 2), &[0, 0, 0, 255]);
+        let mut masked = vec![0; SIDE * SIDE * 4];
+        ally_blips(
+            &mut masked,
+            player,
+            std::iter::once(player + Vec3::X * 20.0),
+            50.0,
+            1.0,
+            1.0,
+        );
+        assert!(masked.iter().all(|&v| v == 0));
     }
 }

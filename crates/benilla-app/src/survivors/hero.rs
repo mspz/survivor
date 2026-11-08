@@ -445,12 +445,41 @@ pub(super) fn place_camera(
 
 /// Damage the hero takes from one blow, after immunity, armour and the shield; returns what got
 /// through.
+#[cfg(test)]
 pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
     hurt_hero_tagged(run, raw, super::spell_engine::Tags::PHYSICAL)
 }
 
 /// Both hits and periodic ticks retain their damage school's tags.
 pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engine::Tags) -> f32 {
+    let chance = super::extra_spells::dodge_chance(run);
+    let roll = if chance > 0.0 {
+        run.extra_spells.dodge_rng.f32()
+    } else {
+        1.0
+    };
+    hurt_hero_with_dodge(run, raw, tags, roll)
+}
+
+fn hurt_hero_with_dodge(
+    run: &mut Run,
+    raw: f32,
+    tags: super::spell_engine::Tags,
+    roll: f32,
+) -> f32 {
+    if raw > 0.0
+        && run.pending_levels == 0
+        && run.immune_t <= 0.0
+        && run.dead_t.is_none()
+        && roll < super::extra_spells::dodge_chance(run)
+    {
+        super::extra_spells::reacted(run, true);
+        return 0.0;
+    }
+    hurt_hero_after_avoidance(run, raw, tags)
+}
+
+fn hurt_hero_after_avoidance(run: &mut Run, raw: f32, tags: super::spell_engine::Tags) -> f32 {
     if run.pending_levels > 0 || run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
@@ -546,7 +575,7 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
         }
         return 0.0;
     }
-    hurt_hero(run, raw)
+    hurt_hero_after_avoidance(run, raw, super::spell_engine::Tags::PHYSICAL)
 }
 
 /// The clock, regeneration, the timed buffs and their visuals, death and victory.
@@ -717,6 +746,88 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::window::{CursorLeft, WindowFocused};
+
+    #[test]
+    fn diagonals_and_combined_commands_never_exceed_straight_line_speed() {
+        for yaw in [0.0, 0.7, 2.4] {
+            for dt in [1.0 / 144.0, 1.0 / 60.0, 0.1] {
+                for speed in [7.0, 14.0] {
+                    for axes in [Vec2::Y, Vec2::X, Vec2::ONE, Vec2::new(-1.0, 1.0), -Vec2::ONE] {
+                        for extra in [Vec3::ZERO, Vec3::X] {
+                            let mut tf = Transform::from_translation(arena(&data::HUB));
+                            tf.rotation = Quat::from_rotation_y(yaw);
+                            let start = tf.translation;
+                            let mut movement = MovementState::default();
+                            let mut physics = Hero { vy: 0.0, air: 0.0 };
+                            step_motion(&mut tf, &mut movement, &mut physics,
+                                super::super::session::Command { axes, direction: extra, active: true, ..default() },
+                                dt, speed, &data::HUB, |_| Some(start.y));
+                            let travelled = flat(tf.translation - start).length();
+                            // World coordinates near Goldshire have approximately 0.001 yd precision.
+                            assert!((travelled - speed * dt).abs() < 0.001,
+                                "axes={axes:?}, yaw={yaw}, dt={dt}: travelled {travelled}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dodge_caps_at_seventy_five_and_prevents_physical_magical_and_area_damage() {
+        use super::super::spell_engine::{Change, Filter, Modifier, Tags};
+        for tags in [
+            Tags::PHYSICAL,
+            Tags::FIRE | Tags::SPELL,
+            Tags::SHADOW | Tags::SPELL | Tags::AREA,
+            Tags::PHYSICAL | Tags::AREA,
+            Tags::FIRE | Tags::DOT,
+        ] {
+            let mut run = Run {
+                hp: 100.0,
+                shield: 20.0,
+                shield_t: 10.0,
+                ..default()
+            };
+            run.replace_spell_modifiers(
+                904,
+                [Modifier {
+                    source: 904,
+                    filter: Filter::default(),
+                    change: Change::DodgeChance(1.5),
+                }],
+            );
+            assert_eq!(super::super::extra_spells::dodge_chance(&run), 0.75);
+            assert_eq!(hurt_hero_with_dodge(&mut run, 30.0, tags, 0.749), 0.0);
+            assert_eq!(run.hp, 100.0);
+            assert_eq!(run.shield, 20.0);
+            assert!(run.extra_spells.dodge_until > run.elapsed);
+            assert!(hurt_hero_with_dodge(&mut run, 30.0, tags, 0.75) > 0.0);
+        }
+    }
+
+    #[test]
+    fn melee_rolls_dodge_once_and_removes_it_when_the_talent_is_refunded() {
+        use super::super::spell_engine::{Change, Filter, Modifier};
+        let mut run = Run {
+            hp: 100.0,
+            ..default()
+        };
+        run.replace_spell_modifiers(
+            904,
+            [Modifier {
+                source: 904,
+                filter: Filter::default(),
+                change: Change::DodgeChance(0.3),
+            }],
+        );
+        assert_eq!(hurt_hero_with_block(&mut run, 10.0, 0.29), 0.0);
+        assert!(hurt_hero_with_block(&mut run, 10.0, 0.9) > 0.0);
+        assert_eq!(run.hp, 90.0);
+        run.replace_spell_modifiers(904, []);
+        assert_eq!(super::super::extra_spells::dodge_chance(&run), 0.0);
+        assert!(hurt_hero_with_block(&mut run, 10.0, 0.0) > 0.0);
+    }
 
     #[test]
     fn meters_count_effective_healing_and_damage_after_shields_without_overkill() {

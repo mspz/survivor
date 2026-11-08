@@ -96,6 +96,31 @@ make start     # → open http://127.0.0.1:8090/
 
 Run `make` (or `make help`) to list every target.
 
+### Portable Windows release (EXE + WoW data)
+
+From PowerShell, with Rust and the Visual Studio C++ build tools installed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/release-windows.ps1
+```
+
+The script builds the optimized x64 MSVC player without development tools, then creates
+`dist/WarcraftSurvivors-windows-<timestamp>.zip`. It includes the executable, game configuration,
+code licenses, `Jouer.bat`, and all MPQ files from `wow-data/Data` (or `WOW_DATA` if set).
+Download the data first with `bash scripts/fetch-data.sh` if needed. Saves and personal settings
+are excluded. The generated archives are gitignored.
+
+To use another Data folder or archive path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/release-windows.ps1 -DataPath "D:\WoW\Data" -OutputPath "dist\WarcraftSurvivors.zip"
+```
+
+Existing archives are never overwritten. Packaging streams directly into a ZIP64-capable archive
+without a second copy of the data; allow space for the build and an archive roughly the size of
+the MPQs. Players extract the entire archive and run `Jouer.bat`; Rust is not required to play.
+Saves are created in `benilla-config` next to the executable.
+
 ## Controls
 
 See [CONTROLS.md](CONTROLS.md). The short version: **WASD** to move, **Space** to jump, **F**

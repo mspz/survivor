@@ -32,15 +32,15 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
     if run.dead_t.is_some() || run.hp <= 0.0 {
         return vec![];
     }
-    let mut out = vec![];
+    let mut out = super::items::combat::active_buffs(run);
     for b in run.support.buffs.iter().filter(|b| b.until > run.elapsed) {
         if let Some(def) = data::ABILITIES.iter().find(|d| d.key == b.key) {
             let mut desc = super::support_spells::description(b.key)
-                .unwrap_or("Effet bénéfique actif.")
+                .unwrap_or("Active buff.")
                 .to_owned();
             if b.power > 0.0 {
                 desc.push_str(&format!(
-                    "\nPuissance : {}",
+                    "\nPower: {}",
                     if super::support_spells::magnitude(b.key, 1) < 1.0 {
                         format!("{:.1}%", b.power * 100.0)
                     } else {
@@ -49,10 +49,10 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
                 ));
             }
             if b.reserve > 0.0 {
-                desc.push_str(&format!("\nAbsorption restante : {:.0}", b.reserve));
+                desc.push_str(&format!("\nRemaining absorption: {:.0}", b.reserve));
             }
             if b.jumps > 0 {
-                desc.push_str(&format!("\nSauts restants : {}", b.jumps));
+                desc.push_str(&format!("\nJumps remaining: {}", b.jumps));
             }
             out.push(Aura::buff(
                 def.spell,
@@ -66,7 +66,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
         out.push(Aura::buff(
             17,
             "Bouclier d'absorption",
-            format!("Absorbe encore {:.0} dégâts.", run.shield),
+            format!("Absorbs {:.0} more damage.", run.shield),
             Some(run.shield_t),
         ));
     }
@@ -78,8 +78,8 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
             .map(|o| o.def);
         out.push(Aura::buff(
             def.map_or(642, |d| d.spell),
-            "Immunité",
-            "Protège des dégâts reçus.",
+            "Immunity",
+            "Prevents incoming damage.",
             Some(run.immune_t),
         ));
     }
@@ -90,9 +90,9 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
             } else {
                 run.thorns_spell
             },
-            "Épines",
+            "Thorns",
             format!(
-                "Renvoie des dégâts aux attaquants. Puissance : {:.0}.",
+                "Reflects damage to attackers. Power: {:.0}.",
                 run.thorns
             ),
             Some(run.thorns_t),
@@ -104,7 +104,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
             .and_then(|(_, key)| data::ABILITIES.iter().find(|d| d.key == key));
         out.push(Aura::buff(
             def.map_or(139, |d| d.spell),
-            "Soin périodique",
+            "Healing over time",
             format!("Rend {:.1} points de vie par seconde.", run.heal_rate),
             Some(run.heal_t),
         ));
@@ -115,7 +115,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
                 m.spell,
                 m.name,
                 format!(
-                    "Vitesse de déplacement : +{:.0}%.",
+                    "Movement speed: +{:.0}%.",
                     (run.mobile.haste - 1.0) * 100.0
                 ),
                 Some(run.mobile.haste_t),
@@ -125,7 +125,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
             out.push(Aura::buff(
                 m.spell,
                 m.name,
-                "Les ennemis ordinaires vous ignorent pendant cet effet.",
+                "Normal enemies ignore you while this effect is active.",
                 Some(run.mobile.vanish_t),
             ));
         }
@@ -133,7 +133,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
     out.extend(run.healer_buffs.visible.iter().cloned());
     out.extend(super::items::legendary::visible_buffs(run));
     if run.legendary.effects.shield_lock > run.elapsed {
-        out.push(Aura { spell: 17, name: "Bouclier brisé".into(), description: "Votre bouclier ne peut pas être renouvelé. Récupérez ses fragments pour lever cet effet plus tôt.".into(), left: Some(run.legendary.effects.shield_lock-run.elapsed), debuff: true });
+        out.push(Aura { spell: 17, name: "Shattered Shield".into(), description: "Your shield cannot be renewed. Collect its fragments to end this effect sooner.".into(), left: Some(run.legendary.effects.shield_lock-run.elapsed), debuff: true });
     }
     out.retain(|a| a.left.is_none_or(|t| t > 0.0 && t.is_finite()));
     out.sort_by(|a, b| (a.spell, &a.name).cmp(&(b.spell, &b.name)));
@@ -215,7 +215,7 @@ fn render(
                         hud::spell_name(
                             spells.as_deref(),
                             spell,
-                            def.map_or("Effet néfaste", |d| d.key),
+                            def.map_or("Debuff", |d| d.key),
                         )
                     });
                     let description = def
@@ -223,7 +223,7 @@ fn render(
                             hud::describe_card(hud::Choice::NewAbility(d), &run, spells.as_deref())
                                 .desc
                         })
-                        .unwrap_or_else(|| "Effet néfaste actif sur votre personnage.".into());
+                        .unwrap_or_else(|| "Active debuff on your character.".into());
                     auras.push(Aura {
                         spell,
                         name,
@@ -402,9 +402,9 @@ fn tooltip(
             body.spawn(text(
                 &font.0,
                 if a.debuff {
-                    "Effet néfaste"
+                    "Debuff"
                 } else {
-                    "Effet bénéfique"
+                    "Buff"
                 },
                 12.0,
                 Color::WHITE,
@@ -413,8 +413,8 @@ fn tooltip(
             body.spawn(text(
                 &font.0,
                 a.left
-                    .map_or("Actif tant que vous restez à portée.".into(), |t| {
-                        format!("Temps restant : {t:.1} s")
+                    .map_or("Active while you remain in range.".into(), |t| {
+                        format!("Time remaining: {t:.1} s")
                     }),
                 12.0,
                 hud::GOLD_TONE,
@@ -464,6 +464,7 @@ mod tests {
                     level: 1,
                     friendly: true,
                     debuffs: vec![(116, 3.0)],
+                    debuff_stacks: vec![],
                 },
             ))
             .id();
@@ -506,7 +507,7 @@ mod tests {
             .resource::<Shown>()
             .0
             .iter()
-            .any(|a| a.description.contains("10 dégâts")));
+            .any(|a| a.description.contains("10 more damage")));
         {
             let mut run = world.resource_mut::<Run>();
             run.shield = 0.0;

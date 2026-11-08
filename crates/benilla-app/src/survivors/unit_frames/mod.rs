@@ -23,6 +23,8 @@ pub(in crate::survivors) struct Status {
     pub level: u32,
     pub friendly: bool,
     pub debuffs: Vec<(u32, f32)>,
+    #[serde(default)]
+    pub debuff_stacks: Vec<(u32, u32)>,
 }
 #[derive(Component)]
 pub(in crate::survivors) struct Label(pub String);
@@ -112,6 +114,7 @@ pub(in crate::survivors) fn sync_status(
                 level: enemy.def.level,
                 friendly: false,
                 debuffs: vec![],
+                debuff_stacks: vec![],
             }
         } else if let Some(player) = player {
             Status {
@@ -132,6 +135,7 @@ pub(in crate::survivors) fn sync_status(
                 },
                 friendly: true,
                 debuffs: vec![],
+                debuff_stacks: vec![],
             }
         } else if store.0.unit_faction_template() == Some(super::units::FACTION_FRIENDLY) {
             Status {
@@ -141,6 +145,7 @@ pub(in crate::survivors) fn sync_status(
                 level: store.0.unit_level().unwrap_or(1),
                 friendly: true,
                 debuffs: vec![],
+                debuff_stacks: vec![],
             }
         } else {
             continue;
@@ -152,6 +157,21 @@ pub(in crate::survivors) fn sync_status(
         }
         if let Some(enemy) = enemy {
             for dot in &enemy.dots {
+                if matches!(
+                    dot.skill,
+                    "proc_bleed" | "proc_poison" | "deadly_poison" | "proc_ignite"
+                ) && dot.left > 0.0
+                    && dot.left.is_finite()
+                {
+                    let spell = data::ability(dot.skill).spell;
+                    if let Some((_, count)) =
+                        status.debuff_stacks.iter_mut().find(|(id, _)| *id == spell)
+                    {
+                        *count += 1;
+                    } else {
+                        status.debuff_stacks.push((spell, 1));
+                    }
+                }
                 add_debuff(
                     &mut status.debuffs,
                     data::ability(dot.skill).spell,
@@ -218,9 +238,40 @@ mod tests {
         );
         assert!(!status.friendly);
         assert_eq!(status.debuffs, vec![(589, 4.0), (116, 2.0)]);
+        for (skill, count) in [("proc_bleed", 3), ("proc_poison", 2), ("proc_ignite", 1)] {
+            for left in std::iter::repeat_n(4.0, count).chain([0.0, -1.0]) {
+                world
+                    .get_mut::<Enemy>(entity)
+                    .unwrap()
+                    .dots
+                    .push(super::super::enemies::Dot {
+                        owner: None,
+                        skill,
+                        meter_source: None,
+                        tags: None,
+                        item_source: None,
+                        origin: super::super::items::legendary::events::Origin::Skill,
+                        meta: Default::default(),
+                        dps: 5.0,
+                        left,
+                        tick: 1.0,
+                    });
+            }
+        }
+        world.run_system_once(sync_status).unwrap();
+        assert_eq!(
+            world.get::<Status>(entity).unwrap().debuff_stacks,
+            vec![(1943, 3), (2818, 2), (133, 1)]
+        );
+        world.get_mut::<Enemy>(entity).unwrap().dots.clear();
         world.get_mut::<Enemy>(entity).unwrap().slow_t = 0.0;
         world.get_mut::<Marks>(entity).unwrap().tick(5.0);
         world.run_system_once(sync_status).unwrap();
         assert!(world.get::<Status>(entity).unwrap().debuffs.is_empty());
+        assert!(world
+            .get::<Status>(entity)
+            .unwrap()
+            .debuff_stacks
+            .is_empty());
     }
 }

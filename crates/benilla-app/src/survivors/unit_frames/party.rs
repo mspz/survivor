@@ -41,6 +41,7 @@ mod tests {
             level: 20,
             friendly: true,
             debuffs: vec![],
+            debuff_stacks: vec![],
         };
         let ally = app.world_mut().spawn((PartyPlayer, status.clone())).id();
         app.world_mut()
@@ -87,7 +88,7 @@ mod tests {
                 .single(world)
                 .unwrap()
                 .0,
-            "Mort"
+            "Dead"
         );
         world.despawn(ally);
         app.update();
@@ -131,7 +132,7 @@ pub(super) fn refresh(
     }
     let label = |s: &Status| {
         if s.health <= 0.0 {
-            "Mort".to_owned()
+            "Dead".to_owned()
         } else {
             format!("{:.0} / {:.0}", s.health, s.maximum)
         }
@@ -170,16 +171,24 @@ pub(super) fn refresh(
             GlobalZIndex(415),
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(18.0),
-                top: Val::Px(85.0),
+                right: Val::Px(18.0),
+                top: Val::Px(204.0),
                 width: Val::Px(210.0),
+                align_items: AlignItems::FlexEnd,
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(5.0),
                 ..default()
             },
         ))
         .with_children(|ui| {
-            ui.spawn(text(f, "Groupe", 13.0, hud::GOLD_TONE));
+            ui.spawn((
+                text(f, "Groupe", 13.0, hud::GOLD_TONE),
+                TextLayout::new_with_justify(Justify::Right),
+                Node {
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
             for (entity, status) in party {
                 ui.spawn((
                     Button,
@@ -197,11 +206,18 @@ pub(super) fn refresh(
                     },
                 ))
                 .with_children(|frame| {
-                    frame.spawn(text(
-                        f,
-                        format!("{} · {}", status.name, status.level),
-                        12.0,
-                        Color::WHITE,
+                    frame.spawn((
+                        text(
+                            f,
+                            format!("{} · {}", status.name, status.level),
+                            12.0,
+                            Color::WHITE,
+                        ),
+                        TextLayout::new_with_justify(Justify::Right),
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
                     ));
                     frame
                         .spawn((
@@ -209,6 +225,7 @@ pub(super) fn refresh(
                             Node {
                                 width: Val::Percent(100.0),
                                 height: Val::Px(20.0),
+                                justify_content: JustifyContent::FlexEnd,
                                 ..default()
                             },
                         ))
@@ -235,7 +252,7 @@ pub(super) fn refresh(
                                     width: Val::Percent(100.0),
                                     ..default()
                                 },
-                                TextLayout::new(Justify::Center, LineBreak::NoWrap),
+                                TextLayout::new(Justify::Right, LineBreak::NoWrap),
                             ));
                         });
                 });

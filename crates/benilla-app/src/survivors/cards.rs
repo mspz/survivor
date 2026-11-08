@@ -80,6 +80,9 @@ fn power(def: &data::AbilityDef) -> Option<f32> {
 /// Where a new spell stands among its class's: the strongest third Epic, the weakest third
 /// Uncommon, the rest (and the defensive spells) Epic.
 fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
+    if matches!(def.key, "tame_beast" | "stomp") {
+        return Rarity::Uncommon;
+    }
     let Some(mine) = power(def) else {
         return Rarity::Epic;
     };
@@ -103,6 +106,9 @@ fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
 /// A top rank is Legendary, a new spell uses its class power tier, a plain rank is Uncommon.
 pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
     match choice {
+        Choice::NumericPassive(p, strength) if p.key == "renew" => {
+            if strength == 1 { Rarity::Epic } else { Rarity::Legendary }
+        }
         Choice::NumericPassive(_, strength) => match strength {
             1 => Rarity::Common,
             2 => Rarity::Uncommon,
@@ -119,6 +125,8 @@ pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
                 Rarity::Uncommon
             }
         }
+        Choice::NewPassive(p) if p.key == "totem_limit_epic" => Rarity::Epic,
+        Choice::UpPassive(k) if run.passives[k].0.key == "totem_limit_epic" => Rarity::Epic,
         Choice::NewPassive(p) if super::passives::legendary(p) => Rarity::Legendary,
         Choice::UpPassive(k) if super::passives::legendary(run.passives[k].0) => Rarity::Legendary,
         Choice::NewPassive(p) if matches!(p.effect, data::PassiveEffect::Stat(..)) => {
@@ -211,7 +219,59 @@ pub(super) fn draft_controls(
             if run.draft_uses[slot] > 0 {
                 mode.0 = false;
                 pending.0 = Some((index, 0.0));
-                return;
+            }
+        }
+        if pending.0.is_some() { break; }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    fn app(phase: Phase, uses: [u8; 3]) -> App {
+        let mut app = App::new();
+        app.insert_resource(State::new(phase))
+            .insert_resource(Run { draft_uses: uses, ..default() })
+            .insert_resource(super::super::options::Settings::defaults())
+            .insert_resource(Offer { choices: vec![Choice::NewAbility(data::ability("fireball"))], ..default() })
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<BanishMode>()
+            .init_resource::<PendingPick>()
+            .add_systems(Update, (draft_controls, choose_card).chain());
+        app
+    }
+    fn press(app: &mut App, key: KeyCode) {
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+        app.update();
+    }
+    #[test]
+    fn shortcuts_use_the_same_pending_actions_and_banish_card_selection() {
+        for (key, expected) in [(KeyCode::KeyR, 3), (KeyCode::KeyS, 4)] {
+            let mut app = app(Phase::LevelUp, [2; 3]);
+            press(&mut app,key);
+            assert_eq!(app.world().resource::<PendingPick>().0,Some((expected,0.0)));
+            press(&mut app,KeyCode::KeyB);
+            assert_eq!(app.world().resource::<PendingPick>().0,Some((expected,0.0)));
+        }
+        let mut app = app(Phase::LevelUp,[2; 3]);
+        press(&mut app,KeyCode::KeyB);
+        assert!(app.world().resource::<BanishMode>().0);
+        press(&mut app,KeyCode::KeyB);
+        assert!(!app.world().resource::<BanishMode>().0);
+        press(&mut app,KeyCode::KeyB);
+        press(&mut app,KeyCode::Digit1);
+        assert_eq!(app.world().resource::<PendingPick>().0,Some((5,0.0)));
+        assert!(!app.world().resource::<BanishMode>().0);
+    }
+    #[test]
+    fn shortcuts_are_inactive_outside_drafts_and_without_remaining_uses() {
+        for (phase, uses) in [(Phase::Playing,[2; 3]),(Phase::LevelUp,[0; 3])] {
+            let mut app = app(phase,uses);
+            for key in [KeyCode::KeyR,KeyCode::KeyB,KeyCode::KeyS] {
+                press(&mut app,key);
+                assert!(app.world().resource::<PendingPick>().0.is_none());
+                assert!(!app.world().resource::<BanishMode>().0);
             }
         }
     }

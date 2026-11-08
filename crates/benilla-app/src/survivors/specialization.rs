@@ -47,6 +47,7 @@ pub(super) fn cooldown_steps(level: u8) -> f32 {
 pub(super) fn extra_target(def: &AbilityDef, level: u8) -> usize {
     usize::from(
         level >= 6
+            && def.key != "kill_command"
             && matches!(
                 def.kind,
                 Kind::Bolt | Kind::Strike | Kind::Melee | Kind::Dot | Kind::Orbit | Kind::Chain
@@ -54,6 +55,12 @@ pub(super) fn extra_target(def: &AbilityDef, level: u8) -> usize {
     ) * 2
 }
 pub(super) fn signature_text(def: &AbilityDef) -> &'static str {
+    if def.key == "tame_beast" {
+        return "Signature: summons a second wolf";
+    }
+    if def.key == "kill_command" {
+        return "Signature: empowered command attack";
+    }
     if def.key == "totemic_recall" {
         return "Signature: 25% less cooldown";
     }
