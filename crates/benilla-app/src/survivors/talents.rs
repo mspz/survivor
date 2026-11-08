@@ -128,7 +128,7 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Arcane",
-            "arcane_explosion",
+            "arcane_missiles",
             "arcane_missiles",
             "arcane_explosion"
         ),
@@ -648,6 +648,32 @@ mod tests {
         assert!(!run.abilities.iter().any(|a| matches!(a.def.key, "arcane_shot" | "concussive_shot")));
         let arcane = data::PASSIVES.iter().find(|p| p.key == "arcane").unwrap();
         assert!(!super::super::passives::eligible(arcane, &run));
+    }
+
+    #[test]
+    fn arcane_capstone_keeps_missiles_without_granting_explosion() {
+        let mut account = account();
+        for node in [8, 12, 18] {
+            account.builds[6][0][node] = 1;
+        }
+        let mut run = Run {
+            class: &data::CLASSES[6],
+            ..Default::default()
+        };
+        run.abilities.push(Owned {
+            def: data::ability(run.class.start),
+            level: 4,
+            cd: 0.5,
+        });
+        account.apply(6, &mut run);
+        account.apply(6, &mut run);
+        assert_eq!(run.abilities.len(), 1);
+        assert_eq!(run.abilities[0].def.key, "arcane_missiles");
+        assert_eq!(run.abilities[0].level, 4);
+        assert!(super::super::talent_runtime::active(
+            &run,
+            super::super::talent_design::Mechanic::ArcaneCascade,
+        ));
     }
 
     fn account() -> Account {
