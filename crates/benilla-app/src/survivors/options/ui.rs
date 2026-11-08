@@ -1,6 +1,7 @@
 use super::super::{hero::CamRig, hud::HudFont, Phase};
 use super::*;
 use crate::cvars::Cvars;
+mod layout;
 
 const GOLD: Color = Color::srgb(1.0, 0.82, 0.2);
 #[derive(Component)]
@@ -235,7 +236,26 @@ fn button(
     label: impl Into<String>,
     width: f32,
 ) {
-    super::super::combat_ui::skin::button(ui, f, label, click, width);
+    ui.spawn((
+        Button,
+        click,
+        BackgroundColor(Color::srgb(0.075, 0.065, 0.045)),
+        BorderColor::all(Color::srgb(0.32, 0.26, 0.15)),
+        Node {
+            width: Val::Px(width),
+            max_width: Val::Percent(100.0),
+            min_width: Val::Px(0.0),
+            min_height: Val::Px(32.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+    ))
+    .with_children(|b| {
+        b.spawn(text(f, label, 13.0, GOLD));
+    });
 }
 fn row(
     ui: &mut ChildSpawnerCommands,
@@ -243,23 +263,43 @@ fn row(
     label: &str,
     build: impl FnOnce(&mut ChildSpawnerCommands),
 ) {
-    ui.spawn(Node {
-        width: Val::Percent(100.0),
-        column_gap: Val::Px(8.0),
-        align_items: AlignItems::Center,
-        ..default()
-    })
+    ui.spawn((
+        BackgroundColor(Color::srgba(1.0, 0.9, 0.6, 0.025)),
+        Node {
+            width: Val::Percent(100.0),
+            min_width: Val::Px(0.0),
+            flex_shrink: 0.0,
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(8.0)),
+            column_gap: Val::Px(12.0),
+            row_gap: Val::Px(6.0),
+            flex_wrap: FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+    ))
     .with_children(|r| {
         r.spawn((
-            text(f, label, 15.0, Color::WHITE),
+            text(f, label, 14.0, Color::srgb(0.78, 0.76, 0.69)),
             Node {
-                width: Val::Px(280.0),
+                width: Val::Percent(43.0),
+                min_width: Val::Px(150.0),
                 ..default()
             },
         ));
-        build(r);
+        r.spawn(Node {
+            flex_grow: 1.0,
+            flex_basis: Val::Px(0.0),
+            min_width: Val::Px(180.0),
+            column_gap: Val::Px(8.0),
+            row_gap: Val::Px(6.0),
+            flex_wrap: FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(build);
     });
 }
+
 fn key_label(key: Option<KeyCode>) -> String {
     key.map(|k| {
         format!("{k:?}")
@@ -279,6 +319,8 @@ pub(super) fn render(
     cvars: Option<Res<Cvars>>,
     font: Option<Res<HudFont>>,
     roots: Query<Entity, With<Root>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scale: Option<Res<UiScale>>,
     mut cache: Local<String>,
 ) {
     let Some(font) = font else {
@@ -300,15 +342,19 @@ pub(super) fn render(
         "SoundOutputLimiter",
     ]
     .map(|k| value(cv, k));
+    let viewport = windows.single().map_or(Vec2::new(1000.0, 820.0), |window| {
+        Vec2::new(window.width(), window.height()) / scale.as_deref().map_or(1.0, |s| s.0)
+    });
     let stamp = format!(
-        "{:?} {} {:?} {:?} {:?} {:?} {:?}",
+        "{:?} {} {:?} {:?} {:?} {:?} {:?} {:?}",
         phase.get(),
         panel.open,
         panel.tab,
         panel.capture,
         *settings,
         (rig.sensitivity, rig.dist),
-        audio
+        audio,
+        viewport
     );
     if *cache == stamp {
         return;
@@ -320,70 +366,17 @@ pub(super) fn render(
     if !panel.open || *phase.get() != Phase::Paused {
         return;
     }
-    let f = &font.0;
-    commands.spawn((Root,Button,GlobalZIndex(800),BackgroundColor(Color::srgba(0.0,0.0,0.0,0.8)),Node{position_type:PositionType::Absolute,width:Val::Percent(100.0),height:Val::Percent(100.0),justify_content:JustifyContent::Center,align_items:AlignItems::Center,..default()})).with_children(|overlay| {
-        overlay.spawn(Node{width:Val::Px(740.0),max_width:Val::Percent(98.0),height:Val::Px(710.0),max_height:Val::Vh(94.0),padding:UiRect::all(Val::Px(20.0)),flex_direction:FlexDirection::Column,row_gap:Val::Px(12.0),..default()}).with_children(|frame| {
-            super::super::combat_ui::skin::backdrop(frame);
-            frame.spawn(text(f,"OPTIONS",26.0,GOLD));
-            frame.spawn(Node{column_gap:Val::Px(5.0),row_gap:Val::Px(5.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|tabs| {
-                for (tab,label) in [(Tab::Controls,"Key bindings"),(Tab::Mouse,"Camera"),(Tab::Sound,"Audio"),(Tab::Display,"Interface"),(Tab::Video,"Video"),(Tab::Help,"Help")] {
-                    button(tabs,f,Click::Tab(tab),if tab==panel.tab{format!("[{label}]")}else{label.into()},104.0);
-                }
-            });
-            frame.spawn((Body,Interaction::default(),bevy::ui::RelativeCursorPosition::default(),ScrollPosition(Vec2::new(0.0,panel.scroll)),Node{width:Val::Percent(100.0),min_height:Val::Px(0.0),flex_direction:FlexDirection::Column,row_gap:Val::Px(8.0),flex_grow:1.0,flex_basis:Val::Px(0.0),overflow:Overflow::scroll_y(),..default()})).with_children(|body| {
-                match panel.tab {
-                    Tab::Controls => {
-                        body.spawn(text(f,"Choose a primary or secondary key. Conflicts swap the bindings.",13.0,GOLD));
-                        for action in Action::ALL { row(body,f,action.name(),|r| {
-                            for slot in 0..2 { button(r,f,Click::Bind(action,slot),if panel.capture==Some((action,slot)){"Press a key…".into()}else{key_label(settings.bindings[action as usize][slot])},164.0); }
-                        }); }
-                        body.spawn(text(f,"Esc cancels binding. Backspace clears the key.\nBindings use physical key positions.",12.0,Color::WHITE));
-                    }
-                    Tab::Sound => {
-                        for (name,label) in [("MasterVolume","Master volume"),("SoundVolume","Sound effects"),("MusicVolume","Music"),("AmbienceVolume","Ambience")] {
-                            row(body,f,label,|r| { button(r,f,Click::Volume(name,-1),"−",45.0);r.spawn(text(f,format!("{:3.0} %",value(cv,name)*100.0),16.0,GOLD));button(r,f,Click::Volume(name,1),"+",45.0); });
-                        }
-                        for (name,label) in [("MasterSoundEffects","Enable sound"),("EnableMusic","Enable music"),("EnableAmbience","Enable ambience"),("SoundOutputLimiter","Audio limiter")] {
-                            row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));
-                        }
-                        body.spawn(text(f,"The limiter reduces distortion when many sounds overlap. Settings apply immediately.",13.0,GOLD));
-                    }
-                    Tab::Mouse => {
-                        row(body,f,"Sensitivity",|r|{button(r,f,Click::Sensitivity(-1),"−",45.0);r.spawn(text(f,format!("{:.1}×",rig.sensitivity),16.0,GOLD));button(r,f,Click::Sensitivity(1),"+",45.0);});
-                        for(flag,label,on)in[(5,"Invert horizontal axis",settings.invert_x),(6,"Invert vertical axis",settings.invert_y)]{row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        row(body,f,"Zoom speed",|r|{button(r,f,Click::Zoom(-1),"−",45.0);r.spawn(text(f,format!("{:.2}×",settings.zoom_speed),16.0,GOLD));button(r,f,Click::Zoom(1),"+",45.0);});
-                        row(body,f,"Current distance",|r|{button(r,f,Click::Distance(-1),"−",45.0);r.spawn(text(f,format!("{:.1} m",rig.dist),16.0,GOLD));button(r,f,Click::Distance(1),"+",45.0);});
-                        button(body,f,Click::DistanceReset,"Reset camera height and zoom",320.0);
-                        body.spawn(text(f,"Drag with either mouse button to rotate the camera. Scroll to zoom. Hold both buttons to move forward.\nYou can adjust the current distance with the mouse wheel.",13.0,Color::WHITE));
-                    }
-                    Tab::Display => {
-                        for(flag,label,on)in[(9,"Automatically draw level-up cards",settings.auto_draw_cards),(0,"Damage dealt",settings.damage),(1,"Healing received and done",settings.healing),(2,"Damage taken",settings.incoming),(3,"Show only outgoing critical hits",settings.critical_only),(4,"Color grading and sharpening",settings.grade),(7,"FPS counter",settings.show_fps),(8,"Performance diagnostics",settings.perf_diag)] {row(body,f,label,|r|button(r,f,Click::Flag(flag),on_off(on),160.0));}
-                        body.spawn(text(f,"Filters apply to new floating numbers. Combat calculations are unchanged.\nDrag the Character and Combat meter windows by their title bars to move them.\nPerformance diagnostics identify expensive work and write a report to benilla-config/Diagnostics. They turn off on the next launch.\nPer-system details require warcraft-survivors-perf.exe.",13.0,GOLD));
-                    }
-                    Tab::Video => {
-                        for(name,label)in[("gxWindow","Windowed mode"),("gxMaximize","Maximized window"),("gxVSync","Vertical sync")] {row(body,f,label,|r|button(r,f,Click::Cvar(name),on_off(value(cv,name)>0.0),160.0));}
-                        row(body,f,"View distance",|r|{button(r,f,Click::ViewDistance(-1),"−",45.0);r.spawn(text(f,format!("{:.0} m",value(cv,"farclip")),16.0,GOLD));button(r,f,Click::ViewDistance(1),"+",45.0);});
-                        body.spawn(text(f,"A shorter view distance reduces GPU load. Vertical sync reduces tearing.\nFullscreen uses borderless mode. The browser manages its own window.",13.0,GOLD));
-                    }
-                    Tab::Help => {
-                        for(title,description)in[
-                            ("Hub and progression","Expeditions: choose a zone and start a run. Talents: permanent character progression. Runes: prepare your equipment in the hub."),
-                            ("Items and shared chest","Right-click in your bags to equip or unequip an item. With the chest open, right-click to transfer. You can also drag items between the windows. Dropping elsewhere cancels the transfer."),
-                            ("Gheed","Approach the blacksmith and select a slot, item type, affix profile, rarity and item level. Choose random or custom affixes, inspect the preview, then click Craft. The training blacksmith also offers legendary effects."),
-                            ("Multiplayer","Host or join a game from character selection. Use the host's Hamachi IPv4 address. Shared chest items are available to everyone in the game."),
-                            ("Pause","Menus pause the run in solo play. In multiplayer, the world keeps running: open menus in a safe place."),
-                        ]{body.spawn(text(f,title,17.0,GOLD));body.spawn(text(f,description,14.0,Color::WHITE));}
-                    }
-                }
-            });
-            frame.spawn(Node{column_gap:Val::Px(10.0),flex_wrap:FlexWrap::Wrap,..default()}).with_children(|footer| {
-                if panel.tab!=Tab::Help {button(footer,f,Click::Reset,"Reset this tab",240.0);}
-                button(footer,f,Click::Back,"Back [Esc]",200.0);
-            });
-            frame.spawn(text(f,"Preferences save automatically · Scroll to browse",12.0,GOLD));
-        });
-    });
+    layout::build(
+        &mut commands,
+        &font.0,
+        &panel,
+        &settings,
+        &rig,
+        cv,
+        viewport,
+    );
 }
+
 fn on_off(on: bool) -> &'static str {
     if on {
         "On"
@@ -551,18 +544,58 @@ mod tests {
         app.world_mut()
             .resource_mut::<NextState<Phase>>()
             .set(Phase::Paused);
-        for tab in [
-            Tab::Controls,
-            Tab::Sound,
-            Tab::Mouse,
-            Tab::Display,
-            Tab::Video,
-            Tab::Help,
+        for (tab, sections, heading) in [
+            (Tab::Controls, 3, "Movement & combat"),
+            (Tab::Sound, 3, "Volume levels"),
+            (Tab::Mouse, 2, "Camera rotation"),
+            (Tab::Display, 4, "Cards & progression"),
+            (Tab::Video, 2, "Window & synchronization"),
+            (Tab::Help, 6, "Hub & progression"),
         ] {
             app.world_mut().resource_mut::<Panel>().tab = tab;
             app.update();
             let world = app.world_mut();
             assert_eq!(world.query::<&Root>().iter(world).count(), 1);
+            assert_eq!(
+                world.query::<&layout::Section>().iter(world).count(),
+                sections
+            );
+            assert!(world
+                .query::<&Text>()
+                .iter(world)
+                .any(|text| text.0 == heading));
+            assert_eq!(
+                world
+                    .query::<&Click>()
+                    .iter(world)
+                    .filter(|click| matches!(click, Click::Tab(_)))
+                    .count(),
+                6
+            );
+            if tab == Tab::Controls {
+                assert_eq!(
+                    world
+                        .query::<&Click>()
+                        .iter(world)
+                        .filter(|click| matches!(click, Click::Bind(_, _)))
+                        .count(),
+                    Action::ALL.len() * 2
+                );
+            }
+            // Changing a setting rebuilds the controls while preserving the browsing position.
+            app.world_mut().resource_mut::<Panel>().scroll = 77.0;
+            app.world_mut().resource_mut::<Settings>().damage ^= true;
+            app.update();
+            let world = app.world_mut();
+            assert_eq!(
+                world
+                    .query_filtered::<&ScrollPosition, With<Body>>()
+                    .single(world)
+                    .unwrap()
+                    .0
+                    .y,
+                77.0
+            );
         }
     }
 }
