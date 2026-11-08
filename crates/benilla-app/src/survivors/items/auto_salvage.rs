@@ -23,7 +23,7 @@ pub(super) fn apply(save: &mut Save) {
     let mut copper = save.copper;
     save.items.retain(|item| {
         let rule = rules[index(item.rarity)];
-        if worn.contains(&item.id) || !rule.enabled || item.level >= rule.below_ilvl {
+        if item.affix_rules == 2 || worn.contains(&item.id) || !rule.enabled || item.level >= rule.below_ilvl {
             return true;
         }
         if let Some(total) = copper

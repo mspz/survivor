@@ -8,7 +8,7 @@
 # Affixes retain their independent Ilvl scaling. Boss loot follows zone tier and boss order.
 # Stamina: 1 life/point. Strength/agility: 1% attack damage/point for eligible classes. Intelligence: 1% spell damage/healing/point.
 version = 1
-boss_drop_chance = 1.0
+boss_drop_chance = 0.5
 
 # Les bases sont classees par emplacement, puis par type. Ajouter les variantes sous le groupe concerne.
 

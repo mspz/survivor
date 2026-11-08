@@ -1048,7 +1048,7 @@ fn publish(world: &mut World) {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
                 inventory
                     .config
-                    .generate_loot(level, class, magic_find, &mut rng)
+                    .generate_loot(level, class, game::items::compensated_magic_find(magic_find), &mut rng)
                     .ok()
             });
             if let Some(item) = item {

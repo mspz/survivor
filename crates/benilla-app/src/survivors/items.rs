@@ -14,6 +14,7 @@ pub(super) mod armour;
 mod auto_salvage;
 pub(super) mod combat;
 mod config;
+pub(in crate::survivors) use config::crafting::{CraftRequest, CraftProfile, CraftAffix};
 mod equipment;
 mod item_level;
 pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
@@ -437,7 +438,7 @@ pub(super) struct Affix {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Item {
-    /// Zero preserves saved allocations from before prefix/suffix budgets.
+    /// 0: legacy allocation; 1: natural loot; 2: forged, allowing partial custom affixes.
     #[serde(default)]
     pub affix_rules: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -561,6 +562,7 @@ fn bag_layout(save: &Save) -> Vec<u64> {
 #[derive(Resource)]
 pub(super) struct Inventory {
     class: u8,
+    character_level: u32,
     character: Option<u64>,
     save: Save,
     pub config: Config,
@@ -575,6 +577,7 @@ impl Default for Inventory {
         Self {
             character: None,
             class: 1,
+            character_level: 1,
             save: Save::default(),
             config: Config::load(),
             revision: 0,
@@ -641,13 +644,10 @@ impl Inventory {
 
     /// Trusted friend-session inventory; never binds or writes a character on the host.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::survivors) fn from_shared(class: u8, text: &str) -> Result<Self, String> {
-        Ok(Self {
-            class,
-            save: toml::from_str(text).map_err(|e| e.to_string())?,
-            revision: 1,
-            ..Self::default()
-        })
+    pub(in crate::survivors) fn from_shared(class: u8, level: u32, text: &str) -> Result<Self, String> {
+        let mut inventory = Self { class, character_level: level.clamp(1,60), save: toml::from_str(text).map_err(|e| e.to_string())?, revision: 1, ..Self::default() };
+        inventory.save.equipped.retain(|_, id| inventory.save.items.iter().any(|item| item.id == *id && item.required_level() <= inventory.character_level));
+        Ok(inventory)
     }
     #[cfg(test)]
     pub(super) fn fixture_for_character(character: u64, items: Vec<Item>) -> Self {
@@ -663,6 +663,7 @@ impl Inventory {
         Self {
             character: Some(1),
             class: 1,
+            character_level: 60,
             save: Save {
                 next_id: items.len() as u64 + 1,
                 items,
@@ -828,7 +829,7 @@ impl Inventory {
                     .is_some_and(|id| !super::data::CLASSES.iter().any(|c| c.id == id))
                 || item.level == 0
                 || !legendary::validate_item(item)
-                || item.affix_rules > 1
+                || item.affix_rules > 2
                 || (item.affix_rules == 0
                     && item.affixes.len() != item.rarity.legacy_count()
                     && !starter::is_plain(item))
@@ -855,10 +856,10 @@ impl Inventory {
                 kinds[usize::from(a.kind == AffixKind::Suffix)] += 1;
             }
             let primary = item.affixes.iter().filter(|a| a.effect.primary()).count();
-            if item.affix_rules == 1 {
+            if item.affix_rules >= 1 {
                 let (minimum, cap) = item.rarity.affix_limits();
                 // White items saved before the guaranteed-affix rule remain loadable.
-                let minimum = if item.rarity == Rarity::Normal {
+                let minimum = if item.rarity == Rarity::Normal || item.affix_rules == 2 {
                     0
                 } else {
                     minimum
@@ -924,9 +925,7 @@ impl Inventory {
         save.items.push(item);
         self.commit(save)
     }
-    pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind) -> bool {
-        self.config.gamble_available(slot, self.class)
-    }
+    #[cfg(test)]
     pub(in crate::survivors) fn gamble(
         &mut self,
         slot: SlotKind,
@@ -951,8 +950,28 @@ impl Inventory {
         self.commit(save)?;
         Ok(item)
     }
+    pub(in crate::survivors) fn craft_preview(&self, request: &CraftRequest, level: u32) -> Option<Item> {
+        self.config.craft_preview(request, level, self.class)
+    }
+    pub(in crate::survivors) fn craft_types(&self, slot: SlotKind) -> Vec<EquipmentType> { self.config.craft_types(slot) }
+    pub(in crate::survivors) fn craft_affixes(&self, request: &CraftRequest, level: u32) -> Vec<CraftAffix> { self.config.craft_affixes(request, level, self.class) }
+    pub(in crate::survivors) fn craft(&mut self, request: &CraftRequest, level: u32, rng: &mut Rng) -> Result<Item, String> {
+        self.writable()?;
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let price = request.price(level)?;
+        let copper = self.money().checked_sub(price).ok_or("Pas assez de monnaie.")?;
+        let mut item = self.config.generate_craft(request, level, self.class, rng)?;
+        let mut save = self.save.clone();
+        item.id = save.next_id;
+        save.next_id = save.next_id.checked_add(1).ok_or("Item identity exhausted")?;
+        save.copper = copper;
+        save.items.push(item.clone());
+        self.commit(save)?;
+        Ok(item)
+    }
     pub fn equip(&mut self, id: u64, slot: &str) -> Result<(), String> {
         let item = self.item(id).ok_or("Item missing")?;
+        if self.character_level < item.required_level() { return Err(format!("Niveau {} requis pour equiper cet objet.", item.required_level())); }
         if !SLOTS
             .iter()
             .any(|(name, kind)| *name == slot && self.can_equip(item, *kind))
@@ -1266,13 +1285,24 @@ pub(super) fn plugin(app: &mut App) {
                 ),
         );
 }
-pub(super) fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>) {
+pub(super) fn sync(roster: Res<Roster>, mut inventory: ResMut<Inventory>, mut run: ResMut<Run>, account: Option<Res<super::talents::Account>>) {
+    let level = account.as_ref().filter(|a| a.character == roster.active).map(|a| super::talents::level(a.xp)).unwrap_or_else(|| if inventory.character != roster.active { 60 } else { inventory.character_level });
+    let level_changed = inventory.character_level != level;
+    inventory.character_level = level;
     inventory.class = roster
         .current()
         .and_then(|c| super::data::CLASSES.get(c.class))
         .map_or(run.class.id, |c| c.id);
     if inventory.character != roster.active {
         inventory.bind(roster.active)
+    }
+    if level_changed {
+        let mut save = inventory.save.clone();
+        save.equipped.retain(|_, id| save.items.iter().any(|item| item.id == *id && item.required_level() <= level));
+        if save.equipped != inventory.save.equipped {
+            if let Err(error) = inventory.commit(save) { inventory.notice = error; }
+        }
+        inventory.revision = inventory.revision.wrapping_add(1);
     }
     if roster.current().is_some_and(|c| c.starter_equipment) {
         if let Err(error) = inventory.grant_starter(
@@ -1321,7 +1351,11 @@ pub(super) struct ChestOpened {
 // Elwynn's small wooden treasure chest: GameObjectDisplayInfo -> Chest01.mdx.
 const BOSS_CHEST_DISPLAY: u32 = 10;
 pub(in crate::survivors) fn drops_chest(boss: bool, boss_chance: f32, roll: f32) -> bool {
-    roll < if boss { boss_chance } else { 1.0 / 2000.0 }
+    roll < if boss { boss_chance } else { 1.0 / 5000.0 }
+}
+/// Magic Find has double potency on all dropped items.
+pub(in crate::survivors) fn compensated_magic_find(magic_find: f32) -> f32 {
+    if magic_find.is_finite() { (magic_find.max(0.0) * 2.0).min(f32::MAX) } else { 0.0 }
 }
 pub(in crate::survivors) fn chest_item_level(monster_level: u32, boss: bool) -> u32 {
     // Campaign bosses end at level 59; their chest must unlock the final level-60 bases.
@@ -1348,7 +1382,7 @@ pub(super) fn chest_drops(
         match inventory.config.generate_loot(
             chest_item_level(drop.item_level, drop.boss),
             run.class.id,
-            run.equipment.magic_find,
+            compensated_magic_find(run.equipment.magic_find),
             &mut rng,
         ) {
             Ok(item) => {
@@ -1433,7 +1467,7 @@ mod tests {
         )]);
         source.save.equipped.insert("Ring 1".into(), 1);
         let encoded = source.shared_save().unwrap();
-        let remote = Inventory::from_shared(1, &encoded).unwrap();
+        let remote = Inventory::from_shared(1, 60, &encoded).unwrap();
         let mut run = Run::default();
         let before = run.stats().max_hp;
         remote.apply(&mut run);
@@ -1445,6 +1479,7 @@ mod tests {
     fn inventory() -> Inventory {
         Inventory {
             class: 1,
+            character_level: 60,
             character: Some(1),
             save: Save::default(),
             config: Config::builtin(),
@@ -2061,18 +2096,24 @@ mod tests {
         assert_eq!(world.query::<&ItemDrop>().iter(&world).count(), 0);
     }
     #[test]
-    fn ordinary_monster_chests_have_one_in_two_thousand_chance_without_changing_boss_chance() {
+    fn ordinary_monster_chests_have_one_in_five_thousand_chance_and_bosses_half() {
         assert!(drops_chest(false, 0.0, 0.0));
-        assert!(drops_chest(false, 0.0, 0.000499));
-        assert!(!drops_chest(false, 1.0, 0.0005));
+        assert!(drops_chest(false, 0.0, 0.000199));
+        assert!(!drops_chest(false, 1.0, 0.0002));
         assert!(!drops_chest(false, 1.0, 0.5));
         assert!(!drops_chest(true, 0.0, 0.0));
+        assert!(drops_chest(true, 0.5, 0.4999));
+        assert!(!drops_chest(true, 0.5, 0.5));
+        assert_eq!(Config::builtin().boss_drop_chance, 0.5);
+        assert_eq!(compensated_magic_find(1.0), 2.0);
+        assert_eq!(compensated_magic_find(0.5), 1.0);
+        assert_eq!(compensated_magic_find(0.0), 0.0);
         assert!(drops_chest(true, 1.0, 0.999));
         let mut rng = Rng(742);
         let count = (0..100000)
             .filter(|_| drops_chest(false, 1.0, rng.f32()))
             .count();
-        assert!((25..=80).contains(&count), "{count}/100000");
+        assert!((5..=40).contains(&count), "{count}/100000");
     }
     #[test]
     fn final_boss_chests_reach_the_last_base_tier_at_level_sixty() {
@@ -2148,6 +2189,32 @@ mod tests {
 #[cfg(test)]
 mod money_tests {
     use super::*;
+    #[test]
+    fn forging_is_atomic_and_unusual_primaries_survive_save_reload_and_equipping() {
+        let mut inventory = Inventory::fixture(vec![]);
+        let mut request = CraftRequest { slot: SlotKind::Chest, equipment: EquipmentType::Plate,
+            profile: CraftProfile::Agility, rarity: Rarity::Epic, affixes: Some(vec!["agility".into()]) };
+        let options = inventory.craft_affixes(&request, 60);
+        request.affixes = Some(vec![options.iter().find(|a| a.id == "agility").expect("agility affix").id.clone()]);
+        assert!(inventory.craft(&request, 60, &mut Rng(5)).is_err());
+        assert!(inventory.all().is_empty());
+        let mut rules = [AutoSalvageRule::default(); 4];
+        rules[2] = AutoSalvageRule { enabled: true, below_ilvl: 999 };
+        inventory.set_auto_salvage(rules).unwrap();
+        inventory.add_money(1_000_000_000).unwrap();
+        let before = inventory.money();
+        let item = inventory.craft(&request, 60, &mut Rng(5)).unwrap();
+        assert_eq!(inventory.money(), before - request.price(60).unwrap());
+        inventory.equip(item.id, "Chest").unwrap();
+        let save = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        assert!(save.items.iter().any(|i| i.id == item.id && i.affixes.iter().any(|a| a.effect == Effect::Agility)));
+        let before = inventory.money();
+        let count = inventory.all().len();
+        request.affixes = Some(vec!["agility".into(), "agility".into()]);
+        assert!(inventory.craft(&request, 60, &mut Rng(5)).is_err());
+        assert_eq!(inventory.money(), before);
+        assert_eq!(inventory.all().len(), count);
+    }
     #[test]
     fn gambling_charges_and_delivers_together_and_never_spends_on_failure() {
         let mut inventory = Inventory::fixture(vec![]);

@@ -74,7 +74,7 @@ pub(super) fn category_text(
             rows.join("\n")
         },
         3=>format!("Regeneration: {:.1} HP/s\nLife on kill: {:.1}\nHealing received: {:+.1}%\nAbsorption: {:.0}",s.regen*(1.0+run.equipment.healing).max(0.0),run.equipment.life_on_kill*(1.0+run.equipment.healing).max(0.0),run.equipment.healing*100.0,if run.shield_t>0.0{run.shield}else{0.0}),
-        4=>format!("Movement speed: {:.1} yd/s\nPickup radius: {:.1} yd\nExperience: {:+.1}%\nLuck: {:+.1}%\nMagic Find: {:+.1}%\nRun level: {}",s.speed,s.magnet,(s.growth-1.0)*100.0,run.equipment.luck*100.0,run.equipment.magic_find*100.0,run.level),
+        4=>format!("Movement speed: {:.1} yd/s\nPickup radius: {:.1} yd\nExperience: {:+.1}%\nLuck: {:+.1}%\nMagic Find: {:+.1}%\nRun level: {}",s.speed,s.magnet,(s.growth-1.0)*100.0,run.equipment.luck*100.0,crate::survivors::items::compensated_magic_find(run.equipment.magic_find)*100.0,run.level),
         _=>spell_stats(run,selected),
     }
 }
@@ -313,7 +313,7 @@ fn explanation(label: &str) -> Option<&'static str> {
         "Experience" => "Increases experience gained during the run.",
         "Luck" => "Improves your chances of receiving higher-rarity rewards.",
         "Magic Find" => {
-            "Improves item quality chances. Does not affect affix selection or value rolls."
+            "Improves item quality chances. The displayed value includes doubled effectiveness for both boss and ordinary monster loot. Does not affect drop frequency, affix selection or value rolls."
         }
         "Run level" => "Your current level in this expedition.",
         "Healing" => "Health restored by this skill.",

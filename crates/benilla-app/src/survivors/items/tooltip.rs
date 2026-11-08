@@ -248,6 +248,8 @@ impl Item {
                 Color::WHITE,
             ),
         ];
+        lines.push((format!("Niveau requis : {}", self.required_level()),
+            if inventory.character_level < self.required_level() { Color::srgb(1.0,0.15,0.15) } else { Color::WHITE }));
         if self.armour() > 0.0 {
             lines.push((format!("{:.0} Armour", self.armour()), Color::WHITE));
         }

@@ -1,3 +1,4 @@
+pub(super) mod crafting;
 use super::*;
 pub(super) const DEFAULT_BASES: &str =
     include_str!("../../../../../config/survivors-item-bases.toml");
@@ -461,6 +462,7 @@ impl Config {
     fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
         self.roll_for_target(level, class_id, 0.0, rng)
     }
+    #[cfg(test)]
     pub(in crate::survivors) fn gamble_available(&self, slot: SlotKind, class: u8) -> bool {
         self.bases.iter().any(|b| {
             b.slot == slot
@@ -471,6 +473,7 @@ impl Config {
                     && !super::equipment::dual_wield(class))
         })
     }
+    #[cfg(test)]
     pub(in crate::survivors) fn generate_gamble(
         &self,
         level: u32,
@@ -1433,7 +1436,7 @@ mod tests {
     }
     #[test]
     fn split_tables_apply_base_settings_and_affix_ranges_independently() {
-        let bases = DEFAULT_BASES.replace("boss_drop_chance = 1.0", "boss_drop_chance = 0.25");
+        let bases = DEFAULT_BASES.replace("boss_drop_chance = 0.5", "boss_drop_chance = 0.25");
         let affixes = DEFAULT_AFFIXES.replace("max = 40", "max = 41");
         let config = Config::parse_parts(&bases, &affixes).unwrap();
         assert_eq!(config.boss_drop_chance, 0.25);
@@ -1880,25 +1883,28 @@ mod tests {
     }
     #[test]
     fn config_rejects_invalid_weights_weapon_mods_and_incomplete_affix_pools() {
-        assert!(Config::parse(&DEFAULT_FILE.replace(
-            "equipment_type = \"universal\"",
-            "equipment_type = \"legacy\""
-        ))
-        .is_err());
-        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 5", "legendary = -1")).is_err());
-        assert!(Config::parse(&DEFAULT_FILE.replace("legendary = 5", "legendary = 1")).is_ok());
-        assert!(Config::parse(
-            &DEFAULT_FILE.replace("boss_drop_chance = 1.0", "boss_drop_chance = 2.0")
-        )
-        .is_err());
-        assert!(Config::parse(
-            &DEFAULT_FILE.replace("effect = \"stamina\"", "effect = \"flat_damage\"")
-        )
-        .is_err());
-        assert!(
-            Config::parse(&DEFAULT_FILE.replace("kind = \"suffix\"", "kind = \"prefix\"")).is_err()
-        );
-        assert!(Config::parse(&DEFAULT_FILE.replace("max = 40", "max = -1")).is_err());
+        let config = Config::builtin();
+        let mut invalid = config.clone();
+        invalid.bases[0].equipment_type = EquipmentType::Legacy;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.rarities.legendary = -1.0;
+        assert!(invalid.validate().is_err());
+        let mut valid = config.clone();
+        valid.rarities.legendary = 1.0;
+        assert!(valid.validate().is_ok());
+        let mut invalid = config.clone();
+        invalid.boss_drop_chance = 2.0;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.affixes.iter_mut().find(|a| a.kind == AffixKind::Suffix).unwrap().effect = Effect::FlatDamage;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.affixes.iter_mut().find(|a| a.kind == AffixKind::Suffix).unwrap().kind = AffixKind::Prefix;
+        assert!(invalid.validate().is_err());
+        let mut invalid = config;
+        invalid.affixes[0].max = -1.0;
+        assert!(invalid.validate().is_err());
     }
     #[test]
     fn disabled_bases_and_affixes_never_roll_and_rarity_is_independent_of_pool_size() {

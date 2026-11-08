@@ -23,6 +23,12 @@ enum Action {
 }
 #[derive(Component)]
 pub(in crate::survivors) struct ItemTip(pub u64);
+/// A detached display object: deliberately has no inventory identity or drag/drop target.
+#[derive(Component)]
+pub(in crate::survivors) struct ReadOnlyItemTip {
+    pub item: Item,
+    pub extra_lines: Vec<(String, Color)>,
+}
 #[derive(Component)]
 struct Tooltip;
 const BAG_COLUMNS: usize = 14;
@@ -104,7 +110,12 @@ fn input(
         inventory.apply(&mut run);
     }
 }
-pub(super) fn icon(ui: &mut ChildSpawnerCommands, item: &Item, size: f32, usable: bool) {
+pub(in crate::survivors) fn icon(
+    ui: &mut ChildSpawnerCommands,
+    item: &Item,
+    size: f32,
+    usable: bool,
+) {
     ui.spawn((
         ImageNode::default(),
         if usable {
@@ -238,11 +249,20 @@ fn tooltip(
     windows: Query<&Window, With<PrimaryWindow>>,
     scale: Option<Res<UiScale>>,
     items: Query<(&Interaction, &ItemTip)>,
+    previews: Query<(Entity, &Interaction, &ReadOnlyItemTip)>,
     roots: Query<Entity, With<Tooltip>>,
-    mut cache: Local<Option<(u64, u64, bool)>>,
+    mut cache: Local<Option<(u64, u64, bool, bool)>>,
     gesture: Res<gestures::DragState>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
 ) {
+    let preview = if !gesture.dragging() {
+        previews
+            .iter()
+            .find(|(_, interaction, _)| **interaction == Interaction::Hovered)
+            .map(|(entity, _, tip)| (entity, tip))
+    } else {
+        None
+    };
     let id = if (selection.sheet_open || selection.bags_open) && !gesture.dragging() {
         items
             .iter()
@@ -254,7 +274,17 @@ fn tooltip(
     let compare = keys
         .as_ref()
         .is_some_and(|keys| keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]));
-    let key = id.map(|id| (id, inventory.as_ref().map_or(0, |i| i.revision), compare));
+    let key = preview
+        .map(|(entity, _)| entity.to_bits())
+        .or(id)
+        .map(|id| {
+            (
+                id,
+                inventory.as_ref().map_or(0, |i| i.revision),
+                compare,
+                preview.is_some(),
+            )
+        });
     if key == *cache {
         return;
     }
@@ -263,9 +293,11 @@ fn tooltip(
         commands.entity(e).despawn();
     }
     let (Some(item), Some(font)) = (
-        inventory
-            .as_ref()
-            .and_then(|i| id.and_then(|id| i.item(id))),
+        preview.map(|(_, tip)| &tip.item).or_else(|| {
+            inventory
+                .as_ref()
+                .and_then(|i| id.and_then(|id| i.item(id)))
+        }),
         font,
     ) else {
         return;
@@ -283,6 +315,9 @@ fn tooltip(
     let mut lines = item.tooltip_lines(inventory.as_ref().unwrap());
     // Keep the shared price footer below optional equipment comparisons.
     let sale_price = lines.pop();
+    if let Some((_, tip)) = preview {
+        lines.extend(tip.extra_lines.clone());
+    }
     let mut comparison_start = None;
     if compare {
         let comparison = item.comparison_lines(inventory.as_ref().unwrap());
@@ -291,15 +326,19 @@ fn tooltip(
             lines.extend(comparison);
         }
     }
-    lines.push((
-        if vendor.as_ref().is_some_and(|v| v.open) {
-            "Clic droit : vendre"
-        } else {
-            "Alt-clic : vendre"
-        }
-        .to_owned(),
-        GREY,
-    ));
+    if preview.is_some() {
+        lines.push(("Apercu uniquement - non recuperable".into(), GREY));
+    } else {
+        lines.push((
+            if vendor.as_ref().is_some_and(|v| v.open) {
+                "Clic droit : vendre"
+            } else {
+                "Alt-clic : vendre"
+            }
+            .to_owned(),
+            GREY,
+        ));
+    }
     if let Some(sale_price) = sale_price {
         lines.push(sale_price);
     }
@@ -368,6 +407,57 @@ mod tests {
     use super::*;
     #[derive(Component)]
     struct TestRoot;
+    #[test]
+    fn detached_preview_uses_real_item_tooltip_and_has_no_inventory_or_drag_identity() {
+        use super::super::super::items::{
+            CraftProfile, CraftRequest, EquipmentType, Rarity, SlotKind,
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.insert_resource(Inventory::fixture(vec![]));
+        world.init_resource::<Selection>();
+        world.init_resource::<gestures::DragState>();
+        world.insert_resource(hud::HudFont(Handle::default()));
+        let request = CraftRequest {
+            slot: SlotKind::Chest,
+            equipment: EquipmentType::Plate,
+            profile: CraftProfile::Agility,
+            rarity: Rarity::Epic,
+            affixes: Some(vec!["agility".into()]),
+        };
+        let item = world
+            .resource::<Inventory>()
+            .craft_preview(&request, 22)
+            .unwrap();
+        let name = item.name.clone();
+        let expected_affix = item.affixes[0].description();
+        let entity = world
+            .spawn((
+                Interaction::Hovered,
+                ReadOnlyItemTip {
+                    item,
+                    extra_lines: vec![],
+                },
+            ))
+            .id();
+        world.run_system_once(tooltip).unwrap();
+        let texts: Vec<_> = world
+            .query::<&Text>()
+            .iter(&world)
+            .map(|t| t.0.as_str())
+            .collect();
+        assert!(texts.contains(&name.as_str()));
+        assert!(texts.contains(&"Ilvl 22"));
+        assert!(texts.contains(&expected_affix.as_str()));
+        assert!(texts.iter().any(|text| text.contains("non recuperable")));
+        assert!(!texts.iter().any(|text| text.contains("vendre")));
+        assert!(world.get::<ItemTip>(entity).is_none());
+        assert!(world.get::<DropTarget>(entity).is_none());
+        assert!(world.resource::<Inventory>().all().is_empty());
+        *world.get_mut::<Interaction>(entity).unwrap() = Interaction::Pressed;
+        world.run_system_once(tooltip).unwrap();
+        assert!(world.resource::<Inventory>().all().is_empty());
+    }
     #[test]
     fn bag_money_refreshes_when_only_the_wallet_changes() {
         let mut app = App::new();

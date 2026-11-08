@@ -459,7 +459,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.save.entries.len(), 1);
         store.save = toml::from_str(&toml::to_string(&store.save).unwrap()).unwrap();
-        let pending_sender = Inventory::from_shared(1, &sender.shared_save().unwrap()).unwrap();
+        let pending_sender = Inventory::from_shared(1, 60, &sender.shared_save().unwrap()).unwrap();
         assert_eq!(store.replica(&pending_sender).accepted, vec![token.clone()]);
         sender.finish_deposit(&token).unwrap();
         let mut receiver = Inventory::fixture(vec![fixture_item(), fixture_item()]);
@@ -507,7 +507,7 @@ mod tests {
         receive(replica.clone(), &mut receiver, &mut view);
         receive(replica.clone(), &mut receiver, &mut view);
         assert_eq!(receiver.all().len(), 3);
-        let reloaded = Inventory::from_shared(1, &receiver.shared_save().unwrap()).unwrap();
+        let reloaded = Inventory::from_shared(1, 60, &receiver.shared_save().unwrap()).unwrap();
         let mut reloaded = reloaded;
         reloaded.receive_trade(&replica.deliveries[0]).unwrap();
         assert_eq!(reloaded.all().len(), 3);
