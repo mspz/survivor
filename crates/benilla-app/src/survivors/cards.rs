@@ -176,6 +176,7 @@ pub(super) struct BanishMode(bool);
 pub(super) fn draft_controls(
     phase: Res<State<Phase>>,
     run: Res<Run>,
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Query<(&DraftButton, &Interaction), Changed<Interaction>>,
     mut labels: Query<(&DraftLabel, &mut Text)>,
     mut mode: ResMut<BanishMode>,
@@ -187,28 +188,82 @@ pub(super) fn draft_controls(
     }
     for (label, mut text) in &mut labels {
         text.0 = match label.0 {
-            3 => format!("Reroll ({})", run.draft_uses[0]),
-            4 => format!("Skip ({})", run.draft_uses[2]),
-            _ if mode.0 => "Banish: choose a card (cancel)".into(),
-            _ => format!("Banish ({})", run.draft_uses[1]),
+            3 => format!("Reroll [R] ({})", run.draft_uses[0]),
+            4 => format!("Skip [X] ({})", run.draft_uses[2]),
+            _ if mode.0 => "Banish: choose a card ([B] to cancel)".into(),
+            _ => format!("Banish [B] ({})", run.draft_uses[1]),
         };
     }
     if pending.0.is_some() {
         return;
     }
-    for (button, interaction) in &buttons {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if button.0 == 8 {
+    let clicks = buttons.iter().filter(|(_, interaction)| **interaction == Interaction::Pressed)
+        .map(|(button, _)| button.0);
+    let shortcuts = [(KeyCode::KeyR, 3), (KeyCode::KeyB, 8), (KeyCode::KeyX, 4)]
+        .into_iter().filter(|(key, _)| keys.just_pressed(*key)).map(|(_, action)| action);
+    for action in clicks.chain(shortcuts) {
+        if action == 8 {
             if run.draft_uses[1] > 0 {
                 mode.0 = !mode.0;
             }
         } else {
-            let slot = if button.0 == 3 { 0 } else { 2 };
+            let slot = if action == 3 { 0 } else { 2 };
             if run.draft_uses[slot] > 0 {
                 mode.0 = false;
-                pending.0 = Some((button.0, 0.0));
+                pending.0 = Some((action, 0.0));
+            }
+        }
+        if pending.0.is_some() { break; }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    fn app(phase: Phase, uses: [u8; 3]) -> App {
+        let mut app = App::new();
+        app.insert_resource(State::new(phase))
+            .insert_resource(Run { draft_uses: uses, ..default() })
+            .insert_resource(super::super::options::Settings::defaults())
+            .insert_resource(Offer { choices: vec![Choice::NewAbility(data::ability("fireball"))], ..default() })
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<BanishMode>()
+            .init_resource::<PendingPick>()
+            .add_systems(Update, (draft_controls, choose_card).chain());
+        app
+    }
+    fn press(app: &mut App, key: KeyCode) {
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+        app.update();
+    }
+    #[test]
+    fn shortcuts_use_the_same_pending_actions_and_banish_card_selection() {
+        for (key, expected) in [(KeyCode::KeyR, 3), (KeyCode::KeyX, 4)] {
+            let mut app = app(Phase::LevelUp, [2; 3]);
+            press(&mut app,key);
+            assert_eq!(app.world().resource::<PendingPick>().0,Some((expected,0.0)));
+            press(&mut app,KeyCode::KeyB);
+            assert_eq!(app.world().resource::<PendingPick>().0,Some((expected,0.0)));
+        }
+        let mut app = app(Phase::LevelUp,[2; 3]);
+        press(&mut app,KeyCode::KeyB);
+        assert!(app.world().resource::<BanishMode>().0);
+        press(&mut app,KeyCode::KeyB);
+        assert!(!app.world().resource::<BanishMode>().0);
+        press(&mut app,KeyCode::KeyB);
+        press(&mut app,KeyCode::Digit1);
+        assert_eq!(app.world().resource::<PendingPick>().0,Some((5,0.0)));
+        assert!(!app.world().resource::<BanishMode>().0);
+    }
+    #[test]
+    fn shortcuts_are_inactive_outside_drafts_and_without_remaining_uses() {
+        for (phase, uses) in [(Phase::Playing,[2; 3]),(Phase::LevelUp,[0; 3])] {
+            let mut app = app(phase,uses);
+            for key in [KeyCode::KeyR,KeyCode::KeyB,KeyCode::KeyX] {
+                press(&mut app,key);
+                assert!(app.world().resource::<PendingPick>().0.is_none());
+                assert!(!app.world().resource::<BanishMode>().0);
             }
         }
     }
