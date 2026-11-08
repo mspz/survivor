@@ -254,6 +254,7 @@ mod tests {
                 level: 63,
                 friendly: false,
                 debuffs: vec![(589, 4.5), (339, 2.0)],
+                debuff_stacks: vec![(1943, 3), (2818, 2), (133, 1)],
             }),
             guid: 42,
             owner: None,
@@ -275,5 +276,6 @@ mod tests {
         assert_eq!(status.health, 1234.0);
         assert_eq!(status.maximum, 20000.0);
         assert_eq!(status.debuffs, vec![(589, 4.5), (339, 2.0)]);
+        assert_eq!(status.debuff_stacks, vec![(1943, 3), (2818, 2), (133, 1)]);
     }
 }

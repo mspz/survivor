@@ -145,6 +145,7 @@ mod tests {
                         level: 60,
                         friendly,
                         debuffs: vec![],
+                        debuff_stacks: vec![],
                     },
                     Transform::from_xyz(0.0, 0.0, z),
                     NetEntity {

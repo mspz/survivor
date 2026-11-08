@@ -41,6 +41,7 @@ mod tests {
             level: 20,
             friendly: true,
             debuffs: vec![],
+            debuff_stacks: vec![],
         };
         let ally = app.world_mut().spawn((PartyPlayer, status.clone())).id();
         app.world_mut()

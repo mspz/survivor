@@ -464,6 +464,7 @@ mod tests {
                     level: 1,
                     friendly: true,
                     debuffs: vec![(116, 3.0)],
+                    debuff_stacks: vec![],
                 },
             ))
             .id();

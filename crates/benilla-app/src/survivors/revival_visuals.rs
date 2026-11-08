@@ -147,6 +147,7 @@ mod tests {
             level: 1,
             friendly: true,
             debuffs: vec![],
+            debuff_stacks: vec![],
         };
         assert!(fallen(&status));
         status.health = 50.0;
