@@ -8,23 +8,47 @@ use super::{
 };
 use bevy::{prelude::*, ui::RelativeCursorPosition};
 pub(super) const NPC_ENTRY: u32 = 9_000_001;
+pub(super) const TEST_SMITH_ENTRY: u32 = 9_000_002;
+pub(super) const TEST_GOLD_ENTRY: u32 = 9_000_003;
+pub(super) const TEST_GOLD_AMOUNT: u64 = 10_000 * 10_000;
+pub(super) fn training_position(gold: bool) -> Vec3 {
+    super::training::services_center() + Vec3::new(if gold { -4.0 } else { 4.0 }, 0.0, 0.0)
+}
+pub(super) fn near_training(pos: Vec3, gold: bool) -> bool {
+    units::flat(pos - training_position(gold)).length() <= 4.5
+}
+fn accessible(selection: &Selection, phase: Phase, pos: Vec3) -> bool {
+    (selection.in_hub && matches!(phase, Phase::Hub | Phase::CharacterSheet) && near(pos))
+        || (super::training::active(selection)
+            && matches!(phase, Phase::Playing | Phase::CharacterSheet)
+            && near_training(pos, false))
+}
+pub(super) fn give_training_gold(
+    selection: &Selection,
+    inventory: &mut Inventory,
+) -> Result<(), String> {
+    if !super::training::active(selection) {
+        return Err("This NPC is only available in the training zone.".into());
+    }
+    inventory.add_money(TEST_GOLD_AMOUNT)
+}
 pub(super) const SLOTS: &[(SlotKind, &str)] = &[
-    (SlotKind::Head, "Tête"),
-    (SlotKind::Neck, "Cou"),
-    (SlotKind::Shoulders, "Épaules"),
-    (SlotKind::Back, "Cape"),
-    (SlotKind::Chest, "Torse"),
+    (SlotKind::Head, "Head"),
+    (SlotKind::Neck, "Neck"),
+    (SlotKind::Shoulders, "Shoulders"),
+    (SlotKind::Back, "Back"),
+    (SlotKind::Chest, "Chest"),
     (SlotKind::Tabard, "Tabard"),
-    (SlotKind::Wrists, "Poignets"),
-    (SlotKind::Hands, "Mains"),
-    (SlotKind::Waist, "Taille"),
-    (SlotKind::Legs, "Jambes"),
-    (SlotKind::Feet, "Pieds"),
-    (SlotKind::Ring, "Anneau"),
-    (SlotKind::Trinket, "Bijou"),
-    (SlotKind::MainHand, "Arme principale"),
-    (SlotKind::OffHand, "Main gauche"),
-    (SlotKind::Ranged, "Arme à distance"),
+    (SlotKind::Wrists, "Wrists"),
+    (SlotKind::Hands, "Hands"),
+    (SlotKind::Waist, "Waist"),
+    (SlotKind::Legs, "Legs"),
+    (SlotKind::Feet, "Feet"),
+    (SlotKind::Ring, "Ring"),
+    (SlotKind::Trinket, "Trinket"),
+    (SlotKind::MainHand, "Main hand"),
+    (SlotKind::OffHand, "Off hand"),
+    (SlotKind::Ranged, "Ranged weapon"),
 ];
 /// Diablo II-inspired slot hierarchy, adapted to copper and gently compounded at every level.
 pub(super) fn price(slot: SlotKind, level: u32) -> u64 {
@@ -69,25 +93,27 @@ impl Selector {
 }
 fn equipment_label(kind: EquipmentType) -> &'static str {
     match kind {
-        EquipmentType::Plate => "Plaque",
-        EquipmentType::Mail => "Maille",
-        EquipmentType::Leather => "Cuir",
-        EquipmentType::Cloth => "Tissu",
-        EquipmentType::MeleeOneHand => "Une main physique",
-        EquipmentType::HybridOneHand => "Une main hybride",
-        EquipmentType::OneHand => "Une main",
-        EquipmentType::TwoHand => "Deux mains",
-        EquipmentType::Staff => "Baton",
-        EquipmentType::Shield => "Bouclier",
-        EquipmentType::HeldOffHand => "Objet en main gauche",
-        EquipmentType::Bow => "Arc",
-        EquipmentType::Wand => "Baguette",
-        EquipmentType::Universal => "Accessoire",
-        EquipmentType::Legacy => "Autre",
+        EquipmentType::Plate => "Plate",
+        EquipmentType::Mail => "Mail",
+        EquipmentType::Leather => "Leather",
+        EquipmentType::Cloth => "Cloth",
+        EquipmentType::MeleeOneHand => "Physical one-handed",
+        EquipmentType::HybridOneHand => "Hybrid one-handed",
+        EquipmentType::OneHand => "One-handed",
+        EquipmentType::TwoHand => "Two-handed",
+        EquipmentType::Staff => "Staff",
+        EquipmentType::Shield => "Shield",
+        EquipmentType::HeldOffHand => "Held in off hand",
+        EquipmentType::Bow => "Bow",
+        EquipmentType::Wand => "Wand",
+        EquipmentType::Universal => "Accessory",
+        EquipmentType::Legacy => "Other",
     }
 }
 #[derive(Resource)]
 pub(super) struct View {
+    legendary: Option<super::items::legendary::Roll>,
+    training: bool,
     dropdown: Option<usize>,
     selector: Option<Selector>,
     selected: [bool; 4],
@@ -106,6 +132,8 @@ pub(super) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            legendary: None,
+            training: false,
             dropdown: None,
             selector: None,
             selected: [false; 4],
@@ -185,7 +213,7 @@ impl View {
     }
 }
 #[derive(Component)]
-struct Gambler;
+struct Gambler(u32);
 #[derive(Component)]
 struct Root;
 #[derive(Component)]
@@ -197,11 +225,13 @@ struct ItemPreview;
 #[derive(Component, Clone, Copy)]
 pub(super) enum Click {
     Open,
+    Gold,
     Close,
     Selector(Selector),
     Slot(SlotKind),
     Dropdown(usize),
     SelectAffix(usize, Option<usize>),
+    SelectLegendary(usize),
     DismissDropdown,
     Equipment(EquipmentType),
     Level(i32),
@@ -231,67 +261,114 @@ fn register_name(mut names: Option<ResMut<crate::names::NameCache>>) {
     let Some(names) = names.as_deref_mut() else {
         return;
     };
-    if names.creature_record(NPC_ENTRY).is_none() {
-        names.insert_creature(
-            NPC_ENTRY,
-            Some(crate::names::CreatureRecord {
-                name: "Gheed le forgeron".into(),
-                subname: Some("Paris d'équipement".into()),
-                creature_type: 7,
-                pet_family: 0,
-                rank: 0,
-                type_flags: 0,
-                civilian: true,
-                racial_leader: false,
-                display_id: super::data::CLASSES[0].looks[0],
-            }),
-        );
+    for (entry, name, subname) in [
+        (NPC_ENTRY, "Gheed the Blacksmith", "Equipment crafting"),
+        (
+            TEST_SMITH_ENTRY,
+            "Training Blacksmith",
+            "Equipment and legendary effects",
+        ),
+        (
+            TEST_GOLD_ENTRY,
+            "Training Treasurer",
+            "+10,000 gold per interaction",
+        ),
+    ] {
+        if names.creature_record(entry).is_none() {
+            names.insert_creature(
+                entry,
+                Some(crate::names::CreatureRecord {
+                    name: name.into(),
+                    subname: Some(subname.into()),
+                    creature_type: 7,
+                    pet_family: 0,
+                    rank: 0,
+                    type_flags: 0,
+                    civilian: true,
+                    racial_leader: false,
+                    display_id: super::data::CLASSES[0].looks[0],
+                }),
+            );
+        }
     }
 }
+
 fn spawn(
     mut commands: Commands,
     selection: Res<Selection>,
     role: Res<Role>,
     mut run: ResMut<Run>,
-    npc: Query<Entity, With<Gambler>>,
+    npc: Query<(Entity, &Gambler, &Transform)>,
     heroes: Query<&hero::Hero>,
+    world: benilla_world::world_point::WorldPoint,
 ) {
-    if !selection.in_hub {
-        for entity in &npc {
+    let training = super::training::active(&selection);
+    if !selection.in_hub && !training {
+        for (entity, _, _) in &npc {
             commands.entity(entity).despawn();
         }
         return;
     }
-    if *role == Role::Guest || heroes.is_empty() || !npc.is_empty() {
+    if *role == Role::Guest || heroes.is_empty() {
         return;
     }
-    let pos = position();
-    let entity = units::spawn_unit(
-        &mut commands,
-        &units::UnitSpec {
-            serial: run.guid(),
-            display: super::data::CLASSES[0].looks[0],
-            scale: 1.0,
-            level: 60,
-            faction: units::FACTION_FRIENDLY,
-            bytes0: 0x0101,
-            weapons: &[],
-            sheath: 0,
-        },
-        pos,
-        units::yaw_toward(hero::arena(&super::data::HUB) - pos),
-    );
-    commands.entity(entity).insert(Gambler);
-    commands.queue(move |world: &mut World| {
-        if let Some(mut store) = world.get_mut::<crate::net::ObjectStore>(entity) {
-            store
-                .0
-                .merge(benilla_protocol::messages::ObjectFields::from_pairs(&[(
-                    3, NPC_ENTRY,
-                )]));
+    let services = if training {
+        vec![
+            (TEST_SMITH_ENTRY, training_position(false)),
+            (TEST_GOLD_ENTRY, training_position(true)),
+        ]
+    } else {
+        vec![(NPC_ENTRY, position())]
+    };
+    for (entity, npc, _) in &npc {
+        if !services.iter().any(|(entry, _)| *entry == npc.0) {
+            commands.entity(entity).despawn();
         }
-    });
+    }
+    for (entry, pos) in services {
+        let pos = super::enemies::ground(&world, pos, pos.y);
+        if let Some((entity, _, transform)) = npc.iter().find(|(_, npc, _)| npc.0 == entry) {
+            // Reposition existing services too, including their height as terrain loads.
+            if transform.translation.distance_squared(pos) > 0.0001 {
+                let mut transform = *transform;
+                transform.translation = pos;
+                commands.entity(entity).insert(transform);
+            }
+            continue;
+        }
+        let center = if training {
+            super::training::services_center()
+        } else {
+            hero::arena(&super::data::HUB)
+        };
+        let entity = units::spawn_unit(
+            &mut commands,
+            &units::UnitSpec {
+                serial: run.guid(),
+                display: super::data::CLASSES[0].looks[0],
+                scale: 1.0,
+                level: 60,
+                faction: units::FACTION_FRIENDLY,
+                bytes0: 0x0101,
+                weapons: &[],
+                sheath: 0,
+            },
+            pos,
+            units::yaw_toward(center - pos),
+        );
+        commands.entity(entity).insert(Gambler(entry));
+        commands.queue(move |world: &mut World| {
+            if let Some(mut store) = world.get_mut::<crate::net::ObjectStore>(entity) {
+                store
+                    .0
+                    .merge(benilla_protocol::messages::ObjectFields::from_pairs(&[(
+                        3, entry,
+                    )]));
+            }
+        });
+    }
 }
+
 pub(super) fn input(
     phase: Res<State<Phase>>,
     mut selection: ResMut<Selection>,
@@ -303,10 +380,35 @@ pub(super) fn input(
     mut keys: ResMut<ButtonInput<KeyCode>>,
     clicks: Query<(&Interaction, &Click), Changed<Interaction>>,
 ) {
+    let training = super::training::active(&selection);
+    if view.training != training {
+        *view = View {
+            training,
+            open: view.open,
+            ..Default::default()
+        };
+    }
     let was_open = view.open;
-    let accessible = selection.in_hub
-        && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
-        && heroes.single().is_ok_and(|t| near(t.translation));
+    let accessible = heroes
+        .single()
+        .is_ok_and(|t| accessible(&selection, *phase.get(), t.translation));
+    let gold_accessible = super::training::active(&selection)
+        && matches!(*phase.get(), Phase::Playing | Phase::CharacterSheet)
+        && heroes
+            .single()
+            .is_ok_and(|t| near_training(t.translation, true));
+    if gold_accessible
+        && clicks.iter().any(|(interaction, click)| {
+            *interaction == Interaction::Pressed && matches!(click, Click::Gold)
+        })
+    {
+        inventory.notice = match give_training_gold(&selection, &mut inventory) {
+            Ok(()) => "+10,000 gold".into(),
+            Err(error) => error,
+        };
+        selection.pointer_captured = true;
+        selection.ui_captured = true;
+    }
     if !accessible {
         view.open = false;
         return;
@@ -335,7 +437,7 @@ pub(super) fn input(
             }
             Click::Selector(selector) if view.open => {
                 if selector == Selector::Equipment && !view.selected[0] {
-                    view.notice = "Selectionnez d'abord un emplacement.".into();
+                    view.notice = "Select a slot first.".into();
                 } else {
                     view.selector = if view.selector == Some(selector) {
                         None
@@ -360,6 +462,7 @@ pub(super) fn input(
                     }
                 }
                 view.affixes.fill(None);
+                view.legendary = None;
                 view.dropdown = None;
                 view.revision = view.revision.wrapping_add(1);
             }
@@ -381,6 +484,7 @@ pub(super) fn input(
                 view.selected[1] = true;
                 view.selector = None;
                 view.affixes.fill(None);
+                view.legendary = None;
                 view.dropdown = None;
                 view.revision = view.revision.wrapping_add(1);
             }
@@ -390,15 +494,17 @@ pub(super) fn input(
                 view.selector = None;
                 view.notice.clear();
                 view.affixes.fill(None);
+                view.legendary = None;
                 view.dropdown = None;
                 view.revision = view.revision.wrapping_add(1);
             }
-            Click::Rarity(rarity) if view.open => {
+            Click::Rarity(rarity) if view.open && (rarity != Rarity::Legendary || training) => {
                 view.rarity = rarity;
                 view.selected[3] = true;
                 view.selector = None;
                 view.notice.clear();
                 view.affixes.fill(None);
+                view.legendary = None;
                 view.dropdown = None;
                 view.revision = view.revision.wrapping_add(1);
             }
@@ -412,9 +518,14 @@ pub(super) fn input(
                 view.revision = view.revision.wrapping_add(1);
             }
             Click::Dropdown(slot)
-                if view.open && view.ready() && view.slot_kind(slot).is_some() =>
+                if view.open
+                    && view.ready()
+                    && (view.slot_kind(slot).is_some()
+                        || (slot == 6 && training && view.rarity == Rarity::Legendary)) =>
             {
-                view.custom = true;
+                if slot != 6 {
+                    view.custom = true;
+                }
                 view.selector = None;
                 view.dropdown = if view.dropdown == Some(slot) {
                     None
@@ -423,6 +534,19 @@ pub(super) fn input(
                 };
                 view.notice.clear();
                 view.revision = view.revision.wrapping_add(1);
+            }
+            Click::SelectLegendary(index)
+                if view.open && training && view.rarity == Rarity::Legendary =>
+            {
+                if let Some(choice) = inventory
+                    .training_legendary_choices(&view.request())
+                    .get(index)
+                {
+                    view.legendary = Some(choice.roll.clone());
+                    view.dropdown = None;
+                    view.notice.clear();
+                    view.revision = view.revision.wrapping_add(1);
+                }
             }
             Click::SelectAffix(slot, choice)
                 if view.open && view.custom && view.slot_kind(slot).is_some() =>
@@ -434,7 +558,7 @@ pub(super) fn input(
                         view.affixes[slot] = Some(choices[index].id.clone())
                     }
                     _ => {
-                        view.notice = "Affixe incompatible ou deja choisi.".into();
+                        view.notice = "Affix incompatible or already selected.".into();
                     }
                 }
                 view.dropdown = None;
@@ -449,13 +573,24 @@ pub(super) fn input(
                 view.notice.clear();
                 if !view.ready() {
                     view.notice =
-                        "Selectionnez un emplacement, un type, un profil et une rarete.".into();
+                        "Select a slot, type, affix profile and rarity.".into();
                 } else if account.character != inventory.money_owner()
                     || account.character.is_none()
                 {
-                    view.notice = "Selectionnez un personnage avant de fabriquer.".into();
+                    view.notice = "Select a character before crafting.".into();
                 } else {
-                    match inventory.craft(&view.request(), view.item_level(account.xp), &mut rng) {
+                    let result = if training {
+                        inventory.craft_training(
+                            &selection,
+                            &view.request(),
+                            view.item_level(account.xp),
+                            view.legendary.as_ref(),
+                            &mut rng,
+                        )
+                    } else {
+                        inventory.craft(&view.request(), view.item_level(account.xp), &mut rng)
+                    };
+                    match result {
                         Ok(item) => view.result = Some(item),
                         Err(error) => view.notice = error,
                     }
@@ -496,12 +631,18 @@ fn render(
     mut cache: Local<String>,
 ) {
     let Some(font) = font else { return };
-    let accessible = selection.in_hub
-        && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
-        && heroes.single().is_ok_and(|t| near(t.translation));
+    let accessible = heroes
+        .single()
+        .is_ok_and(|t| accessible(&selection, *phase.get(), t.translation));
+    let training = super::training::active(&selection);
+    let gold_accessible = training
+        && matches!(*phase.get(), Phase::Playing | Phase::CharacterSheet)
+        && heroes
+            .single()
+            .is_ok_and(|t| near_training(t.translation, true));
     let level = view.item_level(account.xp);
     let stamp = format!(
-        "{accessible} {} {:?} {} {} {} {}",
+        "{accessible} {training} {gold_accessible} {} {:?} {} {} {} {}",
         view.open,
         view.slot,
         view.revision,
@@ -516,10 +657,10 @@ fn render(
     for entity in &roots {
         commands.entity(entity).despawn();
     }
-    if !accessible {
+    if !accessible && !gold_accessible {
         return;
     }
-    if !view.open {
+    if !view.open || !accessible {
         commands
             .spawn((
                 Root,
@@ -528,12 +669,33 @@ fn render(
                     position_type: PositionType::Absolute,
                     left: Val::Percent(50.0),
                     bottom: Val::Px(58.0),
-                    margin: UiRect::left(Val::Px(-130.0)),
+                    margin: UiRect::left(Val::Px(-150.0)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(4.0),
                     ..default()
                 },
             ))
             .with_children(|ui| {
-                smith_button(ui, &font.0, "Forgeron - Fabriquer [G]", Click::Open, 260.0)
+                if accessible {
+                    smith_button(ui, &font.0, "Blacksmith - Craft [G]", Click::Open, 300.0);
+                }
+                if gold_accessible {
+                    smith_button(
+                        ui,
+                        &font.0,
+                        "Treasurer: +10,000 gold",
+                        Click::Gold,
+                        300.0,
+                    );
+                    ui.spawn(Node {
+                        column_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn(text(&font.0, "Your gold:", 13.0, hud::GOLD_TONE));
+                        coins(row, &font.0, inventory.money());
+                    });
+                }
             });
         return;
     }
@@ -557,7 +719,16 @@ fn render(
         .with_children(|ui| {
             skin::backdrop(ui);
             ui.spawn((
-                text(&font.0, "Gheed - Forgeron", 20.0, hud::GOLD_TONE),
+                text(
+                    &font.0,
+                    if training {
+                        "Training Blacksmith"
+                    } else {
+                        "Gheed - Blacksmith"
+                    },
+                    20.0,
+                    hud::GOLD_TONE,
+                ),
                 skin::rect(22.0, 14.0, 330.0, 28.0),
             ));
             ui.spawn(Node {
@@ -569,7 +740,7 @@ fn render(
                 smith_button(row, &font.0, "-10", Click::Level(-10), 38.0);
                 smith_button(row, &font.0, "-", Click::Level(-1), 28.0);
                 row.spawn((
-                    text(&font.0, format!("Ilvl : {level}"), 14.0, hud::GOLD_TONE),
+                    text(&font.0, format!("Item level: {level}"), 14.0, hud::GOLD_TONE),
                     Node {
                         width: Val::Px(110.0),
                         ..default()
@@ -581,7 +752,7 @@ fn render(
             ui.spawn(skin::rect(750.0, 10.0, 30.0, 28.0))
                 .with_children(|b| smith_button(b, &font.0, "X", Click::Close, 30.0));
             ui.spawn((
-                text(&font.0, "Configuration de l'objet", 14.0, hud::GOLD_TONE),
+                text(&font.0, "Item configuration", 14.0, hud::GOLD_TONE),
                 skin::rect(20.0, 58.0, 325.0, 22.0),
             ));
             for selector in [
@@ -593,31 +764,31 @@ fn render(
                 let index = selector.index();
                 let (title, placeholder, value) = match selector {
                     Selector::Slot => (
-                        "Emplacement",
-                        "Selectionner un emplacement",
+                        "Slot",
+                        "Select a slot",
                         SLOTS
                             .iter()
                             .find(|(slot, _)| *slot == view.slot)
-                            .map_or("Objet", |(_, label)| *label),
+                            .map_or("Item", |(_, label)| *label),
                     ),
                     Selector::Equipment => (
-                        "Type d'objet",
-                        "Selectionner un type",
+                        "Item type",
+                        "Select a type",
                         equipment_label(view.equipment),
                     ),
                     Selector::Profile => (
-                        "Profil des affixes",
-                        "Selectionner un profil",
+                        "Affix profile",
+                        "Select an affix profile",
                         view.profile.label(),
                     ),
                     Selector::Rarity => (
-                        "Rarete",
-                        "Selectionner une rarete",
+                        "Rarity",
+                        "Select a rarity",
                         match view.rarity {
                             Rarity::Normal => "Normal",
-                            Rarity::Magic => "Magique",
-                            Rarity::Epic => "Epique",
-                            _ => "Indisponible",
+                            Rarity::Magic => "Magic",
+                            Rarity::Epic => "Epic",
+                            Rarity::Legendary => "Legendary",
                         },
                     ),
                 };
@@ -636,7 +807,7 @@ fn render(
                         smith_button(row, &font.0, label, Click::Selector(selector), 325.0)
                     });
             }
-            for (index, (custom, label)) in [(false, "Affixes aleatoires"), (true, "Sur mesure")]
+            for (index, (custom, label)) in [(false, "Random affixes"), (true, "Custom affixes")]
                 .into_iter()
                 .enumerate()
             {
@@ -654,11 +825,11 @@ fn render(
                 text(
                     &font.0,
                     if view.custom {
-                        "Affixes choisis : valeurs aleatoires.
-Chaque ajout double le prix."
+                        "Selected affixes roll random values.
+Each selected affix doubles the price."
                     } else {
-                        "Affixes et valeurs tires au hasard
-selon le slot, le type et le profil."
+                        "Affixes and values roll randomly
+based on the slot, type and profile."
                     },
                     12.0,
                     Color::WHITE,
@@ -670,31 +841,35 @@ selon le slot, le type et le profil."
                 ..skin::rect(20.0, 505.0, 330.0, 24.0)
             })
             .with_children(|row| {
-                row.spawn(text(&font.0, "Prix :", 13.0, hud::GOLD_TONE));
+                row.spawn(text(&font.0, "Price:", 13.0, hud::GOLD_TONE));
                 if !view.ready() {
                     row.spawn(text(
                         &font.0,
-                        "Choisir la configuration",
+                        "Select the item configuration",
                         12.0,
                         Color::WHITE,
                     ));
                 } else {
-                    match request.price(level) {
+                    match if training {
+                        request.training_price(level)
+                    } else {
+                        request.price(level)
+                    } {
                         Ok(price) => coins(row, &font.0, price),
                         Err(_) => {
-                            row.spawn(text(&font.0, "Prix trop eleve", 12.0, Color::WHITE));
+                            row.spawn(text(&font.0, "Price too high", 12.0, Color::WHITE));
                         }
                     }
                 }
             });
             ui.spawn(skin::rect(20.0, 536.0, 325.0, 32.0))
-                .with_children(|row| smith_button(row, &font.0, "Fabriquer", Click::Buy, 325.0));
+                .with_children(|row| smith_button(row, &font.0, "Craft", Click::Buy, 325.0));
             ui.spawn(Node {
                 column_gap: Val::Px(8.0),
                 ..skin::rect(20.0, 580.0, 325.0, 24.0)
             })
             .with_children(|row| {
-                row.spawn(text(&font.0, "Votre or :", 13.0, hud::GOLD_TONE));
+                row.spawn(text(&font.0, "Your gold:", 13.0, hud::GOLD_TONE));
                 coins(row, &font.0, inventory.money());
             });
             let cap = if view.ready() { view.affix_cap() } else { 0 };
@@ -703,7 +878,7 @@ selon le slot, le type et le profil."
                     &font.0,
                     if view.ready() {
                         format!(
-                            "Affixes sur mesure - {} / {} choisis",
+                            "Custom affixes - {} / {} selected",
                             view.affixes.iter().flatten().count(),
                             cap * 2
                         )
@@ -719,7 +894,7 @@ selon le slot, le type et le profil."
                 ui.spawn((
                     text(
                         &font.0,
-                        "Completez la configuration a gauche\npour choisir vos affixes.",
+                        "Complete the configuration on the left\nto select your affixes.",
                         13.0,
                         Color::WHITE,
                     ),
@@ -741,8 +916,8 @@ selon le slot, le type et le profil."
                         .as_ref()
                         .and_then(|id| choices.iter().find(|a| &a.id == id));
                     let label = selected
-                        .map_or_else(|| "Choisir un affixe".to_owned(), |a| a.label.clone());
-                    let label = format!("{} : {label}  v", index + 1);
+                        .map_or_else(|| "Select an affix".to_owned(), |a| a.label.clone());
+                    let label = format!("{}: {label}  v", index + 1);
                     ui.spawn(skin::rect(
                         370.0,
                         top + 28.0 + index as f32 * 40.0,
@@ -788,7 +963,7 @@ selon le slot, le type et le profil."
                     smith_button(
                         list,
                         &font.0,
-                        "Aucun / Retirer l'affixe",
+                        "None / Remove affix",
                         Click::SelectAffix(slot, None),
                         393.0,
                     );
@@ -803,6 +978,68 @@ selon le slot, le type et le profil."
                         );
                     }
                 });
+            }
+            if training && view.ready() && view.rarity == Rarity::Legendary {
+                let effects = inventory.training_legendary_choices(&request);
+                let label = view
+                    .legendary
+                    .as_ref()
+                    .and_then(|roll| effects.iter().find(|e| e.roll == *roll))
+                    .map_or("Select a legendary effect", |e| e.label.as_str());
+                ui.spawn(skin::rect(370.0, 411.0, 405.0, 28.0))
+                    .with_children(|row| {
+                        smith_button(
+                            row,
+                            &font.0,
+                            format!("Legendary effect: {label}  v"),
+                            Click::Dropdown(6),
+                            405.0,
+                        );
+                    });
+                if view.dropdown == Some(6) {
+                    ui.spawn((
+                        Button,
+                        Click::DismissDropdown,
+                        GlobalZIndex(646),
+                        BackgroundColor(Color::NONE),
+                        skin::rect(0.0, 0.0, 800.0, 624.0),
+                    ));
+                    ui.spawn((
+                        ScrollArea,
+                        ScrollPosition::default(),
+                        RelativeCursorPosition::default(),
+                        GlobalZIndex(650),
+                        BackgroundColor(Color::srgb(0.045, 0.035, 0.025)),
+                        BorderColor::all(hud::GOLD_TONE),
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(3.0),
+                            padding: UiRect::all(Val::Px(4.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            overflow: Overflow::scroll_y(),
+                            ..skin::rect(370.0, 145.0, 405.0, 260.0)
+                        },
+                    ))
+                    .with_children(|list| {
+                        if effects.is_empty() {
+                            list.spawn(text(
+                                &font.0,
+                                "No effects for this slot and type.",
+                                12.0,
+                                Color::WHITE,
+                            ));
+                        }
+                        for (index, effect) in effects.iter().enumerate() {
+                            smith_button(
+                                list,
+                                &font.0,
+                                &effect.label,
+                                Click::SelectLegendary(index),
+                                393.0,
+                            );
+                        }
+                    });
+                }
             }
             if let Some(selector) = view.selector {
                 ui.spawn((
@@ -832,10 +1069,12 @@ selon le slot, le type et le profil."
                     .collect(),
                     Selector::Rarity => [
                         (Rarity::Normal, "Normal"),
-                        (Rarity::Magic, "Magique"),
-                        (Rarity::Epic, "Epique"),
+                        (Rarity::Magic, "Magic"),
+                        (Rarity::Epic, "Epic"),
+                        (Rarity::Legendary, "Legendary"),
                     ]
                     .into_iter()
+                    .filter(|(rarity, _)| training || *rarity != Rarity::Legendary)
                     .map(|(rarity, label)| (label.to_owned(), Click::Rarity(rarity)))
                     .collect(),
                 };
@@ -877,13 +1116,18 @@ selon le slot, le type et le profil."
             .with_children(|panel| {
                 panel.spawn(text(
                     &font.0,
-                    "Objet a fabriquer - survoler l'icone",
+                    "Crafting preview - Hover over the icon",
                     12.0,
                     hud::GOLD_TONE,
                 ));
-                if let Some(item) = inventory.craft_preview(&request, level) {
+                let preview = if training {
+                    inventory.training_craft_preview(&request, level, view.legendary.as_ref())
+                } else {
+                    inventory.craft_preview(&request, level)
+                };
+                if let Some(item) = preview {
                     let mut extra_lines = vec![(
-                        "Valeurs indicatives, relancees a la fabrication.".to_string(),
+                        "Example values. Values roll again when crafting.".to_string(),
                         Color::srgb(0.7, 0.7, 0.7),
                     )];
                     if view.custom {
@@ -894,9 +1138,9 @@ selon le slot, le type et le profil."
                             .filter_map(|(slot, id)| id.as_ref().map(|id| (slot, id)))
                         {
                             if let Some(affix) = choices.iter().find(|a| &a.id == id) {
-                                let kind = if slot < 3 { "Prefixe" } else { "Suffixe" };
+                                let kind = if slot < 3 { "Prefix" } else { "Suffix" };
                                 extra_lines.push((
-                                    format!("{kind} : {}", affix.label),
+                                    format!("{kind}: {}", affix.label),
                                     Color::srgb(0.3, 1.0, 0.3),
                                 ));
                             }
@@ -908,7 +1152,7 @@ selon le slot, le type et le profil."
                             _ => (4, 6),
                         };
                         extra_lines.push((
-                            format!("{min} a {max} affixes aleatoires a la fabrication."),
+                            format!("{min} to {max} random affixes when crafted."),
                             Color::srgb(0.3, 1.0, 0.3),
                         ));
                     }
@@ -966,7 +1210,7 @@ selon le slot, le type et le profil."
                     smith_button(
                         panel,
                         &font.0,
-                        format!("Dernier objet : {}", item.name),
+                        format!("Last crafted item: {}", item.name),
                         Click::Result,
                         380.0,
                     );
@@ -974,9 +1218,9 @@ selon le slot, le type et le profil."
                     panel.spawn(text(
                         &font.0,
                         if view.ready() {
-                            "Apercu non recuperable. Valeurs relancees a l'achat."
+                            "Preview only. Values roll again when crafting."
                         } else {
-                            "Completez les quatre choix pour afficher l'objet."
+                            "Complete all four choices to preview the item."
                         },
                         11.0,
                         Color::srgb(0.7, 0.7, 0.7),
@@ -1101,10 +1345,12 @@ fn tooltip(
         return;
     };
     let content = buttons.iter().filter(|(i, _)| **i == Interaction::Hovered).find_map(|(_, click)| match click {
-        Click::Selector(Selector::Slot) if view.selected[0] => Some(format!("Emplacement : {:?}\nChoisir un autre emplacement.",view.slot)),
+        Click::Selector(Selector::Slot) if view.selected[0] => Some(format!("Slot: {:?}\nSelect another slot.",view.slot)),
+        Click::Dropdown(6) => view.legendary.as_ref().and_then(|roll| inventory.training_legendary_choices(&view.request()).into_iter().find(|c| c.roll == *roll)).map(|c| format!("{}\n{}", c.label, c.description)),
         Click::Dropdown(slot) => view.affixes.get(*slot).and_then(|id| id.as_ref()).and_then(|id| inventory.craft_affixes(&view.request(), view.item_level(account.xp)).into_iter().find(|a| &a.id == id)).map(|a| a.label),
-        Click::SelectAffix(_, Some(index)) => inventory.craft_affixes(&view.request(), view.item_level(account.xp)).get(*index).map(|a| format!("{}\nDisponible une seule fois par objet.\nValeur tiree au hasard dans cette plage.\nSelectionner cet affixe double le prix.", a.label)),
-        Click::Slot(slot) => Some(format!("Emplacement : {slot:?}\nChoisissez ensuite le type, le profil et la rarete.")),
+        Click::SelectAffix(_, Some(index)) => inventory.craft_affixes(&view.request(), view.item_level(account.xp)).get(*index).map(|a| format!("{}\nAvailable once per item.\nThe value rolls randomly within this range.\nSelecting this affix doubles the price.", a.label)),
+        Click::Slot(slot) => Some(format!("Slot: {slot:?}\nNext, choose the type, profile and rarity.")),
+        Click::SelectLegendary(index) => inventory.training_legendary_choices(&view.request()).get(*index).map(|c| format!("{}\n{}", c.label, c.description)),
         Click::Result => view.result.as_ref().map(|item| format!("{}\n{}", item.name, item.affixes.iter().map(|a| a.description()).collect::<Vec<_>>().join("\n"))),
         _ => None,
     });
@@ -1131,6 +1377,210 @@ fn tooltip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gold_service_button_works_without_being_near_the_smith_and_repeats() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(State::new(Phase::Playing))
+            .insert_resource(Selection {
+                stage: super::super::data::TRAINING_MAP,
+                ..default()
+            })
+            .insert_resource(Inventory::fixture(vec![]))
+            .insert_resource(talents::Account::fresh())
+            .init_resource::<View>()
+            .init_resource::<Rng>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(hud::HudFont(Handle::default()))
+            .add_systems(Update, (input, render).chain());
+        let hero = app
+            .world_mut()
+            .spawn((
+                hero::Hero { vy: 0.0, air: 0.0 },
+                Transform::from_translation(training_position(true)),
+            ))
+            .id();
+        app.update();
+        assert!(!near_training(training_position(true), false));
+        for count in 1..=2 {
+            press_action(&mut app, |c| matches!(c, Click::Gold));
+            assert_eq!(
+                app.world().resource::<Inventory>().money(),
+                TEST_GOLD_AMOUNT * count
+            );
+        }
+        assert!(app.world().resource::<Selection>().pointer_captured);
+        assert!(!app.world().resource::<View>().open);
+        app.world_mut()
+            .get_mut::<Transform>(hero)
+            .unwrap()
+            .translation += Vec3::X * 50.0;
+        app.world_mut().spawn((Interaction::Pressed, Click::Gold));
+        app.update();
+        assert_eq!(
+            app.world().resource::<Inventory>().money(),
+            TEST_GOLD_AMOUNT * 2
+        );
+    }
+
+    #[test]
+    fn training_services_spawn_only_on_test_map_and_gold_is_repeatable() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        benilla_world::world_point::init_world_point_resources(&mut world);
+        world.init_resource::<Run>();
+        world.insert_resource(Role::Solo);
+        world.insert_resource(Selection {
+            stage: super::super::data::TRAINING_MAP,
+            ..default()
+        });
+        world.spawn(hero::Hero { vy: 0.0, air: 0.0 });
+        world.run_system_once(spawn).unwrap();
+        let mut entries: Vec<_> = world
+            .query_filtered::<&crate::net::ObjectStore, With<Gambler>>()
+            .iter(&world)
+            .filter_map(|s| s.0.object_entry())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, vec![TEST_SMITH_ENTRY, TEST_GOLD_ENTRY]);
+        let center = super::super::training::services_center();
+        assert!(near_training(center, false) && near_training(center, true));
+        let actors: Vec<_> = world
+            .query::<(Entity, &Gambler, &Transform)>()
+            .iter(&world)
+            .map(|(e, npc, t)| (e, npc.0, t.translation))
+            .collect();
+        for (_, entry, position) in &actors {
+            let expected = training_position(*entry == TEST_GOLD_ENTRY);
+            assert!(units::flat(*position - expected).length() < 0.001);
+            assert!((units::flat(*position - center).length() - 4.0).abs() < 0.001);
+        }
+        // One surviving service must not suppress the other one's respawn.
+        let gold = actors
+            .iter()
+            .find(|(_, entry, _)| *entry == TEST_GOLD_ENTRY)
+            .unwrap()
+            .0;
+        world.entity_mut(gold).despawn();
+        let smith = actors
+            .iter()
+            .find(|(_, entry, _)| *entry == TEST_SMITH_ENTRY)
+            .unwrap()
+            .0;
+        world.get_mut::<Transform>(smith).unwrap().translation = Vec3::ZERO;
+        world.run_system_once(spawn).unwrap();
+        assert!(
+            units::flat(
+                world.get::<Transform>(smith).unwrap().translation - training_position(false)
+            )
+            .length()
+                < 0.001
+        );
+        world.run_system_once(spawn).unwrap();
+        assert_eq!(world.query::<&Gambler>().iter(&world).count(), 2);
+        let mut inventory = Inventory::fixture(vec![]);
+        let selection = world.resource::<Selection>();
+        give_training_gold(selection, &mut inventory).unwrap();
+        give_training_gold(selection, &mut inventory).unwrap();
+        assert_eq!(inventory.money(), TEST_GOLD_AMOUNT * 2);
+        world.resource_mut::<Selection>().in_hub = true;
+        world.run_system_once(spawn).unwrap();
+        let entries: Vec<_> = world
+            .query_filtered::<&crate::net::ObjectStore, With<Gambler>>()
+            .iter(&world)
+            .filter_map(|s| s.0.object_entry())
+            .collect();
+        assert_eq!(entries, vec![NPC_ENTRY]);
+        assert!(give_training_gold(world.resource::<Selection>(), &mut inventory).is_err());
+        assert_eq!(inventory.money(), TEST_GOLD_AMOUNT * 2);
+    }
+
+    #[test]
+    fn training_smith_selects_and_crafts_legendary_effects_but_hub_rejects_them() {
+        let mut app = App::new();
+        let mut inventory = Inventory::fixture(vec![]);
+        inventory.add_money(TEST_GOLD_AMOUNT).unwrap();
+        let mut account = talents::Account::fresh();
+        account.character = Some(1);
+        account.xp = talents::threshold(60);
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(State::new(Phase::Playing))
+            .insert_resource(Selection {
+                stage: super::super::data::TRAINING_MAP,
+                ..default()
+            })
+            .init_resource::<View>()
+            .insert_resource(inventory)
+            .insert_resource(account)
+            .init_resource::<Rng>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(hud::HudFont(Handle::default()))
+            .add_systems(Update, (input, render, tooltip).chain());
+        let hero = app
+            .world_mut()
+            .spawn((
+                hero::Hero { vy: 0.0, air: 0.0 },
+                Transform::from_translation(training_position(false)),
+            ))
+            .id();
+        app.update();
+        press_action(&mut app, |c| matches!(c, Click::Open));
+        press_action(&mut app, |c| matches!(c, Click::Selector(Selector::Slot)));
+        press_action(&mut app, |c| matches!(c, Click::Slot(SlotKind::Ring)));
+        press_action(&mut app, |c| {
+            matches!(c, Click::Selector(Selector::Equipment))
+        });
+        press_action(&mut app, |c| {
+            matches!(c, Click::Equipment(EquipmentType::Universal))
+        });
+        press_action(&mut app, |c| {
+            matches!(c, Click::Selector(Selector::Profile))
+        });
+        press_action(&mut app, |c| {
+            matches!(c, Click::Profile(CraftProfile::Strength))
+        });
+        press_action(&mut app, |c| matches!(c, Click::Selector(Selector::Rarity)));
+        press_action(&mut app, |c| matches!(c, Click::Rarity(Rarity::Legendary)));
+        let before = app.world().resource::<Inventory>().money();
+        press_action(&mut app, |c| matches!(c, Click::Buy));
+        assert_eq!(app.world().resource::<Inventory>().money(), before);
+        assert!(app.world().resource::<Inventory>().all().is_empty());
+        press_action(&mut app, |c| matches!(c, Click::Dropdown(6)));
+        press_action(&mut app, |c| matches!(c, Click::SelectLegendary(0)));
+        assert!(
+            !app.world().resource::<View>().custom,
+            "Choosing the legendary effect preserves random ordinary affixes"
+        );
+        let roll = app.world().resource::<View>().legendary.clone().unwrap();
+        let world = app.world_mut();
+        let preview = world
+            .query::<&super::super::combat_ui::bags::ReadOnlyItemTip>()
+            .iter(world)
+            .next()
+            .unwrap();
+        assert_eq!(preview.item.legendary.as_ref(), Some(&roll));
+        assert_eq!(preview.item.rarity, Rarity::Legendary);
+        press_action(&mut app, |c| matches!(c, Click::Buy));
+        let inventory = app.world().resource::<Inventory>();
+        assert_eq!(inventory.all().len(), 1);
+        assert_eq!(inventory.all()[0].legendary.as_ref(), Some(&roll));
+        assert!((4..=6).contains(&inventory.all()[0].affixes.len()));
+        assert!(inventory.money() < before);
+        app.world_mut().resource_mut::<Selection>().in_hub = true;
+        app.world_mut().insert_resource(State::new(Phase::Hub));
+        app.world_mut()
+            .get_mut::<Transform>(hero)
+            .unwrap()
+            .translation = position();
+        app.update();
+        assert_ne!(app.world().resource::<View>().rarity, Rarity::Legendary);
+        let world = app.world_mut();
+        assert!(!world
+            .query::<&Click>()
+            .iter(world)
+            .any(|c| matches!(c, Click::Rarity(Rarity::Legendary) | Click::Dropdown(6))));
+    }
+
     fn press_action(app: &mut App, predicate: impl Fn(&Click) -> bool) {
         let entity = {
             let world = app.world_mut();
@@ -1253,10 +1703,10 @@ mod tests {
                 .map(|t| t.0.clone())
                 .collect();
             for placeholder in [
-                "Selectionner un emplacement",
-                "Selectionner un type",
-                "Selectionner un profil",
-                "Selectionner une rarete",
+                "Select a slot",
+                "Select a type",
+                "Select an affix profile",
+                "Select a rarity",
             ] {
                 assert!(texts.iter().any(|text| text.starts_with(placeholder)));
             }
@@ -1306,7 +1756,7 @@ mod tests {
         assert!(world
             .query::<&Text>()
             .iter(world)
-            .any(|t| t.0.starts_with("Emplacement : Head")));
+            .any(|t| t.0.starts_with("Slot: Head")));
         assert_eq!(world.resource::<Inventory>().money(), 100000);
         assert_eq!(
             app.world()
@@ -1449,7 +1899,7 @@ mod tests {
         let group = &choices.iter().find(|a| a.id == selected).unwrap().group;
         {
             let affix = choices.iter().find(|a| a.id == selected).unwrap();
-            let expected = format!("Prefixe : {}", affix.label);
+            let expected = format!("Prefix: {}", affix.label);
             let world = app.world_mut();
             assert!(world
                 .query::<&super::super::combat_ui::bags::ReadOnlyItemTip>()

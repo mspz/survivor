@@ -14,7 +14,7 @@ pub(super) mod armour;
 mod auto_salvage;
 pub(super) mod combat;
 mod config;
-pub(in crate::survivors) use config::crafting::{CraftRequest, CraftProfile, CraftAffix};
+pub(in crate::survivors) use config::crafting::{CraftAffix, CraftProfile, CraftRequest, LegendaryChoice};
 mod equipment;
 mod item_level;
 pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
@@ -618,7 +618,6 @@ impl Inventory {
             self.notice = format!("Money could not be saved: {error}");
         }
     }
-    #[cfg(test)]
     pub(in crate::survivors) fn add_money(&mut self, amount: u64) -> Result<(), String> {
         if amount == 0 {
             return Ok(());
@@ -799,6 +798,18 @@ impl Inventory {
         let mut save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
         // Identity is the saved unique ID; display names can change or be translated.
         for item in &mut save.items {
+            if item.affix_rules == 2 && item.legendary.is_none() {
+                for (old, profile) in [
+                    (" forge (Force)", "Strength"),
+                    (" forge (Agilite)", "Agility"),
+                    (" forge (Intelligence)", "Intelligence"),
+                ] {
+                    if let Some(base) = item.name.strip_suffix(old) {
+                        item.name = format!("{base} forged ({profile})");
+                        break;
+                    }
+                }
+            }
             if let Some(definition) = item
                 .legendary
                 .as_ref()
@@ -937,8 +948,60 @@ impl Inventory {
         let copper = self
             .money()
             .checked_sub(price)
-            .ok_or("Pas assez de monnaie.")?;
+            .ok_or("Not enough gold.")?;
         let mut item = self.config.generate_gamble(level, self.class, slot, rng)?;
+        let mut save = self.save.clone();
+        item.id = save.next_id;
+        save.next_id = save
+            .next_id
+            .checked_add(1)
+            .ok_or("Item identity exhausted")?;
+        save.copper = copper;
+        save.items.push(item.clone());
+        self.commit(save)?;
+        Ok(item)
+    }
+    pub(in crate::survivors) fn training_legendary_choices(
+        &self,
+        request: &CraftRequest,
+    ) -> Vec<LegendaryChoice> {
+        self.config.training_legendary_choices(request, self.class)
+    }
+    pub(in crate::survivors) fn training_craft_preview(
+        &self,
+        request: &CraftRequest,
+        level: u32,
+        roll: Option<&legendary::Roll>,
+    ) -> Option<Item> {
+        let mut preview = request.clone();
+        if preview.affixes.is_none() {
+            preview.affixes = Some(vec![]);
+        }
+        self.config
+            .generate_training_craft(&preview, level, self.class, roll, &mut Rng(1))
+            .ok()
+    }
+    pub(in crate::survivors) fn craft_training(
+        &mut self,
+        selection: &super::Selection,
+        request: &CraftRequest,
+        level: u32,
+        roll: Option<&legendary::Roll>,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        if !super::training::active(selection) {
+            return Err("The training blacksmith is only available in the training zone.".into());
+        }
+        self.writable()?;
+        let level = level.clamp(1, MAX_ITEM_LEVEL);
+        let price = request.training_price(level)?;
+        let copper = self
+            .money()
+            .checked_sub(price)
+            .ok_or("Not enough gold.")?;
+        let mut item = self
+            .config
+            .generate_training_craft(request, level, self.class, roll, rng)?;
         let mut save = self.save.clone();
         item.id = save.next_id;
         save.next_id = save
@@ -959,7 +1022,7 @@ impl Inventory {
         self.writable()?;
         let level = level.clamp(1, MAX_ITEM_LEVEL);
         let price = request.price(level)?;
-        let copper = self.money().checked_sub(price).ok_or("Pas assez de monnaie.")?;
+        let copper = self.money().checked_sub(price).ok_or("Not enough gold.")?;
         let mut item = self.config.generate_craft(request, level, self.class, rng)?;
         let mut save = self.save.clone();
         item.id = save.next_id;
@@ -971,7 +1034,7 @@ impl Inventory {
     }
     pub fn equip(&mut self, id: u64, slot: &str) -> Result<(), String> {
         let item = self.item(id).ok_or("Item missing")?;
-        if self.character_level < item.required_level() { return Err(format!("Niveau {} requis pour equiper cet objet.", item.required_level())); }
+        if self.character_level < item.required_level() { return Err(format!("Requires level {} to equip this item.", item.required_level())); }
         if !SLOTS
             .iter()
             .any(|(name, kind)| *name == slot && self.can_equip(item, *kind))
@@ -2206,7 +2269,11 @@ mod money_tests {
         let item = inventory.craft(&request, 60, &mut Rng(5)).unwrap();
         assert_eq!(inventory.money(), before - request.price(60).unwrap());
         inventory.equip(item.id, "Chest").unwrap();
-        let save = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        let mut legacy = inventory.save.clone();
+        let forged = legacy.items.iter_mut().find(|i| i.id == item.id).unwrap();
+        forged.name = forged.name.replace(" forged (Agility)", " forge (Agilite)");
+        let save = Inventory::decode(&toml::to_string(&legacy).unwrap()).unwrap();
+        assert!(save.items.iter().find(|i| i.id == item.id).unwrap().name.ends_with(" forged (Agility)"));
         assert!(save.items.iter().any(|i| i.id == item.id && i.affixes.iter().any(|a| a.effect == Effect::Agility)));
         let before = inventory.money();
         let count = inventory.all().len();

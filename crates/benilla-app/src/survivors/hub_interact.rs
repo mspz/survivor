@@ -10,9 +10,18 @@ enum Service {
     Bank,
     Shared,
     Gambling,
+    TrainingSmith,
+    TrainingGold,
 }
 
 fn service(position: Vec3, net: &NetEntity, store: Option<&ObjectStore>) -> Option<Service> {
+    if net.kind == EntityKind::Unit {
+        match store.and_then(|s| s.0.object_entry()) {
+            Some(gambling::TEST_SMITH_ENTRY) => return Some(Service::TrainingSmith),
+            Some(gambling::TEST_GOLD_ENTRY) => return Some(Service::TrainingGold),
+            _ => {}
+        }
+    }
     if net.kind == EntityKind::Unit
         && store.and_then(|s| s.0.object_entry()) == Some(gambling::NPC_ENTRY)
     {
@@ -34,6 +43,8 @@ fn accessible(service: Service, player: Vec3) -> bool {
         Service::Bank => bank::near(player),
         Service::Shared => shared_chest::near(player),
         Service::Gambling => gambling::near(player),
+        Service::TrainingSmith => gambling::near_training(player, false),
+        Service::TrainingGold => gambling::near_training(player, true),
     }
 }
 
@@ -68,7 +79,7 @@ fn nearest(
                 hit = hit.min(t);
             }
         }
-        if !has_mesh {
+        if !has_mesh || (!hit.is_finite() && net.kind == EntityKind::Unit) {
             let scale = net.scale.clamp(0.4, 5.0);
             let bounds = Aabb::from_min_max(
                 Vec3::new(-0.6, 0.0, -0.6) * scale,
@@ -100,7 +111,7 @@ fn open(
 ) {
     bank.open = service == Service::Bank;
     shared.open = service == Service::Shared;
-    gambling.open = service == Service::Gambling;
+    gambling.open = matches!(service, Service::Gambling | Service::TrainingSmith);
     selection.bags_open = true;
     selection.sheet_open = false;
     selection.talents_open = false;
@@ -124,10 +135,13 @@ pub(super) fn click(
     mut bank: ResMut<bank::View>,
     mut shared: ResMut<shared_chest::View>,
     mut gambling: ResMut<gambling::View>,
+    mut inventory: ResMut<super::items::Inventory>,
     mut press: Local<Option<Vec2>>,
 ) {
-    if !selection.in_hub
-        || !matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
+    let training = super::training::active(&selection);
+    if !(selection.in_hub || training)
+        || !(matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
+            || (training && *phase.get() == Phase::Playing))
         || selection.talents_open
         || selection.pointer_captured
         || roster.expeditions
@@ -159,6 +173,16 @@ pub(super) fn click(
         return;
     };
     if let Some(service) = nearest(ray, player.translation, &units, &children, &meshes) {
+        if service == Service::TrainingGold {
+            if let Err(error) = gambling::give_training_gold(&selection, &mut inventory) {
+                inventory.notice = error;
+            } else {
+                inventory.notice = "+10,000 gold".into();
+            }
+            selection.pointer_captured = true;
+            selection.ui_captured = true;
+            return;
+        }
         open(
             service,
             &mut selection,
@@ -185,6 +209,33 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
 
     #[test]
+    fn treasurer_body_remains_clickable_when_model_bounds_miss_the_body() {
+        let mut world = World::new();
+        let position = gambling::training_position(true);
+        world.spawn((
+            Transform::from_translation(position),
+            NetEntity {
+                kind: EntityKind::Unit,
+                display_id: Some(49),
+                scale: 1.0,
+            },
+            ObjectStore(benilla_protocol::messages::ObjectFields::from_pairs(&[(
+                3,
+                gambling::TEST_GOLD_ENTRY,
+            )])),
+            Aabb::from_min_max(-Vec3::ONE, Vec3::ONE),
+            GlobalTransform::from_translation(position + Vec3::X * 100.0),
+        ));
+        world.run_system_once(move |units: Query<(Entity, &Transform, &NetEntity, Option<&ObjectStore>)>, children: Query<&Children>, meshes: Query<(&Aabb, &GlobalTransform, Option<&InheritedVisibility>)>| {
+            let ray = Ray3d::new(position + Vec3::Y * 10.0, Dir3::NEG_Y);
+            assert_eq!(nearest(ray, position, &units, &children, &meshes), Some(Service::TrainingGold));
+            assert_eq!(nearest(ray, position + Vec3::X * 10.0, &units, &children, &meshes), None);
+            let miss = Ray3d::new(position + Vec3::X * 3.0 + Vec3::Y * 10.0, Dir3::NEG_Y);
+            assert_eq!(nearest(miss, position, &units, &children, &meshes), None);
+        }).unwrap();
+    }
+
+    #[test]
     fn replicated_services_are_pickable_without_host_only_components_and_require_proximity() {
         for (expected, position, kind, display, entry) in [
             (
@@ -200,6 +251,20 @@ mod tests {
                 EntityKind::GameObject,
                 10,
                 0,
+            ),
+            (
+                Service::TrainingSmith,
+                gambling::training_position(false),
+                EntityKind::Unit,
+                49,
+                gambling::TEST_SMITH_ENTRY,
+            ),
+            (
+                Service::TrainingGold,
+                gambling::training_position(true),
+                EntityKind::Unit,
+                49,
+                gambling::TEST_GOLD_ENTRY,
             ),
             (
                 Service::Gambling,

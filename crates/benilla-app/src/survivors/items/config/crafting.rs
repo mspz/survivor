@@ -10,8 +10,8 @@ pub(in crate::survivors) enum CraftProfile {
 impl CraftProfile {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Strength => "Force",
-            Self::Agility => "Agilite",
+            Self::Strength => "Strength",
+            Self::Agility => "Agility",
             Self::Intelligence => "Intelligence",
         }
     }
@@ -130,6 +130,105 @@ mod tests {
         assert!(config.generate_craft(&request, 60, 1, &mut Rng(2)).is_err());
     }
     #[test]
+    fn training_legendary_craft_persists_equips_and_activates_its_effect() {
+        let mut inventory = Inventory::fixture(vec![]);
+        inventory
+            .add_money(crate::survivors::gambling::TEST_GOLD_AMOUNT)
+            .unwrap();
+        let request = CraftRequest {
+            slot: SlotKind::Ring,
+            equipment: EquipmentType::Universal,
+            profile: CraftProfile::Strength,
+            rarity: Rarity::Legendary,
+            affixes: Some(vec!["strength".into()]),
+        };
+        let roll = legendary::Roll {
+            unique: 46,
+            milestone: None,
+        };
+        let selection = crate::survivors::Selection {
+            stage: crate::survivors::data::TRAINING_MAP,
+            ..Default::default()
+        };
+        let before = inventory.money();
+        assert!(inventory
+            .craft_training(
+                &crate::survivors::Selection::default(),
+                &request,
+                60,
+                Some(&roll),
+                &mut Rng(1)
+            )
+            .is_err());
+        assert!(inventory
+            .craft_training(&selection, &request, 60, None, &mut Rng(1))
+            .is_err());
+        assert_eq!(inventory.money(), before);
+        assert!(inventory.all().is_empty());
+        let item = inventory
+            .craft_training(&selection, &request, 60, Some(&roll), &mut Rng(1))
+            .unwrap();
+        assert_eq!(
+            inventory.money(),
+            before - request.training_price(60).unwrap()
+        );
+        assert_eq!(item.affixes.len(), 1);
+        inventory.equip(item.id, "Ring 1").unwrap();
+        let save = Inventory::decode(&inventory.shared_save().unwrap()).unwrap();
+        assert_eq!(save.items[0].legendary.as_ref(), Some(&roll));
+        assert!(legendary::titan_grip(&save));
+        let mut run = crate::survivors::Run::default();
+        inventory.apply(&mut run);
+        assert!(run.legendary.has(46));
+    }
+
+    #[test]
+    fn training_forge_supports_real_legendary_effects_and_all_milestone_variants() {
+        let config = Config::builtin();
+        let mut request = request();
+        request.rarity = Rarity::Legendary;
+        request.affixes = Some(vec!["agility".into()]);
+        let mut found_milestones = false;
+        let mut count = 0;
+        for &(slot, _) in crate::survivors::gambling::SLOTS {
+            request.slot = slot;
+            for equipment in config.craft_types(slot) {
+                request.equipment = equipment;
+                let choices = config.training_legendary_choices(&request, 1);
+                if choices.iter().any(|c| c.roll.unique == 301) {
+                    assert_eq!(choices.iter().filter(|c| c.roll.unique == 301).count(), 81);
+                    found_milestones = true;
+                }
+                // Empty ordinary affixes allow accessory and weapon bases as well.
+                request.affixes = Some(vec![]);
+                for choice in choices {
+                    let item = config
+                        .generate_training_craft(&request, 60, 1, Some(&choice.roll), &mut Rng(9))
+                        .unwrap();
+                    assert!(item.valid_equipment());
+                    assert!(legendary::validate_item(&item));
+                    assert_eq!(item.legendary.as_ref(), Some(&choice.roll));
+                    assert_eq!(item.rarity, Rarity::Legendary);
+                    assert!(!choice.description.is_empty());
+                    count += 1;
+                }
+                assert!(config
+                    .generate_training_craft(&request, 60, 1, None, &mut Rng(1))
+                    .is_err());
+            }
+        }
+        assert!(found_milestones && count > 300);
+        request = self::request();
+        request.rarity = Rarity::Legendary;
+        let mut epic = request.clone();
+        epic.rarity = Rarity::Epic;
+        assert_eq!(
+            request.training_price(60).unwrap(),
+            epic.price(60).unwrap() * 2
+        );
+    }
+
+    #[test]
     fn unique_crafting_is_rejected_by_generation_and_pricing() {
         let config = Config::builtin();
         let mut request = request();
@@ -177,26 +276,45 @@ pub(in crate::survivors) struct CraftRequest {
     pub affixes: Option<Vec<String>>,
 }
 impl CraftRequest {
+    pub fn training_price(&self, level: u32) -> Result<u64, String> {
+        if self.rarity != Rarity::Legendary {
+            return self.price(level);
+        }
+        let mut ordinary = self.clone();
+        ordinary.rarity = Rarity::Epic;
+        ordinary
+            .price(level)?
+            .checked_mul(2)
+            .filter(|p| *p <= crate::survivors::currency::MAX_BALANCE)
+            .ok_or_else(|| "Price too high.".into())
+    }
     pub fn price(&self, level: u32) -> Result<u64, String> {
         let rarity = match self.rarity {
             Rarity::Normal => 0,
             Rarity::Magic => 1,
             Rarity::Epic => 2,
             Rarity::Legendary => {
-                return Err("Les uniques ne sont pas disponibles a la forge.".into())
+                return Err("Unique items cannot be crafted at this blacksmith.".into())
             }
         };
         let selected = self.affixes.as_ref().map_or(0, Vec::len);
         let multiplier = 1u64
             .checked_shl((rarity + selected) as u32)
-            .ok_or("Prix trop eleve.")?;
+            .ok_or("Price too high.")?;
         crate::survivors::gambling::price(self.slot, level)
             .checked_mul(3)
             .and_then(|p| p.checked_mul(multiplier))
             .filter(|p| *p <= crate::survivors::currency::MAX_BALANCE)
-            .ok_or_else(|| "Prix trop eleve.".into())
+            .ok_or_else(|| "Price too high.".into())
     }
 }
+#[derive(Clone)]
+pub(in crate::survivors) struct LegendaryChoice {
+    pub roll: legendary::Roll,
+    pub label: String,
+    pub description: String,
+}
+
 #[derive(Clone)]
 pub(in crate::survivors) struct CraftAffix {
     pub id: String,
@@ -205,6 +323,62 @@ pub(in crate::survivors) struct CraftAffix {
     pub group: String,
 }
 impl Config {
+    pub(in crate::survivors) fn training_legendary_choices(
+        &self,
+        request: &CraftRequest,
+        class: u8,
+    ) -> Vec<LegendaryChoice> {
+        let mut choices = Vec::new();
+        for def in legendary::DEFINITIONS.iter().filter(|d| {
+            d.slot == request.slot && legendary::base_allowed(d.id, class, request.equipment)
+        }) {
+            if def.id == 301 {
+                for option in 0..81 {
+                    let grant = legendary::milestones::Grant { option };
+                    choices.push(LegendaryChoice {
+                        roll: legendary::Roll {
+                            unique: def.id,
+                            milestone: Some(option),
+                        },
+                        label: format!("{} - {}", def.name, grant.milestone().name),
+                        description: legendary::milestones::description(option),
+                    });
+                }
+            } else {
+                choices.push(LegendaryChoice {
+                    roll: legendary::Roll {
+                        unique: def.id,
+                        milestone: None,
+                    },
+                    label: def.name.into(),
+                    description: def.description.into(),
+                });
+            }
+        }
+        choices.sort_by_key(|c| c.label.to_lowercase());
+        choices
+    }
+    pub(in crate::survivors) fn generate_training_craft(
+        &self,
+        request: &CraftRequest,
+        level: u32,
+        class: u8,
+        roll: Option<&legendary::Roll>,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        if request.rarity != Rarity::Legendary {
+            return self.generate_craft(request, level, class, rng);
+        }
+        let choices = self.training_legendary_choices(request, class);
+        let roll = roll.ok_or("Select a legendary effect.")?;
+        if !choices.iter().any(|choice| choice.roll == *roll) {
+            return Err("This legendary effect is incompatible with the item.".into());
+        }
+        let mut item = self.generate_craft_inner(request, level, class, rng, true)?;
+        item.legendary = Some(roll.clone());
+        item.name = legendary::definition(roll.unique).unwrap().name.into();
+        Ok(item)
+    }
     pub(in crate::survivors) fn craft_preview(
         &self,
         request: &CraftRequest,
@@ -364,14 +538,24 @@ impl Config {
         class: u8,
         rng: &mut Rng,
     ) -> Result<Item, String> {
+        self.generate_craft_inner(request, level, class, rng, false)
+    }
+    fn generate_craft_inner(
+        &self,
+        request: &CraftRequest,
+        level: u32,
+        class: u8,
+        rng: &mut Rng,
+        training: bool,
+    ) -> Result<Item, String> {
         if !crate::survivors::data::CLASSES
             .iter()
             .any(|c| c.id == class)
         {
             return Err("Classe inconnue.".into());
         }
-        if request.rarity == Rarity::Legendary {
-            return Err("Les uniques ne sont pas disponibles a la forge.".into());
+        if request.rarity == Rarity::Legendary && !training {
+            return Err("Unique items cannot be crafted at this blacksmith.".into());
         }
         let level = level.clamp(1, MAX_ITEM_LEVEL);
         let bases: Vec<_> = self
@@ -382,13 +566,13 @@ impl Config {
             })
             .collect();
         if bases.is_empty() {
-            return Err("Aucune base disponible pour cet emplacement et ce type.".into());
+            return Err("No base available for this slot and type.".into());
         }
         let base = bases[weighted_index(
             &bases.iter().map(|b| b.weight).collect::<Vec<_>>(),
             rng.f32(),
         )
-        .ok_or("Aucune base disponible.")?];
+        .ok_or("No base available.")?];
         let (minimum, cap) = request.rarity.affix_limits();
         let pool = self.craft_pool();
         let mut chosen: Vec<&AffixDef> = vec![];
@@ -397,12 +581,12 @@ impl Config {
                 let a = pool
                     .iter()
                     .find(|a| &a.id == id && self.craft_affix_allowed(a, base, request.profile))
-                    .ok_or("Affixe incompatible avec cette fabrication.")?;
+                    .ok_or("This affix is incompatible with the craft.")?;
                 if chosen.iter().any(|b| b.id == a.id || b.group == a.group) {
-                    return Err("Chaque affixe ne peut apparaitre qu'une fois.".into());
+                    return Err("Each affix can only appear once.".into());
                 }
                 if chosen.iter().filter(|b| b.kind == a.kind).count() >= cap {
-                    return Err("Limite de prefixes ou suffixes atteinte pour cette rarete.".into());
+                    return Err("Prefix or suffix limit reached for this rarity.".into());
                 }
                 chosen.push(a);
             }
@@ -421,7 +605,7 @@ impl Config {
             });
             let max = counts.iter().sum::<usize>();
             if max < minimum {
-                return Err("Pas assez d'affixes compatibles.".into());
+                return Err("Not enough compatible affixes.".into());
             }
             let total = minimum + rng.index(max - minimum + 1);
             for _ in 0..total {
@@ -435,7 +619,7 @@ impl Config {
                     .collect();
                 let weights: Vec<_> = choices.iter().map(|a| a.weight).collect();
                 let index = weighted_index(&weights, rng.f32())
-                    .ok_or("Pas assez d'affixes compatibles.")?;
+                    .ok_or("Not enough compatible affixes.")?;
                 chosen.push(choices[index]);
             }
         }
@@ -459,7 +643,7 @@ impl Config {
             id: 0,
             base: base.id.clone(),
             name: format!(
-                "{} forge ({})",
+                "{} forged ({})",
                 tier.map_or(base.name.as_str(), |t| t.name.as_str()),
                 request.profile.label()
             ),

@@ -69,7 +69,7 @@ pub(super) fn reset(mut arena: ResMut<Arena>) {
     *arena = Arena::default();
 }
 
-const PACK_SIZE: usize = 40;
+pub(super) const PACK_SIZE: usize = 200;
 fn site_center(site: usize) -> Vec3 {
     match site {
         0 => Vec3::new(20.0, 0.0, 0.0),
@@ -77,13 +77,18 @@ fn site_center(site: usize) -> Vec3 {
         _ => Vec3::new(50.0, 0.0, 30.0 * 3.0_f32.sqrt()),
     }
 }
+pub(super) fn services_center() -> Vec3 {
+    hero::arena(&data::MAPS[data::TRAINING_MAP])
+        + (site_center(0) + site_center(1) + site_center(2)) / 3.0
+}
+
 fn position(slot: usize) -> Vec3 {
     if slot < 2 {
         return site_center(slot);
     }
-    // An 8 x 5 formation keeps forty passive targets compact without overlapping bodies.
+    // Keep the 200 passive targets centered in a 20 x 10 formation, 1.8 yd apart.
     let index = slot - 2;
-    site_center(2) + Vec3::new((index % 8) as f32 - 3.5, 0.0, (index / 8) as f32 - 2.0) * 1.8
+    site_center(2) + Vec3::new((index % 20) as f32 - 9.5, 0.0, (index / 20) as f32 - 4.5) * 1.8
 }
 pub(super) fn tick(
     mut commands: Commands,
@@ -98,7 +103,7 @@ pub(super) fn tick(
     }
     if arena.slots.is_empty() {
         run.banner = Some((
-            "Training: 60 yd triangle | Immortal dummy | Boss | 40-mob pack".into(),
+            format!("Training: 60 yd triangle | Immortal dummy | Boss | {PACK_SIZE}-mob pack"),
             12.0,
         ));
         arena.slots = (0..PACK_SIZE + 2).map(|_| Slot::default()).collect();
@@ -186,7 +191,7 @@ mod tests {
             .map(|s| s.entity.unwrap())
             .collect();
         assert_eq!(ids.len(), PACK_SIZE + 2);
-        assert_eq!(ids[2..].len(), 40);
+        assert_eq!(ids[2..].len(), 200);
         for (a, b) in [(0, 1), (0, 2), (1, 2)] {
             assert!(((site_center(a) - site_center(b)).length() - 60.0).abs() < 0.001);
         }
