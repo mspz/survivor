@@ -55,6 +55,39 @@ impl Hit {
 #[cfg(test)]
 mod spell_engine_integration_tests {
     #[test]
+    fn boss_meter_filters_normal_targets_and_counts_direct_and_periodic_damage() {
+        for (boss, rank, included) in [
+            (false, None, false),
+            (true, None, true),
+            (false, Some(enemies::Rank::Elite), true),
+            (false, Some(enemies::Rank::Boss), true),
+            (false, Some(enemies::Rank::Sprinter), false),
+        ] {
+            let (mut world, targets) = legendary_world("fireball", 0, &[3.0]);
+            world.get_mut::<Enemy>(targets[0]).unwrap().boss = boss;
+            if let Some(rank) = rank { world.entity_mut(targets[0]).insert(rank); }
+            let mut hit = Hit::direct("fireball", targets[0], 40.0, false);
+            hit.dot = 10.0;
+            hit.dot_dur = 3.0;
+            world.resource_mut::<Messages<Hit>>().write(hit);
+            world.run_system_once(apply_hits).unwrap();
+            let before: f64 = world.resource::<Run>().meter.rows(0.0).iter().map(|r| r.total).sum();
+            assert!(before > 0.0);
+            world.resource_mut::<Messages<Hit>>().clear();
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+            world.run_system_once(apply_hits).unwrap();
+            let run = world.resource::<Run>();
+            let total: f64 = run.meter.rows(0.0).iter().map(|r| r.total).sum();
+            let filtered: f64 = run.boss_meter.rows(0.0).iter().map(|r| r.total).sum();
+            assert!(total > before, "periodic tick must deal damage");
+            assert_eq!(filtered, if included { total } else { 0.0 });
+            let encoded = serde_json::to_string(&run.boss_meter).unwrap();
+            let decoded: super::super::combat_ui::Meter = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.rows(0.0).iter().map(|r| r.total).sum::<f64>(), filtered);
+        }
+    }
+
+    #[test]
     fn hungry_pack_meter_separates_wolf_attacks_and_bleed_and_both_inherit_the_bow() {
         use super::super::{items::{Config, EquipmentType, Inventory, weapons::DamageRange}, minions, talent_runtime};
         let mut totals = Vec::new();
@@ -105,6 +138,131 @@ mod spell_engine_integration_tests {
         }
         assert!(totals[1].0 > totals[0].0);
         assert!(totals[1].1 > totals[0].1);
+    }
+
+    #[test]
+    fn death_trap_proliferates_explosive_trap_and_copied_dots_trigger_another_explosion() {
+        use super::super::talent_runtime;
+        let (mut world, targets) = legendary_world("explosive_trap", 0, &[1.0, 3.0, 30.0]);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.class = &data::CLASSES[2];
+            run.talent_build[2][18] = 1;
+            talent_runtime::configure(&mut run);
+        }
+        {
+            let mut enemy = world.get_mut::<Enemy>(targets[0]).unwrap();
+            enemy.hp = 1.0;
+            enemy.dots.push(enemies::Dot {
+                owner: None, skill: "explosive_trap", meter_source: None, tags: Some(engine::Tags::FIRE | engine::Tags::DOT),
+                item_source: None, origin: Origin::Skill, meta: default(), dps: 10.0, left: 1.2, tick: 0.0,
+            });
+        }
+        world.run_system_once(apply_hits).unwrap();
+        assert!(world.get::<Enemy>(targets[0]).unwrap().dead);
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(10));
+        world.resource_mut::<Run>().elapsed = 0.01;
+        world.run_system_once(talent_runtime::tick).unwrap();
+        world.run_system_once(apply_hits).unwrap();
+        let copied = &world.get::<Enemy>(targets[1]).unwrap().dots[0];
+        assert_eq!(copied.skill, "explosive_trap");
+        assert!(copied.left <= 1.2);
+        let remaining = copied.left;
+        world.get_mut::<Transform>(targets[2]).unwrap().translation.x = 5.0;
+        {
+            let mut enemy = world.get_mut::<Enemy>(targets[1]).unwrap();
+            enemy.hp = 1.0;
+            enemy.dots[0].tick = 0.0;
+        }
+        world.resource_mut::<Run>().elapsed = 0.02;
+        world.run_system_once(apply_hits).unwrap();
+        assert!(world.get::<Enemy>(targets[1]).unwrap().dead);
+        world.resource_mut::<Run>().elapsed = 0.03;
+        world.run_system_once(talent_runtime::tick).unwrap();
+        let third = world.get::<Enemy>(targets[2]).unwrap();
+        assert!(third.dots.iter().any(|d| d.skill == "explosive_trap" && d.left < remaining));
+        assert!(world.resource::<PendingHits>().0.iter().any(|(_, h)| h.target == targets[2] && h.meter_source == Some("Death Trap")));
+    }
+
+    #[test]
+    fn pack_frenzy_explodes_on_pet_and_bleed_kills_and_bleeds_survivors() {
+        use super::super::{minions, talent_runtime};
+        for periodic_kill in [false, true] {
+            let (mut world, targets) = legendary_world("kill_command", 0, &[1.0, 3.0]);
+            {
+                let mut run = world.resource_mut::<Run>();
+                run.class = &data::CLASSES[2];
+                for node in [8, 12, 18] { run.talent_build[0][node] = 1; }
+                talent_runtime::configure(&mut run);
+            }
+            {
+                let mut enemy = world.get_mut::<Enemy>(targets[0]).unwrap();
+                enemy.hp = 1.0;
+                enemy.dots.push(enemies::Dot {
+                    owner: None, skill: "proc_bleed", meter_source: Some(minions::PACK_BLEED_SOURCE),
+                    tags: Some(engine::Tags::PHYSICAL | engine::Tags::MINION | engine::Tags::DOT),
+                    item_source: None, origin: Origin::Talent, meta: default(),
+                    dps: 10.0, left: 4.0, tick: if periodic_kill { 0.0 } else { 1.0 },
+                });
+            }
+            if !periodic_kill {
+                let mut hit = Hit::direct("proc_pet_bite", targets[0], 10.0, false);
+                hit.origin = Origin::Talent;
+                hit.triggered = true;
+                hit.proc_resolved = true;
+                world.write_message(hit);
+            }
+            world.run_system_once(apply_hits).unwrap();
+            assert!(world.get::<Enemy>(targets[0]).unwrap().dead);
+            let before = world.get::<Enemy>(targets[1]).unwrap().hp;
+            world.resource_mut::<Messages<Hit>>().clear();
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(10));
+            world.run_system_once(talent_runtime::tick).unwrap();
+            assert!(world.resource::<PendingHits>().0.iter().any(|(_, h)| h.target == targets[1] && h.meter_source == Some("Pack Frenzy")));
+            world.run_system_once(apply_hits).unwrap();
+            let survivor = world.get::<Enemy>(targets[1]).unwrap();
+            assert!(survivor.hp < before);
+            assert!(survivor.dots.iter().any(|d| d.skill == "proc_bleed" && d.meter_source == Some(minions::PACK_BLEED_SOURCE)));
+        }
+    }
+
+    #[test]
+    fn pack_frenzy_is_a_pet_attack_and_reapplies_hungry_pack_bleed() {
+        use super::super::{minions, procs, talent_runtime};
+        for pack in [false, true] {
+            let (mut world, targets) = legendary_world("arcane_shot", 0, &[3.0]);
+            let p = {
+                let mut run = world.resource_mut::<Run>();
+                run.class = &data::CLASSES[2];
+                run.talent_build[0][18] = 1;
+                if pack { run.talent_build[0][12] = 1; }
+                talent_runtime::configure(&mut run);
+                procs::resolve(&run, "proc_bloodburst", 100.0, 0.0, 0.0, 8.5, 64)
+            };
+            assert!(p.tags.contains(engine::Tags::MINION | engine::Tags::ATTACK));
+            assert!(!p.tags.contains(engine::Tags::SPELL));
+            let mut hit = Hit::direct("proc_bloodburst", targets[0], p.dmg, false);
+            hit.origin = Origin::Talent;
+            hit.triggered = true;
+            hit.proc_admitted = true;
+            hit.proc_resolved = true;
+            hit.tags = Some(p.tags);
+            hit.meter_source = Some("Pack Frenzy");
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            let enemy = world.get::<Enemy>(targets[0]).unwrap();
+            let bleed = enemy.dots.iter().find(|d| d.meter_source == Some(minions::PACK_BLEED_SOURCE));
+            assert_eq!(bleed.is_some(), pack);
+            if let Some(bleed) = bleed {
+                assert_eq!(bleed.skill, "proc_bleed");
+                assert!((bleed.dps - p.dmg * 0.2).abs() < 0.001);
+            }
+            let count = enemy.dots.len();
+            world.resource_mut::<Messages<Hit>>().clear();
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+            world.run_system_once(apply_hits).unwrap();
+            assert_eq!(world.get::<Enemy>(targets[0]).unwrap().dots.len(), count);
+        }
     }
 
     #[test]
@@ -987,6 +1145,33 @@ mod spell_engine_integration_tests {
         emit(&mut world, 102);
         world.run_system_once(apply_hits).unwrap();
         assert_eq!(world.resource::<Run>().damage_done, first * 2.0);
+    }
+
+    #[test]
+    fn survival_traps_target_one_then_two_enemy_positions() {
+        for skill in ["explosive_trap", "frost_trap"] {
+            for (second, count) in [(false, 1), (true, 2)] {
+                let (mut world, _) = legendary_world(skill, 0, &[8.0, 12.0, 30.0]);
+                {
+                    let mut run = world.resource_mut::<Run>();
+                    run.class = &data::CLASSES[2];
+                    run.talent_build[2][8] = 1;
+                    if second {
+                        run.talent_build[2][12] = 1;
+                    }
+                    super::super::talent_runtime::configure(&mut run);
+                    run.abilities.retain(|a| a.def.key == skill);
+                }
+                world.run_system_once(cast_abilities).unwrap();
+                let centers: Vec<_> = world
+                    .query::<(&Transform, &GroundArea)>()
+                    .iter(&world)
+                    .map(|(tf, _)| tf.translation.x)
+                    .collect();
+                assert_eq!(centers.len(), count, "{skill}");
+                assert!(centers.iter().all(|x| *x == 8.0 || *x == 12.0));
+            }
+        }
     }
 
     fn legendary_world(
@@ -3415,16 +3600,37 @@ pub(super) fn cast_abilities(
                     }
                 }
                 Kind::Ground | Kind::GroundSelf => {
-                    let center = if def.kind == Kind::GroundSelf {
-                        foes.first()
-                            .filter(|f| f.dist <= p.radius + 4.0)
-                            .map(|_| hpos)
+                    let targeted = p.tags.contains(engine::Tags::TRAP)
+                        && (super::talent_runtime::active(&run, super::talent_design::Mechanic::TrapLaunch)
+                            || super::talent_runtime::active(&run, super::talent_design::Mechanic::TrapVolley));
+                    let centers: Vec<Vec3> = if targeted {
+                        let count = if super::talent_runtime::active(
+                            &run,
+                            super::talent_design::Mechanic::TrapVolley,
+                        ) {
+                            2
+                        } else {
+                            1
+                        };
+                        weakest(&foes, p.range.max(14.0), count, |e| {
+                            enemies.get(e).is_ok_and(|(_, _, en)| en.boss)
+                        })
+                        .into_iter()
+                        .map(|f| f.pos)
+                        .collect()
                     } else {
-                        densest(&foes, p.range, p.radius)
+                        let center = if def.kind == Kind::GroundSelf {
+                            foes.first()
+                                .filter(|f| f.dist <= p.radius + 4.0)
+                                .map(|_| hpos)
+                        } else {
+                            densest(&foes, p.range, p.radius)
+                        };
+                        center.into_iter().collect()
                     };
-                    match center {
-                        None => false,
-                        Some(center) => {
+                    let cast = !centers.is_empty();
+                    for center in centers {
+                        {
                             run.legendary
                                 .casting
                                 .ground
@@ -3441,7 +3647,13 @@ pub(super) fn cast_abilities(
                             let area = if trap {
                                 units::spawn_explosive_trap(&mut commands, run.guid(), center)
                             } else if def.key == "frost_trap" {
-                                units::spawn_frost_trap(&mut commands, run.guid(), p.radius, area_scale, center)
+                                units::spawn_frost_trap(
+                                    &mut commands,
+                                    run.guid(),
+                                    p.radius,
+                                    area_scale,
+                                    center,
+                                )
                             } else if def.overhead {
                                 commands
                                     .spawn((Transform::from_translation(center), RunEntity))
@@ -3509,9 +3721,9 @@ pub(super) fn cast_abilities(
                                     .entity(area)
                                     .insert(super::multiplayer::OwnedEffect(owner));
                             }
-                            true
                         }
                     }
+                    cast
                 }
                 Kind::Chain => {
                     let targets = weakest(&foes, p.range, 1, |e| {
@@ -3778,10 +3990,14 @@ pub(super) fn cast_abilities(
             }
         };
         if fired {
+            if run.class.id == 3 {
+                units::hunter_weapon(&mut commands, me, p.tags);
+            }
             if !repeated {
                 super::support_spells::activated(&mut run, def.key, p.tags);
             }
             run.meter.cast(def.key);
+            run.boss_meter.cast(def.key);
             run.legendary.events.position = hpos;
             if !repeated {
                 run.legendary.events.serial = p.cast_id;
@@ -4410,6 +4626,14 @@ pub(super) fn apply_hits(
                     origin: Origin| {
         if origin == Origin::Skill {
             super::items::legendary::periodic::death(run, e, en, pos);
+        }
+        // Pack Frenzy also follows deaths caused by pet attacks, their bleeds and explosions.
+        let pack_death = origin == Origin::Talent
+            && super::talent_runtime::active(run, super::talent_design::Mechanic::Bloodburst)
+            && super::items::legendary::milestones::source_class(run, super::talent_design::Mechanic::Bloodburst) == 3;
+        let trap_death = origin == Origin::Talent
+            && super::talent_runtime::active(run, super::talent_design::Mechanic::DeathTrap);
+        if origin == Origin::Skill || pack_death || trap_death {
             super::talent_runtime::on_death(run, en, pos);
         }
         en.dead = true;
@@ -4560,6 +4784,9 @@ pub(super) fn apply_hits(
                 h.crit,
                 false,
             );
+            if en.boss || ranks.get(e).is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss)) {
+                run.boss_meter.record_hit(h.meter_source.unwrap_or(h.skill), now, effective, h.crit, false);
+            }
             if immortal {
                 en.hp = en.max_hp;
             } else {
@@ -4885,6 +5112,9 @@ pub(super) fn apply_hits(
                     false,
                     true,
                 );
+                if boss || ranks.get(e).is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss)) {
+                    run.boss_meter.record_hit(d.meter_source.unwrap_or(d.skill), now, effective, false, true);
+                }
                 if !immortal {
                     remaining_hp = (remaining_hp - effective).max(0.0);
                 }

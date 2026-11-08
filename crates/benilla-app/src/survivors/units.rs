@@ -38,6 +38,47 @@ const GO_TYPE_GENERIC: u32 = 5;
 /// `GO_STATE_READY`.
 const GO_STATE_READY: u32 = 1;
 
+/// Draw the hunter's ranged weapon for projectiles and melee weapons for other skills.
+pub(super) fn hunter_weapon(
+    commands: &mut Commands,
+    entity: Entity,
+    tags: super::spell_engine::Tags,
+) {
+    let sheath = if tags.contains(super::spell_engine::Tags::PROJECTILE) {
+        2
+    } else {
+        1
+    };
+    commands.queue(move |world: &mut World| {
+        let Some(guid) = world.get::<Guid>(entity).map(|g| g.0) else {
+            return;
+        };
+        let Some(mut store) = world.get_mut::<ObjectStore>(entity) else {
+            return;
+        };
+        let old = store
+            .0
+            .raw_fields()
+            .find(|(index, _)| *index == FIELD_BYTES_2)
+            .map_or(0, |(_, value)| value);
+        let new = (old & !0xff) | sheath;
+        if old == new {
+            return;
+        }
+        store
+            .0
+            .merge(ObjectFields::from_pairs(&[(FIELD_BYTES_2, new)]));
+        world.write_message(FieldChanged {
+            entity,
+            guid,
+            kind: ObjectType::Unit,
+            index: FIELD_BYTES_2,
+            old,
+            new,
+        });
+    });
+}
+
 pub(super) fn wow_to_bevy(p: [f32; 3]) -> Vec3 {
     Vec3::new(-p[1], p[2], -p[0])
 }
@@ -659,5 +700,42 @@ mod trap_tests {
         assert!(cursor.read(events).any(|event| event.entity == entity
             && event.index == FIELD_GO_STATE
             && event.new == 0));
+    }
+}
+
+#[cfg(test)]
+mod hunter_weapon_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn casts_switch_hands_preserve_other_bytes_and_skip_redundant_updates() {
+        let mut world = World::new();
+        world.init_resource::<Messages<FieldChanged>>();
+        let entity = world
+            .spawn((
+                Guid(42),
+                ObjectStore(ObjectFields::from_pairs(&[(FIELD_BYTES_2, 0x12340001)])),
+            ))
+            .id();
+        for (skill, expected, events) in [
+            ("arcane_shot", 2, 1),
+            ("serpent_sting", 2, 1),
+            ("raptor_strike", 1, 2),
+            ("explosive_trap", 1, 2),
+        ] {
+            let tags =
+                super::super::spell_engine::tags::for_spell(super::super::data::ability(skill));
+            world
+                .run_system_once(move |mut commands: Commands| {
+                    hunter_weapon(&mut commands, entity, tags)
+                })
+                .unwrap();
+            let store = &world.get::<ObjectStore>(entity).unwrap().0;
+            assert_eq!(store.unit_sheath_state(), Some(expected), "{skill}");
+            assert!(store
+                .raw_fields()
+                .any(|pair| pair == (FIELD_BYTES_2, 0x12340000 | u32::from(expected))));
+            assert_eq!(world.resource::<Messages<FieldChanged>>().len(), events);
+        }
     }
 }

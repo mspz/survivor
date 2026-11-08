@@ -128,6 +128,8 @@ pub struct Stats {
     pub taken_meter: super::super::combat_ui::Meter,
     pub movement_speed: f32,
     pub meter: super::super::combat_ui::Meter,
+    #[serde(default)]
+    pub boss_meter: super::super::combat_ui::Meter,
     pub earned: u64,
     pub hp: f32,
     pub max_hp: f32,

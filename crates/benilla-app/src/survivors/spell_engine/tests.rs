@@ -504,3 +504,31 @@ fn all_nine_mobility_skills_are_classified_and_ignore_projectile_damage_modifier
         (resolve_mobility(howl, &[change(Change::IncreasedArea(3.0))]).radius - 24.0).abs() < 0.001
     );
 }
+
+#[test]
+fn more_trap_area_multiplies_increased_area() {
+    let base = spell("explosive_trap", &[]);
+    let scaled = spell(
+        "explosive_trap",
+        &[
+            change(Change::IncreasedArea(0.5)),
+            change(Change::MoreArea(0.4)),
+        ],
+    );
+    assert!((scaled.radius / base.radius - 2.1_f32.sqrt()).abs() < 0.001);
+}
+
+#[test]
+fn trap_launcher_halves_only_trap_cooldowns_with_other_recovery_bonuses() {
+    use super::super::{talent_effects, talents};
+    let spec = &talents::TREES[2][2];
+    let mut modifiers = vec![change(Change::IncreasedCooldownRecovery(0.4))];
+    let before = modifiers.clone();
+    for effect in talent_effects::effects(spec, 8, 1) {
+        modifiers.push(Modifier { source: 0, filter: talent_effects::filter(spec, 8, effect), change: effect });
+    }
+    for key in ["explosive_trap", "frost_trap", "arcane_shot", "raptor_strike"] {
+        let factor = if key.ends_with("trap") { 0.5 } else { 1.0 };
+        assert!((spell(key, &modifiers).cooldown - spell(key, &before).cooldown * factor).abs() < 0.001, "{key}");
+    }
+}

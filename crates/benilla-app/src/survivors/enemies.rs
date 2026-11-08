@@ -360,6 +360,47 @@ pub(super) fn ground(world: &WorldPoint, mut p: Vec3, fallback: f32) -> Vec3 {
     p
 }
 
+const SPAWN_CLEARANCE: f32 = 20.0;
+
+fn safe_spawn_position(mut position: Vec3, players: &[Vec3]) -> Vec3 {
+    let clear = |p: Vec3| players.iter().all(|player| flat(p - *player).length_squared() >= SPAWN_CLEARANCE * SPAWN_CLEARANCE);
+    if clear(position) { return position; }
+    // Push out of overlapping player exclusion circles, then use an enclosing-circle fallback.
+    for _ in 0..8 {
+        for player in players {
+            let delta = flat(position - *player);
+            if delta.length_squared() < SPAWN_CLEARANCE * SPAWN_CLEARANCE {
+                let direction = if delta.length_squared() > 0.0001 { delta.normalize() } else { Vec3::X };
+                let y = position.y;
+                position = *player + direction * (SPAWN_CLEARANCE + 0.01);
+                position.y = y;
+            }
+        }
+        if clear(position) { return position; }
+    }
+    let center = players.iter().copied().sum::<Vec3>() / players.len() as f32;
+    let radius = players.iter().map(|p| flat(*p - center).length()).fold(0.0_f32, f32::max) + SPAWN_CLEARANCE + 0.01;
+    let direction = flat(position - center).normalize_or_zero();
+    let direction = if direction == Vec3::ZERO { Vec3::X } else { direction };
+    let y = position.y;
+    position = center + direction * radius;
+    position.y = y;
+    position
+}
+
+/// Runs after every spawn source and before movement, which seats relocated mobs on terrain.
+pub(super) fn protect_spawns(
+    players: Query<&Transform, (Or<(With<Hero>, With<super::multiplayer::RemoteOwner>)>, Without<Enemy>)>,
+    mut spawned: Query<(&mut Transform, &Enemy), Added<Enemy>>,
+) {
+    let players: Vec<_> = players.iter().map(|tf| tf.translation).collect();
+    for (mut transform, enemy) in &mut spawned {
+        if !super::training::actor(enemy.def) {
+            transform.translation = safe_spawn_position(transform.translation, &players);
+        }
+    }
+}
+
 /// Keep the horde topped up on a ring outside the view, with the bosses and the encircling waves
 /// on the clock.
 pub(super) fn spawn_enemies(
@@ -1445,5 +1486,44 @@ mod pickup_tests {
         assert!((650..850).contains(&meats), "{meats}");
         assert!((110..190).contains(&vacuums), "{vacuums}");
         assert!((4.0..6.0).contains(&(meats as f32 / vacuums as f32)));
+    }
+}
+
+#[cfg(test)]
+mod spawn_clearance_tests {
+    use super::*;
+    #[test]
+    fn new_mobs_avoid_host_and_guest_but_existing_mobs_can_approach() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.init_resource::<Run>().add_systems(Update, protect_spawns);
+        app.world_mut().spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
+        app.world_mut().spawn((super::super::multiplayer::RemoteOwner(42), Transform::from_xyz(35.0, 0.0, 0.0)));
+        let entity = app.world_mut().run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            spawn_enemy(&mut commands, &mut run, &data::roster(0).enemies[0], Vec3::X * 35.0, Vec3::ZERO, false)
+        }).unwrap();
+        app.update();
+        let pos = app.world().get::<Transform>(entity).unwrap().translation;
+        assert!(flat(pos).length() >= 20.0);
+        assert!(flat(pos - Vec3::X * 35.0).length() >= 20.0);
+        app.world_mut().get_mut::<Transform>(entity).unwrap().translation = Vec3::ZERO;
+        app.update();
+        assert_eq!(app.world().get::<Transform>(entity).unwrap().translation, Vec3::ZERO);
+    }
+
+    #[test]
+    fn spawn_positions_clear_every_player_including_overlapping_exclusion_zones() {
+        for players in [vec![Vec3::ZERO], vec![Vec3::ZERO, Vec3::X * 35.0], vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::Z * 10.0, -Vec3::X * 10.0]] {
+            for x in -40..80 {
+                for z in -30..30 {
+                    let original = Vec3::new(x as f32, 7.0, z as f32);
+                    let position = safe_spawn_position(original, &players);
+                    assert_eq!(position.y, original.y);
+                    assert!(players.iter().all(|p| flat(position - *p).length() >= 20.0));
+                    if players.iter().all(|p| flat(original - *p).length() >= 20.0) { assert_eq!(position, original); }
+                }
+            }
+        }
+        assert_eq!(safe_spawn_position(Vec3::ONE, &[]), Vec3::ONE);
     }
 }

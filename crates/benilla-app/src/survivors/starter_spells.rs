@@ -8,7 +8,7 @@ pub(super) fn replacement(spec: &talents::Spec) -> Option<&'static str> {
         4 => "consecration",
         5 => "judgement",
         6 => "kill_command",
-        8 => "raptor_strike",
+        8 => "explosive_trap",
         14 => "shadow_word_pain",
         16 => "stormstrike",
         17 => "searing_totem",

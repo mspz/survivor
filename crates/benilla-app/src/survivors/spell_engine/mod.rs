@@ -37,10 +37,12 @@ pub enum Change {
     ChainChance(f32),
     ForkChance(f32),
     IncreasedArea(f32),
+    MoreArea(f32),
     FlatRadius(f32),
     FlatRange(f32),
     IncreasedDuration(f32),
     IncreasedCooldownRecovery(f32),
+    LessCooldown(f32),
     IncreasedAttackSpeed(f32),
     IncreasedMovementSpeed(f32),
     MoreActionSpeed(f32),
@@ -83,10 +85,12 @@ impl Change {
                 Self::AdditionalMeleeTargets(v.saturating_mul(count))
             }
             Self::IncreasedArea(v) => Self::IncreasedArea(v * r),
+            Self::MoreArea(v) => Self::MoreArea(v * r),
             Self::FlatRadius(v) => Self::FlatRadius(v * r),
             Self::FlatRange(v) => Self::FlatRange(v * r),
             Self::IncreasedDuration(v) => Self::IncreasedDuration(v * r),
             Self::IncreasedCooldownRecovery(v) => Self::IncreasedCooldownRecovery(v * r),
+            Self::LessCooldown(v) => Self::LessCooldown(v * r),
             Self::IncreasedAttackSpeed(v) => Self::IncreasedAttackSpeed(v * r),
             Self::IncreasedMovementSpeed(v) => Self::IncreasedMovementSpeed(v * r),
             Self::MoreActionSpeed(v) => Self::MoreActionSpeed(v * r),
@@ -124,10 +128,12 @@ impl Change {
             Self::AdditionalChains(n) => format!("+{n} chain jumps"),
             Self::Fork(n) => format!("+{n} fork generations"),
             Self::AdditionalMeleeTargets(n) => format!("+{n} melee targets"),
+            Self::MoreArea(v) => format!("{:+.0}% more area of effect", v * 100.0),
             Self::IncreasedArea(v) => format!("+{:.0}% area of effect", v * 100.0),
             Self::FlatRadius(v) => format!("+{v:.1} yd radius"),
             Self::FlatRange(v) => format!("+{v:.0} attack range (yd)"),
             Self::IncreasedDuration(v) => format!("+{:.0}% duration", v * 100.0),
+            Self::LessCooldown(v) => format!("{:.0}% less cooldown", v * 100.0),
             Self::IncreasedCooldownRecovery(v) => format!("+{:.0}% cooldown recovery", v * 100.0),
             Self::IncreasedAttackSpeed(v) => format!("+{:.0}% attack speed", v * 100.0),
             Self::IncreasedMovementSpeed(v) => format!("+{:.0}% movement speed", v * 100.0),
@@ -281,6 +287,8 @@ pub(super) fn resolve_tagged(
     if tags.contains(Tags::ATTACK) && def.damage > 0.0 {
         flat += finite(weapon_damage);
     }
+    let mut more_area = 1.0;
+    let mut cooldown_multiplier = 1.0;
     let (mut area, mut radius, mut duration, mut recovery) = (0.0, 0.0, 0.0, 0.0);
     let mut attack_range = 0.0;
     let mut attack_speed = if tags.intersects(Tags::ATTACK | Tags::MINION) {
@@ -368,6 +376,7 @@ pub(super) fn resolve_tagged(
             }
             Fork(n) if tags.contains(Tags::PROJECTILE) => forks = forks.saturating_add(n),
             IncreasedArea(v) if tags.contains(Tags::AREA) => area += finite(v),
+            MoreArea(v) if tags.contains(Tags::AREA) => more_area *= (1.0 + finite(v)).max(0.0),
             FlatRadius(v) if tags.contains(Tags::AREA) => radius += finite(v),
             FlatRange(v)
                 if tags.contains(Tags::ATTACK)
@@ -387,6 +396,7 @@ pub(super) fn resolve_tagged(
             }
             IncreasedDuration(v) if tags.contains(Tags::DURATION) => duration += finite(v),
             IncreasedCooldownRecovery(v) => recovery += finite(v),
+            LessCooldown(v) => cooldown_multiplier *= (1.0 - finite(v)).max(0.0),
             IncreasedAttackSpeed(v) if tags.intersects(Tags::ATTACK | Tags::MINION) => {
                 attack_speed += finite(v)
             }
@@ -449,7 +459,7 @@ pub(super) fn resolve_tagged(
     };
     // Area modifiers scale surface area, hence sqrt; legacy `stats.area` remains a radius bonus.
     let radius = (((def.radius + rank_radius) * stats.area + radius).max(0.0)
-        * (1.0 + area).max(0.0).sqrt())
+        * ((1.0 + area).max(0.0) * more_area).sqrt())
     .min(100.0);
     let signature_power = if level >= 6
         && !tags.contains(Tags::AREA)
@@ -513,7 +523,8 @@ pub(super) fn resolve_tagged(
                 1.0
             }
             * (1.0 - stats.haste).max(0.35))
-            / ((1.0 + recovery).max(0.05) * (1.0 + attack_speed).max(0.05) * action_speed))
+            / ((1.0 + recovery).max(0.05) * (1.0 + attack_speed).max(0.05) * action_speed)
+            * cooldown_multiplier)
             .max(0.2)
             * COOLDOWN_MULTIPLIER,
         range: (def.range + attack_range).clamp(0.0, def.range.max(100.0)),
@@ -660,12 +671,18 @@ pub fn resolve_mobility(
     modifiers: &[Modifier],
 ) -> ResolvedMobility {
     let (key, tags) = tags::mobility(def.spell).unwrap_or(("unknown", Tags::UTILITY));
+    let mut more_area = 1.0;
+    let mut cooldown_multiplier = 1.0;
     let (mut recovery, mut duration, mut area, mut radius) = (0.0, 0.0, 0.0, 0.0);
     for modifier in modifiers.iter().filter(|m| m.filter.matches(key, tags)) {
         match modifier.change {
             Change::IncreasedCooldownRecovery(v) => recovery += finite(v),
+            Change::LessCooldown(v) => cooldown_multiplier *= (1.0 - finite(v)).max(0.0),
             Change::IncreasedDuration(v) if tags.contains(Tags::DURATION) => duration += finite(v),
             Change::IncreasedArea(v) if tags.contains(Tags::AREA) => area += finite(v),
+            Change::MoreArea(v) if tags.contains(Tags::AREA) => {
+                more_area *= (1.0 + finite(v)).max(0.0)
+            }
             Change::FlatRadius(v) if tags.contains(Tags::AREA) => radius += finite(v),
             _ => {}
         }
@@ -677,9 +694,10 @@ pub fn resolve_mobility(
     };
     ResolvedMobility {
         tags,
-        cooldown: (def.cooldown / (1.0 + recovery).max(0.05)).max(0.2) * COOLDOWN_MULTIPLIER,
+        cooldown: (def.cooldown / (1.0 + recovery).max(0.05) * cooldown_multiplier).max(0.2) * COOLDOWN_MULTIPLIER,
         duration: (def.secs * (1.0 + duration).max(0.0)).min(300.0),
-        radius: ((base_radius + radius).max(0.0) * (1.0 + area).max(0.0).sqrt()).min(100.0),
+        radius: ((base_radius + radius).max(0.0) * ((1.0 + area).max(0.0) * more_area).sqrt())
+            .min(100.0),
     }
 }
 fn ranked_effect(effect: Effect, rank: f32, duration: f32) -> Effect {

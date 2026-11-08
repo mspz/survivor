@@ -466,6 +466,7 @@ fn key_for_class(class: u8, m: M) -> &'static str {
         M::Poisonburst => "proc_poisonburst",
         M::Fireburst => "proc_fireburst",
         M::Plagueburst => "proc_plagueburst",
+        M::DeathTrap => "proc_fireburst",
         M::FrostNova => "proc_frostnova",
         M::Proliferate => "proc_poison_spread",
         M::IgniteSpread => "proc_ignite_spread",
@@ -502,6 +503,15 @@ fn key_for_class(class: u8, m: M) -> &'static str {
 
 /// Payloads may be fixed values or a percentage of the triggering hit. Resolve only once;
 /// periodic ticks, splash copies and proliferation retain the resulting snapshot.
+pub(in crate::survivors) fn gameplay_tags(run: &Run, key: &str, mut tags: Tags) -> Tags {
+    if key == "proc_bloodburst"
+        && super::items::legendary::milestones::source_class(run, M::Bloodburst) == 3
+    {
+        tags = Tags(tags.0 & !Tags::SPELL.0) | Tags::MINION | Tags::ATTACK;
+    }
+    tags
+}
+
 pub(super) fn resolve(
     run: &Run,
     key: &str,
@@ -524,9 +534,7 @@ pub(super) fn resolve(
     def.count = count as u32;
     // Only independent pet attacks add owner weapon damage; derived payloads retain it once.
     let (def, mut tags) = super::items::legendary::profile(run, &def);
-    if key == "proc_bloodburst" && run.class.id == 3 {
-        tags = tags | Tags::MINION;
-    }
+    tags = gameplay_tags(run, key, tags);
     let mut p = spell_engine::resolve_tagged(
         &def,
         1,
@@ -583,6 +591,8 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 | M::ArcaneFocus
                 | M::ArcaneCompanion
                 | M::ArcaneCascade
+                | M::TrapLaunch
+                | M::TrapVolley
                 | M::Shatter
                 | M::SlowCast
                 | M::FeralGuard => continue,
@@ -626,6 +636,8 @@ pub(super) fn available(run: &Run) -> Vec<AbilityDef> {
                 | M::ArcaneFocus
                 | M::ArcaneCompanion
                 | M::ArcaneCascade
+                | M::TrapLaunch
+                | M::TrapVolley
                 | M::Shatter
                 | M::SlowCast
                 | M::FeralGuard

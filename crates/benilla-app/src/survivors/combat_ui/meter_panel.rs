@@ -5,6 +5,7 @@ use super::*;
 pub(super) enum Tab {
     #[default]
     Damage,
+    BossDamage,
     Healing,
     Taken,
     Party,
@@ -98,7 +99,7 @@ pub(super) fn interact(
         } else {
             Color::srgba(0.18, 0.13, 0.055, 0.95)
         };
-        if *interaction == Interaction::Pressed && view.meter_tab == Tab::Damage {
+        if *interaction == Interaction::Pressed && matches!(view.meter_tab, Tab::Damage | Tab::BossDamage) {
             view.meter_selected = Some(skill.0.clone());
             view.details_scroll = 0.0;
             selection.pointer_captured = true;
@@ -122,6 +123,7 @@ mod tests {
             .record_hit("flash_heal", 10.0, 20.0, false, false);
         run.taken_meter
             .record_hit("enemy", 10.0, 30.0, false, false);
+        run.boss_meter.record_hit("fireball", 10.0, 70.0, false, false);
         run.damage_done = 300.0;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
@@ -169,6 +171,7 @@ mod tests {
         app.update();
         let run = app.world().resource::<Run>();
         assert!(run.meter.rows(run.elapsed).is_empty());
+        assert!(run.boss_meter.rows(run.elapsed).is_empty());
         assert!(run.healing_meter.rows(run.elapsed).is_empty());
         assert!(run.taken_meter.rows(run.elapsed).is_empty());
         assert_eq!(run.damage_done, 300.0);
@@ -182,6 +185,7 @@ mod tests {
             elapsed: 5.0,
             ..default()
         };
+        run.boss_meter.record_hit("fireball", 5.0, 25.0, false, false);
         run.healing_meter
             .record_hit("flash_heal", 5.0, 12.0, false, false);
         run.taken_meter
@@ -216,6 +220,7 @@ mod tests {
             .set(Phase::Playing);
         app.update();
         for (tab, expected) in [
+            (Tab::BossDamage, vec!["fireball"]),
             (Tab::Healing, vec!["flash_heal"]),
             (Tab::Taken, vec!["Riverpaw Mystic"]),
             (Tab::Party, vec!["player:0", "player:42"]),
@@ -457,11 +462,13 @@ pub(super) fn render_meter(
     };
     let show = view.meter && *phase.get() != Phase::Menu;
     let meter = match view.meter_tab {
+        Tab::BossDamage => &run.boss_meter,
         Tab::Healing => &run.healing_meter,
         Tab::Taken => &run.taken_meter,
         _ => &run.meter,
     };
     let (rate, noun) = match view.meter_tab {
+        Tab::BossDamage => ("DPS", "boss / elite damage"),
         Tab::Healing => ("HPS", "healing"),
         Tab::Taken => ("DTPS", "damage taken"),
         _ => ("DPS", "damage"),
@@ -515,7 +522,7 @@ pub(super) fn render_meter(
             let details = view
                 .meter_selected
                 .as_deref()
-                .map(|key| run.meter.details(key, run.elapsed))
+                .map(|key| meter.details(key, run.elapsed))
                 .unwrap_or_default();
             for (binding, mut text) in &mut values {
                 let value = match binding {
@@ -634,6 +641,7 @@ pub(super) fn render_meter(
                 });
                 for (tab, label) in [
                     (Tab::Damage, "Damage"),
+                    (Tab::BossDamage, "Boss damage"),
                     (Tab::Healing, "Healing done"),
                     (Tab::Taken, "Damage taken"),
                     (Tab::Party, "Party DPS"),
@@ -672,7 +680,7 @@ pub(super) fn render_meter(
             ));
             ui.spawn(text(
                 f,
-                if view.meter_tab == Tab::Damage {
+                if matches!(view.meter_tab, Tab::Damage | Tab::BossDamage) {
                     "DPS: last 5s • Click a spell for details"
                 } else {
                     "Rate: last 5s • Total since last reset"
@@ -784,7 +792,7 @@ pub(super) fn render_meter(
                 }
             });
         });
-    if view.meter_tab != Tab::Damage {
+    if !matches!(view.meter_tab, Tab::Damage | Tab::BossDamage) {
         return;
     }
     let Some(selected) = view.meter_selected.as_deref() else {
@@ -846,8 +854,7 @@ pub(super) fn render_meter(
                 },
             ))
             .with_children(|ui| {
-                for (index, (label, value)) in run
-                    .meter
+                for (index, (label, value)) in meter
                     .details(selected, run.elapsed)
                     .into_iter()
                     .enumerate()

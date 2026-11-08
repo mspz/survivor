@@ -152,8 +152,7 @@ pub(in crate::survivors) fn equip(run: &mut Run) {
             _ => {}
         }
         match (grant.class(), grant.tree(), grant.node()) {
-            (3, 2, 8) => unlocks.push("raptor_strike"),
-            (3, 2, 12) => unlocks.push("explosive_trap"),
+            (3, 2, 8) => unlocks.push("explosive_trap"),
             (2, 0, 8) => unlocks.extend(["holy_shock", "exorcism", "holy_light"]),
             (5, 1, 8) => unlocks.extend(["flash_heal", "holy_nova", "holy_fire"]),
             (11, 0, 8) => unlocks.extend(["starfire", "moonfire"]),
@@ -180,7 +179,7 @@ pub(in crate::survivors) fn equip(run: &mut Run) {
                     run.class.id == 5 && run.talent_build[1][8] > 0
                 }
                 "raptor_strike" => run.class.id == 3 && run.talent_build[2][8] > 0,
-                "explosive_trap" => run.class.id == 3 && run.talent_build[2][12] > 0,
+                "explosive_trap" => run.class.id == 3 && run.talent_build[2][8] > 0,
                 "starfire" | "moonfire" => run.class.id == 11 && run.talent_build[0][8] > 0,
                 "claw" | "swipe" => run.class.id == 11 && run.talent_build[1][8] > 0,
                 "rejuvenation" => run.class.id == 11 && run.talent_build[2][8] > 0,

@@ -31,6 +31,7 @@ pub(super) struct Runtime {
     bursts: Vec<Burst>,
 }
 struct Burst {
+    created: f32,
     parent: u64,
     chain: u64,
     pos: Vec3,
@@ -176,10 +177,7 @@ pub(super) fn configure(run: &mut Run) {
             "consecration"
         });
     }
-    if class == 2 && run.talent_build[2][8] > 0 {
-        unlocks.push("raptor_strike");
-    }
-    if class == 2 && run.talent_build[2][12] > 0 {
+    if active(run, M::TrapLaunch) {
         unlocks.push("explosive_trap");
     }
     if class == 1 && run.talent_build[0][8] > 0 {
@@ -432,6 +430,7 @@ pub(super) fn on_hit(
     }
     if accepts(run, h, M::Splash, t) {
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::Splash),
             pos,
@@ -451,6 +450,7 @@ pub(super) fn on_hit(
         && accepts(run, h, M::HolyJudgement, t)
     {
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: h.cast_id,
             chain: h.proc_chain | chain_bit(M::HolyJudgement),
             pos,
@@ -529,6 +529,7 @@ pub(super) fn on_hit(
             _ => (7.0, 64),
         };
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: h.cast_id,
             chain: h.proc_chain | chain_bit(mechanic),
             pos,
@@ -572,6 +573,7 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
     let fire = owned
         .iter()
         .any(|d| tags::school(d.skill).is_some_and(|t| t.contains(Tags::FIRE)));
+    let trap_spread = active(run, M::DeathTrap) && has("explosive_trap");
     let spread = (active(run, M::Proliferate) && poison)
         || (active(run, M::IgniteSpread) && fire)
         || (active(run, M::PlagueSpread) && !owned.is_empty());
@@ -579,13 +581,14 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
     let explode = bleed
         || active(run, M::Poisonburst) && poison
         || active(run, M::Fireburst) && fire
-        || active(run, M::Plagueburst) && !owned.is_empty()
+        || (active(run, M::Plagueburst) || active(run, M::DeathTrap)) && !owned.is_empty()
         || super::items::legendary::milestones::sources(run, M::PlagueSpread).contains(&5)
             && active(run, M::PlagueSpread)
             && !owned.is_empty()
         || freeze;
-    if spread || explode {
+    if spread || trap_spread || explode {
         run.talent_runtime.bursts.push(Burst {
+            created: run.elapsed,
             parent: run.proc_runtime.parent,
             chain: 0,
             pos,
@@ -595,9 +598,9 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
                 0.0
             },
             exclude: None,
-            radius: 6.0,
+            radius: if explode { DEATH_EXPLOSION_RADIUS } else { 6.0 },
             targets: 64,
-            dots: if spread { owned } else { vec![] },
+            dots: owned.into_iter().filter(|d| d.left > 0.0 && d.left.is_finite() && (spread || trap_spread && d.skill == "explosive_trap")).collect(),
             freeze,
             skill: if poison {
                 "deadly_poison"
@@ -614,6 +617,8 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
                     M::Poisonburst
                 } else if active(run, M::Fireburst) && fire {
                     M::Fireburst
+                } else if active(run, M::DeathTrap) {
+                    M::DeathTrap
                 } else if active(run, M::Plagueburst) {
                     M::Plagueburst
                 } else if freeze {
@@ -628,6 +633,8 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
                     M::Proliferate
                 } else if active(run, M::IgniteSpread) && fire {
                     M::IgniteSpread
+                } else if trap_spread {
+                    M::DeathTrap
                 } else {
                     M::PlagueSpread
                 },
@@ -637,8 +644,11 @@ pub(super) fn on_death(run: &mut Run, en: &Enemy, pos: Vec3) {
 }
 
 /// Only the health-derived base is capped; the source's damage modifiers and crit follow.
+pub(super) const DEATH_EXPLOSION_CAP: f32 = 1000.0;
+pub(super) const DEATH_EXPLOSION_RADIUS: f32 = 6.0 * std::f32::consts::SQRT_2;
+
 fn death_explosion_base(max_hp: f32) -> f32 {
-    (max_hp.max(0.0) * 0.3).min(300.0)
+    (max_hp.max(0.0) * 0.3).min(DEATH_EXPLOSION_CAP)
 }
 
 pub(super) fn tick(
@@ -673,6 +683,12 @@ pub(super) fn tick(
     let now = run.elapsed;
     let bursts = std::mem::take(&mut run.talent_runtime.bursts);
     for mut burst in bursts {
+        let delay = (now - burst.created).max(0.0);
+        for dot in &mut burst.dots {
+            dot.left -= delay;
+            dot.tick -= delay;
+        }
+        burst.dots.retain(|dot| dot.left > 0.0);
         if run.legendary.has(238) && !burst.dots.is_empty() {
             let mut gathered = Vec::new();
             for (_, tf, mut en) in &mut enemies {
@@ -719,7 +735,10 @@ pub(super) fn tick(
                 1.0
             }
         }));
-        if !procs::ready(&mut run, skill, p.tags) {
+        let death_trap = active(&run, M::DeathTrap)
+            && burst.meter_source.is_some()
+            && burst.meter_source == meter_source(&run, M::DeathTrap);
+        if !death_trap && !procs::ready(&mut run, skill, p.tags) {
             continue;
         }
         if skill == "proc_starfall" && run.legendary.has(88) {
@@ -789,9 +808,6 @@ pub(super) fn tick(
                     .any(|d| d.owner == dot.owner && d.skill == dot.skill)
                 {
                     let mut dot = dot.clone();
-                    dot.left = dot
-                        .left
-                        .max(procs::resolve(&run, spread_key, 0.0, 0.0, 3.0, 0.0, 1).duration);
                     dot.meter_source = burst.spread_source.or(dot.meter_source);
                     en.dots.push(dot);
                 }
@@ -2720,6 +2736,39 @@ mod tests {
         assert!(enemy.dots.is_empty());
     }
     #[test]
+    fn all_milestone_proliferation_preserves_remaining_lifetime_and_tick_timing() {
+        for (class, tree, node, skill) in [
+            (3, 0, 12, "deadly_poison"), (6, 1, 12, "proc_ignite"),
+            (7, 0, 12, "corruption"), (4, 2, 18, "corruption"),
+            (2, 2, 18, "explosive_trap"),
+        ] {
+            let mut world = hunter_world(&[], false);
+            let mut player = run(class, tree, &[node]);
+            let mut corpse = enemy();
+            corpse.dots.push(Dot {
+                owner: None, skill, meter_source: None, tags: None, item_source: None,
+                origin: super::super::items::legendary::events::Origin::Skill,
+                meta: Default::default(), dps: 7.0, left: 1.2, tick: 0.4,
+            });
+            on_death(&mut player, &corpse, Vec3::ZERO);
+            assert_eq!(player.talent_runtime.bursts[0].dots.len(), 1, "{skill}");
+            world.insert_resource(player);
+            let target = world.spawn((Transform::from_xyz(2.0, 0.0, 0.0), enemy())).id();
+            pet_step(&mut world);
+            let copied = &world.get::<Enemy>(target).unwrap().dots[0];
+            assert_eq!(copied.skill, skill);
+            assert_eq!(copied.dps, 7.0);
+            assert!((copied.left - 1.1).abs() < 0.001, "{skill}: {}", copied.left);
+            assert!((copied.tick - 0.3).abs() < 0.001, "{skill}");
+            let mut next_corpse = enemy();
+            next_corpse.dots.push(copied.clone());
+            next_corpse.dots[0].left = 0.0;
+            world.resource_scope(|_, mut player: Mut<Run>| on_death(&mut player, &next_corpse, Vec3::ZERO));
+            assert!(world.resource::<Run>().talent_runtime.bursts.iter().all(|b| b.dots.is_empty()));
+        }
+    }
+
+    #[test]
     fn proliferation_and_death_bursts_require_the_owners_condition() {
         let mut run = run(3, 0, &[8, 12, 18]);
         run.owner = Some(7);
@@ -2822,7 +2871,7 @@ mod tests {
             (0, 1, 12, "rend", false, Tags::PHYSICAL, "Bloodbath"),
             (2, 0, 18, "rend", false, Tags::PHYSICAL, "Pack Frenzy"),
             (8, 1, 18, "rend", false, Tags::PHYSICAL, "Savage Carnage"),
-            (2, 2, 18, "corruption", false, Tags::SHADOW, "Death Trap"),
+            (2, 2, 18, "corruption", false, Tags::FIRE, "Death Trap"),
             (
                 3,
                 0,
@@ -2882,11 +2931,13 @@ mod tests {
                     tick: 1.0,
                 });
                 on_death(&mut player, &corpse, Vec3::ZERO);
-                let base = (max_hp * 0.3).min(300.0);
+                let base = (max_hp * 0.3).min(1000.0);
                 assert_eq!(player.talent_runtime.bursts.len(), 1, "{name}");
                 assert!((player.talent_runtime.bursts[0].damage - base).abs() < 0.001);
+                assert!((player.talent_runtime.bursts[0].radius.powi(2) - 72.0).abs() < 0.001);
                 world.insert_resource(player);
-                world.spawn((Transform::from_xyz(2.0, 0.0, 0.0), enemy()));
+                world.spawn((Transform::from_xyz(8.0, 0.0, 0.0), enemy()));
+                world.spawn((Transform::from_xyz(12.0, 0.0, 0.0), enemy()));
                 pet_step(&mut world);
                 let hits = &world.resource::<PendingHits>().0;
                 assert_eq!(hits.len(), 1, "{name}");

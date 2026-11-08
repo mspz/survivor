@@ -68,9 +68,10 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
     [
         spec!(
             "Beast Mastery",
-            "concussive_shot",
-            "arcane_shot",
-            "concussive_shot"
+            "kill_command",
+            "tame_beast",
+            "kill_command",
+            "bestial_wrath"
         ),
         spec!(
             "Marksmanship",
@@ -636,6 +637,19 @@ mod tests {
         assert_eq!(account.shared_build(0), build);
         assert!(run.abilities.iter().any(|a| a.def.key == TREES[0][0].cap));
     }
+    #[test]
+    fn beast_mastery_capstone_does_not_grant_concussive_shot_or_arcane_offers() {
+        let mut account = account();
+        for node in [8, 12, 18] { account.builds[2][0][node] = 1; }
+        let mut run = Run { class: &data::CLASSES[2], ..Default::default() };
+        run.abilities.push(Owned { def: data::ability(run.class.start), level: 1, cd: 0.5 });
+        account.apply(2, &mut run);
+        assert_eq!(run.abilities.iter().filter(|a| a.def.key == "kill_command").count(), 1);
+        assert!(!run.abilities.iter().any(|a| matches!(a.def.key, "arcane_shot" | "concussive_shot")));
+        let arcane = data::PASSIVES.iter().find(|p| p.key == "arcane").unwrap();
+        assert!(!super::super::passives::eligible(arcane, &run));
+    }
+
     fn account() -> Account {
         Account {
             character: None,

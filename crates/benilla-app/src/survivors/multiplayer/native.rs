@@ -945,6 +945,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         taken_meter: run.taken_meter.clone(),
         movement_speed: run.stats().speed * run.haste_mult(),
         meter: run.meter.clone(),
+        boss_meter: run.boss_meter.clone(),
         earned: game::talents::earned(run),
         hp: run.hp,
         max_hp: run.stats().max_hp,
@@ -1562,6 +1563,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         game::healer_buffs::restore(&mut run, stats.support_bonuses);
         run.damage_done = stats.damage_done;
         run.meter = stats.meter.clone();
+        run.boss_meter = stats.boss_meter.clone();
         run.healing_meter = stats.healing_meter.clone();
         run.taken_meter = stats.taken_meter.clone();
         run.dead_t = stats.dead.then_some(0.0);

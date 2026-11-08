@@ -69,7 +69,9 @@ pub(super) fn eligible(passive: &PassiveDef, run: &Run) -> bool {
         engine::resolve(owned.def, owned.level, &stats, before)
             != engine::resolve(owned.def, owned.level, &stats, &after)
     }) || super::procs::available(run).iter().any(|def| {
-        engine::resolve(def, 1, &stats, before) != engine::resolve(def, 1, &stats, &after)
+        let tags = super::procs::gameplay_tags(run, def.key, engine::tags::for_spell(def));
+        engine::resolve_tagged(def, 1, &stats, before, 0.0, tags)
+            != engine::resolve_tagged(def, 1, &stats, &after, 0.0, tags)
     }) || run.mobility().is_some_and(|def| {
         engine::resolve_mobility(def, before) != engine::resolve_mobility(def, &after)
     })
@@ -217,6 +219,36 @@ mod tests {
     fn passive(key: &str) -> &'static PassiveDef {
         data::PASSIVES.iter().find(|p| p.key == key).unwrap()
     }
+    #[test]
+    fn pack_frenzy_is_physical_and_does_not_unlock_arcane_damage_offers() {
+        use super::super::{procs, talent_runtime};
+        for frenzy in [false, true] {
+            let mut run = run(&["kill_command"]);
+            run.class = &data::CLASSES[2];
+            run.talent_build[0][8] = 1;
+            run.talent_build[0][12] = 1;
+            if frenzy { run.talent_build[0][18] = 1; }
+            talent_runtime::configure(&mut run);
+            assert!(!eligible(passive("arcane"), &run), "frenzy={frenzy}");
+            let p = procs::resolve(&run, "proc_bloodburst", 100.0, 0.0, 0.0, 6.0, 64);
+            assert!(p.tags.contains(engine::Tags::PHYSICAL | engine::Tags::MINION | engine::Tags::ATTACK));
+            assert!(!p.tags.intersects(engine::Tags::ARCANE | engine::Tags::SPELL));
+            if frenzy {
+                let view = procs::views(&run).into_iter().find(|v| v.key == "proc_bloodburst").unwrap();
+                assert!(view.lines[1].contains("Attack"));
+                assert!(!view.lines[1].contains("Spell"));
+                let def = procs::available(&run).into_iter().find(|d| d.key == "proc_bloodburst").unwrap();
+                let tags = procs::gameplay_tags(&run, def.key, engine::tags::for_spell(&def));
+                assert_eq!(tags, p.tags);
+            }
+            for key in ["arcane_shot", "volley", "concussive_shot"] {
+                run.abilities.push(Owned { def: data::ability(key), level: 1, cd: 0.0 });
+                assert!(eligible(passive("arcane"), &run), "{key}");
+                run.abilities.pop();
+            }
+        }
+    }
+
     #[test]
     fn legendary_chances_stack_and_are_applied_when_casting() {
         for (key, spell, index) in [
