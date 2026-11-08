@@ -80,6 +80,9 @@ fn power(def: &data::AbilityDef) -> Option<f32> {
 /// Where a new spell stands among its class's: the strongest third Epic, the weakest third
 /// Uncommon, the rest (and the defensive spells) Epic.
 fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
+    if matches!(def.key, "tame_beast" | "stomp") {
+        return Rarity::Uncommon;
+    }
     let Some(mine) = power(def) else {
         return Rarity::Epic;
     };
@@ -103,6 +106,9 @@ fn spell_tier(def: &data::AbilityDef, run: &Run) -> Rarity {
 /// A top rank is Legendary, a new spell uses its class power tier, a plain rank is Uncommon.
 pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
     match choice {
+        Choice::NumericPassive(p, strength) if p.key == "renew" => {
+            if strength == 1 { Rarity::Epic } else { Rarity::Legendary }
+        }
         Choice::NumericPassive(_, strength) => match strength {
             1 => Rarity::Common,
             2 => Rarity::Uncommon,
@@ -119,6 +125,8 @@ pub(super) fn rarity(choice: Choice, run: &Run) -> Rarity {
                 Rarity::Uncommon
             }
         }
+        Choice::NewPassive(p) if p.key == "totem_limit_epic" => Rarity::Epic,
+        Choice::UpPassive(k) if run.passives[k].0.key == "totem_limit_epic" => Rarity::Epic,
         Choice::NewPassive(p) if super::passives::legendary(p) => Rarity::Legendary,
         Choice::UpPassive(k) if super::passives::legendary(run.passives[k].0) => Rarity::Legendary,
         Choice::NewPassive(p) if matches!(p.effect, data::PassiveEffect::Stat(..)) => {

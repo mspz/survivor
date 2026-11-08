@@ -98,7 +98,7 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Armor Breaker","Physical attacks ignore 60% armor and deal 35% more damage.",None,C::ArmourPenetration(0.6),C::MoreDamage(0.35))]},
     Design {title:"Fureur",focus:"Saignements et vitesse d’attaque",filter:T::ATTACK,milestones:[
         m!("Deep Wounds","Physical skill hits bleed for 20% damage per second for 4 sec.",Bleed,C::BleedChance(1.0)),
-        m!("Bloodbath","Bleeding enemies explode on death for 30% max health damage, up to 300. +20% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.2)),
+        m!("Bloodbath","Bleeding enemies explode on death for 30% of the dying enemy's maximum health, capped at 300 base damage before damage modifiers and critical strikes. +20% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.2)),
         m!("Titan's Grip","Equip two two-handed weapons. +25% attack speed.",Titans,C::IncreasedAttackSpeed(0.25))]},
     Design {title:"Protection",focus:"Provocation, blocage et Coup de tonnerre",filter:T::PHYSICAL,milestones:[
         m!("Taunt","Taunt enemies within 12 yards for 3 sec every 6 sec. Unlocks Thunder Clap.",Taunt),
@@ -116,22 +116,22 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Seal of Righteousness","Skill hits deal an extra Holy hit for 25% damage.",Seal),
         m!("Seal of Command","Skill hits splash 40% damage within 4 yards.",Splash),
         m!("Divine Storm","Seal hits splash to nearby enemies and restore health equal to 5% attack damage.",SealStorm)]},
-    Design {title:"Maîtrise des bêtes",focus:"Familier et saignements",filter:T::ATTACK,milestones:[
-        m!("Wild Companion","Summon a wolf that hunts enemies. Physical skill hits have a 50% chance to bleed.",Pet,C::BleedChance(0.5)),
-        m!("Hungry Pack","Summon a second wolf. Their bites cause bleeding for 4 sec.",Pack),
-        m!("Pack Frenzy","Bleeding enemies explode on death. +35% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.35))]},
+    Design {title:"Maîtrise des bêtes",focus:"Familiers, vitesse et saignements",filter:T::MINION,milestones:[
+        m!("Wild Companion","Summon a wolf whose attacks hit up to 3 nearby enemies. Replaces Arcane Shot with Kill Command. Minions gain 20% more action speed, multiplicative with their attack and movement speed.",Pet,C::MoreActionSpeed(0.20)),
+        m!("Hungry Pack","Summon a second wolf. Damaging Minion attacks and skills cause Physical bleeding for 20% of the hit's damage per second for 4 sec. Scales with damage over time and duration bonuses.",Pack),
+        m!("Pack Frenzy","Bleeding enemies explode on death for 30% of the dying enemy's maximum health, capped at 300 base damage before damage modifiers and critical strikes. +35% Minion attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.35))]},
     Design {title:"Précision",focus:"Projectiles et critiques",filter:T::PROJECTILE,milestones:[
         m!("Barrage","Projectile skills fire 2 extra projectiles.",None,C::AdditionalProjectiles(2)),
         m!("Ricochet","Projectiles chain to 2 extra enemies.",None,C::AdditionalChains(2)),
         m!("Splinter Shot","Projectiles fork on impact. +40% critical damage.",None,C::Fork(1),C::CriticalMultiplier(0.4))]},
-    Design {title:"Survie",focus:"Mêlée, vie, pièges et dégâts sur la durée",filter:T::ATTACK,milestones:[
+    Design {title:"Survie",focus:"Résistance et maîtrise des pièges",filter:T::ATTACK,milestones:[
         m!("Close-Range Predator","Unlocks Raptor Strike. Physical skill hits always cause bleeding.",Bleed,C::BleedChance(1.0)),
         m!("Trapper","Unlocks Explosive Trap. +60% attack duration and +40% attack area.",None,C::IncreasedDuration(0.6),C::IncreasedArea(0.4)),
-        m!("Death Trap","Enemies affected by your damage over time explode on death for 30% max health damage, up to 300.",Plagueburst)]},
+        m!("Death Trap","Enemies affected by your damage over time explode on death for 30% of the dying enemy's maximum health, capped at 300 base damage before damage modifiers and critical strikes.",Plagueburst)]},
     Design {title:"Assassinat",focus:"Poison et prolifération",filter:T::ATTACK,milestones:[
-        m!("Deadly Poison","Skill hits poison enemies for 18% damage per second for 6 sec. Further hits refresh the poison.",Poison),
+        m!("Deadly Poison","Skill hits add a poison stack dealing 18% damage per second for 6 sec. Each stack has its own duration. Poisons share the target's limit of 6 damage-over-time effects.",Poison),
         m!("Toxic Contagion","Your poison spreads to enemies within 6 yards when its target dies.",Proliferate),
-        m!("Poison Bomb","Poisoned enemies explode on death for 30% max health damage, up to 300.",Poisonburst)]},
+        m!("Poison Bomb","Poisoned enemies explode on death for 30% of the dying enemy's maximum health, capped at 300 base damage before damage modifiers and critical strikes.",Poisonburst)]},
     Design {title:"Combat",focus:"Vitesse d’attaque et attaques de zone",filter:T::ATTACK,milestones:[
         m!("Blade Flurry","Skill hits splash 40% damage to nearby enemies.",Splash),
         m!("Combat Potency","25% chance to repeat attacks. +20% attack speed.",None,C::RecastChance(0.25),C::IncreasedAttackSpeed(0.2)),
@@ -151,7 +151,7 @@ pub(super) static DESIGNS: [Design; 27] = [
     Design {title:"Ombre",focus:"Dégâts d’ombre sur la durée et vol de vie",filter:T::SHADOW,milestones:[
         m!("Vampiric Embrace","Recover health equal to 12% of your direct and periodic Shadow damage.",ShadowDrain),
         m!("Devouring Plague","Shadow hits apply a plague dealing 18% damage per second for 6 sec. +30% Shadow damage over time.",ShadowPlague,C::IncreasedDotDamage(0.3)),
-        m!("Shadow Pandemic","Your damage over time spreads when its target dies, causing a nearby explosion.",PlagueSpread)]},
+        m!("Shadow Pandemic","Your damage over time spreads when its target dies, causing a Shadow explosion for 30% of its maximum health, capped at 300 base damage before damage modifiers and critical strikes.",PlagueSpread)]},
     Design {title:"Élémentaire",focus:"Dégâts élémentaires et chaînes",filter:T::SPELL,milestones:[
         m!("Conduction","Elemental projectiles chain to an extra target.",None,C::AdditionalChains(1)),
         m!("Elemental Overload","25% chance to repeat elemental spells.",None,C::RecastChance(0.25)),
@@ -161,26 +161,26 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Flametongue Weapon","Skill hits deal an extra Fire hit for 25% damage.",Seal),
         m!("Stormstrike","Every fifth skill hit strikes up to 4 nearby enemies for 100% damage as Lightning.",Stormstrike)]},
     Design {title:"Restauration",focus:"Totems de soin et de dégâts",filter:T::TOTEM,milestones:[
-        m!("Ancestral Totem","Summon a stationary totem that heals allies within 12 yd for 2% max health per second. Unlocks Healing Stream Totem and Totemic Recall. +20% totem power and buff effect.",HealTotem,C::IncreasedEffect(0.2),C::IncreasedBuffEffect(0.2)),
-        m!("Totemic Harmony","Your ancestral totem also fires a 24-damage Lightning bolt. Unlocks Strength of Earth Totem. +50% totem duration and +25% totem cooldown recovery.",DualTotem,C::IncreasedDuration(0.5),C::IncreasedCooldownRecovery(0.25)),
+        m!("Ancestral Totem","Summon a stationary healing totem.\nHealing: 2% max health per second. Radius: 12 yd.\nParty blessing: +25% cooldown recovery and +10% offensive spell repeat chance, scaled by buff effect.\nUnlocks Healing Stream Totem and Totemic Recall.\n+20% totem power and buff effect.",HealTotem,C::IncreasedEffect(0.2),C::IncreasedBuffEffect(0.2)),
+        m!("Totemic Harmony","Your ancestral totem also fires a 24-damage Lightning bolt.\nUnlocks Strength of Earth Totem.\n+1 maximum totems for every totem spell.",DualTotem,C::AdditionalTotems(1)),
         m!("Spirit Council","Summon a second ancestral totem. Their healing rises to 4% max health per second without stacking, and each volley hits up to 3 enemies. All totems deal 35% more damage and gain +25% buff effect. Party blessings are retained.",SpiritTotem,C::MoreDamage(0.35),C::IncreasedBuffEffect(0.25))]},
     Design {title:"Arcanes",focus:"Répétition des sorts et résonance magique",filter:T::SPELL,milestones:[
         m!("Arcane Echo","Offensive spells gain 50% repeat chance. Repeated casts cannot repeat again.",None,C::RecastChance(0.50)),
-        m!("Resonant Casting","Repeated spells trigger another learned spell, or the source if it is your only spell. 0.5s internal cooldown, reduced by cooldown recovery. This extra cast cannot repeat or trigger any other proc.",ArcaneCompanion),
+        m!("Resonant Casting","Repeated spells trigger one additional learned spell, or the source if it is your only spell. Fixed 0.75s internal cooldown, unaffected by haste or cooldown modifiers. This extra cast cannot repeat or trigger any other proc.",ArcaneCompanion),
         m!("Greater Spell Echo","Each successive repeat deals 20% more damage than the previous one: 120%, 144%, 172.8%, 207.36%. The counter resets for each original cast. Copies cannot create new repeats.",ArcaneCascade)]},
     Design {title:"Feu",focus:"Enflammer et prolifération",filter:T::FIRE,milestones:[
         m!("Ignite","Fire hits burn enemies for 25% damage per second for 3 sec.",Ignite,C::IgniteChance(1.0)),
         m!("Spreading Flames","Ignite spreads to enemies within 6 yards when its target dies.",IgniteSpread),
-        m!("Combustion","Ignited enemies explode on death for 30% max health damage, up to 300.",Fireburst)]},
+        m!("Combustion","Ignited enemies explode on death for 30% of the dying enemy's maximum health, capped at 300 base damage before damage modifiers and critical strikes.",Fireburst)]},
     Design {title:"Givre",focus:"Ralentissements et gel",filter:T::COLD,milestones:[
         m!("Frostbite","Frost hits slow by 40% for 3 sec and have a 20% chance to freeze. Frost damage is 10% lower.",Freeze,C::MoreDamage(-0.1)),
         m!("Shatter","Deal 60% more Frost damage to frozen enemies.",Shatter),
-        m!("Endless Winter","Frozen enemies explode on death and freeze nearby enemies for 2 sec.",FrostNova)]},
+        m!("Endless Winter","Frozen enemies explode on death for 30% of their maximum health, capped at 300 base damage before damage modifiers and critical strikes, and freeze nearby enemies for 2 sec.",FrostNova)]},
     Design {title:"Affliction",focus:"Dégâts sur la durée, contagion et explosions",filter:T::SHADOW,milestones:[
-        m!("Unstable Affliction","Shadow hits apply an affliction dealing 18% damage per second for 6 sec. +25% Shadow damage over time.",Plague,C::IncreasedDotDamage(0.25)),
+        m!("Unstable Affliction","Shadow hits add an affliction stack dealing 18% damage per second for 6 sec. Each stack has its own duration and shares the target's limit of 6 damage-over-time effects. +25% Shadow damage over time.",Plague,C::IncreasedDotDamage(0.25)),
         m!("Contagion","Your damage over time spreads to enemies within 6 yards when its target dies.",PlagueSpread),
-        m!("Doom Eruption","Enemies affected by your damage over time explode on death for 30% max health damage, up to 300.",Plagueburst)]},
-    Design {title:"Démonologie",focus:"Invocation d’une armée démoniaque",filter:T::SHADOW,milestones:[
+        m!("Doom Eruption","Enemies affected by your damage over time explode on death for 30% of the dying enemy's maximum health, capped at 300 base damage before damage modifiers and critical strikes.",Plagueburst)]},
+    Design {title:"Démonologie",focus:"Invocation d’une armée démoniaque",filter:T::MINION,milestones:[
         m!("Demonic Pact","Summon an imp that casts Firebolts.",Demon),
         m!("Legion","Summon two extra demons. Their attacks burn enemies.",Demons),
         m!("Demon Lord","Demons deal double damage and their hits explode within 4 yards.",DemonLord)]},
@@ -195,7 +195,7 @@ pub(super) static DESIGNS: [Design; 27] = [
     Design {title:"Combat farouche",focus:"Saignements de mêlée et résistance",filter:T::MELEE,milestones:[
         m!("Blood Claws","Permanently take Cat Form. Physical melee skill hits always cause bleeding.",Bleed,C::BleedChance(1.0)),
         m!("Bear Instinct","Take 15% less damage and recover health equal to 5% of melee damage.",FeralGuard,C::LifeLeech(0.05)),
-        m!("Savage Carnage","Bleeding enemies explode on death. +25% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.25))]},
+        m!("Savage Carnage","Bleeding enemies explode on death for 30% of their maximum health, capped at 300 base damage before damage modifiers and critical strikes. +25% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.25))]},
     Design {title:"Restauration",focus:"Soins sur la durée et soutien des alliés",filter:T::HEAL,milestones:[
         m!("Bloom","Nearby allies recover 1.5% max health per second.",Hot),
         m!("Gift of Nature","Nearby allies gain 8% damage, 20% movement speed and 5% all elemental resistances. The support aura scales with your Nature spell power.",AllyBuff),

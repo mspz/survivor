@@ -106,8 +106,35 @@ impl Loadout {
     }
 }
 impl Run {
+    fn minion_weapon_range(&self) -> DamageRange {
+        if self.class.id == 3 && self.weapon_damage.ranged.max > 0.0 {
+            self.weapon_damage.ranged
+        } else if self.weapon_damage.melee.max > 0.0 {
+            self.weapon_damage.melee
+        } else {
+            self.weapon_damage.ranged
+        }
+    }
+
+    /// Independent summon attacks inherit the owner's current weapon's average damage.
+    /// Derived procs already include their parent's damage and must not add it again.
+    pub(in crate::survivors) fn minion_weapon_damage(&self) -> f32 {
+        self.minion_weapon_range().roll(0.5)
+            * if super::super::talent_runtime::active(
+                self,
+                super::super::talent_design::Mechanic::Weapon,
+            ) {
+                1.35
+            } else {
+                1.0
+            }
+    }
+
     pub(in crate::survivors) fn weapon_damage_range(&self, def: &AbilityDef) -> DamageRange {
         let (profile, tags) = super::legendary::profile(self, def);
+        if tags.contains(Tags::MINION | Tags::ATTACK | Tags::DAMAGE) && profile.damage > 0.0 {
+            return self.minion_weapon_range();
+        }
         if self.legendary.has(279) && tags.contains(Tags::ATTACK | Tags::MELEE) && def.damage > 0.0
         {
             return self.weapon_damage.hands[self.legendary.casting.melee as usize % 2];
@@ -222,6 +249,80 @@ mod tests {
         },
         spell_engine::{Change, Filter, Modifier},
     };
+
+    #[test]
+    fn hunter_bow_damage_scales_attacks_and_minions_once_and_updates_on_equipment_changes() {
+        use crate::survivors::{balance, procs};
+        let mut bow = item(SlotKind::Ranged, vec![]);
+        bow.equipment_type = EquipmentType::Bow;
+        bow.base_damage = Some(DamageRange {
+            min: 20.0,
+            max: 30.0,
+        });
+        let mut inventory = Inventory::fixture(vec![bow]);
+        inventory.class = 3;
+        let mut run = Run {
+            class: &data::CLASSES[2],
+            balance: balance::Config::parse("version=1\n[classes]\n[tags]\n").unwrap(),
+            ..Default::default()
+        };
+        let keys = [
+            "arcane_shot",
+            "multi_shot",
+            "serpent_sting",
+            "volley",
+            "explosive_trap",
+            "concussive_shot",
+            "aimed_shot",
+            "kill_command",
+            "stomp",
+        ];
+        let base: Vec<_> = keys
+            .iter()
+            .map(|key| run.resolve_spell(data::ability(key), 1).dmg)
+            .collect();
+        inventory.equip(1, "Ranged").unwrap();
+        inventory.apply(&mut run);
+        for (key, base) in keys.into_iter().zip(base.iter()) {
+            let def = data::ability(key);
+            assert!(
+                (run.resolve_spell_with_weapon_roll(def, 1, 0.0).dmg - base - 20.0).abs() < 0.001,
+                "{key}"
+            );
+            assert!(
+                (run.resolve_spell_with_weapon_roll(def, 1, 1.0).dmg - base - 30.0).abs() < 0.001,
+                "{key}"
+            );
+        }
+        run.replace_spell_modifiers(
+            905,
+            [Modifier {
+                source: 905,
+                filter: Filter::requiring(Tags::MINION),
+                change: Change::IncreasedDamage(1.0),
+            }],
+        );
+        for weapon in [25.0, 50.0, 0.0] {
+            if weapon == 50.0 {
+                inventory.save.items[0].base_damage = Some(DamageRange {
+                    min: 40.0,
+                    max: 60.0,
+                });
+                inventory.revision += 1;
+            } else if weapon == 0.0 {
+                inventory.unequip("Ranged").unwrap();
+            }
+            inventory.apply(&mut run);
+            for key in ["proc_pet_bite", "proc_demon_bolt"] {
+                let p = procs::resolve(&run, key, 18.0, 0.0, 0.0, 0.0, 1);
+                assert!((p.dmg - (18.0 + weapon) * 2.0).abs() < 0.001, "{key}");
+            }
+            assert!(
+                (procs::resolve(&run, "proc_bloodburst", 10.0, 0.0, 0.0, 0.0, 1).dmg - 20.0).abs()
+                    < 0.001
+            );
+        }
+    }
 
     #[test]
     fn intelligence_weapon_damage_only_adds_to_attacks_before_multipliers_and_survives_saving() {

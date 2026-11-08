@@ -1762,7 +1762,6 @@ appearance = { display_id = 5291, inventory_type = 26, item_class = 2, subclass 
 
 [rarities]
 normal = 60
-magic = 30
-epic = 10
-# Base percentage before Magic Find, independent of Ilvl.
-legendary = 5
+magic = 35
+epic = 5
+legendary = 1

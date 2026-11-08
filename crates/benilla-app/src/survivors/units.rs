@@ -149,7 +149,11 @@ pub(super) fn spawn_object(
 /// Explosive Trap's original GameObjectDisplayInfo model. Type 6 enables WoW's
 /// closed/open state animation; a generic decorative object would never animate.
 pub(super) fn spawn_explosive_trap(commands: &mut Commands, serial: u64, pos: Vec3) -> Entity {
-    let entity = spawn_object(commands, serial, 3072, 1.0, pos);
+    spawn_animated_trap(commands, serial, 3072, pos)
+}
+
+fn spawn_animated_trap(commands: &mut Commands, serial: u64, display: u32, pos: Vec3) -> Entity {
+    let entity = spawn_object(commands, serial, display, 1.0, pos);
     commands
         .entity(entity)
         .insert(ObjectStore(ObjectFields::from_pairs(&[
@@ -157,11 +161,27 @@ pub(super) fn spawn_explosive_trap(commands: &mut Commands, serial: u64, pos: Ve
             (1, ((HIGH_GAMEOBJECT | serial) >> 32) as u32),
             (2, 0x21),
             (4, 1.0f32.to_bits()),
-            (FIELD_GO_DISPLAY, 3072),
+            (FIELD_GO_DISPLAY, display),
             (FIELD_GO_STATE, GO_STATE_READY),
             (FIELD_GO_TYPE, 6),
         ])));
     entity
+}
+
+/// The physical Frost Trap (GameObjectDisplayInfo 3073) and its persistent frost layer.
+pub(super) fn spawn_frost_trap(
+    commands: &mut Commands,
+    serial: u64,
+    radius: f32,
+    scale: f32,
+    pos: Vec3,
+) -> Entity {
+    let trap = spawn_animated_trap(commands, serial, 3073, pos);
+    let aura = spawn_area_object(commands, serial, 13809, radius, scale, pos);
+    commands
+        .entity(aura)
+        .insert((ChildOf(trap), Transform::from_translation(Vec3::Y * 0.03)));
+    trap
 }
 
 /// Zero health: the animation selector plays Death and holds the corpse pose.
@@ -181,6 +201,13 @@ pub(super) fn spawn_area_object(
     scale: f32,
     pos: Vec3,
 ) -> Entity {
+    // Spell.dbc: 13809 only places the trap; 13810's area visual is FrostTrap_Aura.
+    // Its ICESLICK_AREA ground quad spans 25 yd in the shipped M2 (vertices +/-12.5).
+    let (spell, scale, pos) = if spell == 13809 {
+        (13810, (radius / 12.5).max(0.01), pos + Vec3::Y * 0.03)
+    } else {
+        (spell, scale, pos)
+    };
     let guid = HIGH_DYNAMIC | serial;
     let wow = bevy_to_wow(pos);
     commands
@@ -370,6 +397,9 @@ impl Fx<'_> {
         pos: Vec3,
         fields: &mut MessageWriter<FieldChanged>,
     ) {
+        if store.0.gameobject_state() != Some(GO_STATE_READY) {
+            return;
+        }
         store
             .0
             .merge(ObjectFields::from_pairs(&[(FIELD_GO_STATE, 0)]));
@@ -382,7 +412,9 @@ impl Fx<'_> {
             new: 0,
         });
         // 13813 places the trap; 13812 is its actual explosion (visual 7659).
-        self.cast(entity, 13812, &[], Some(pos));
+        if store.0.gameobject_displayid() == Some(3072) {
+            self.cast(entity, 13812, &[], Some(pos));
+        }
     }
     /// `SMSG_SPELL_GO`: the cast kit on the caster, and a missile or an impact at each hit.
     pub fn cast(&mut self, caster: Entity, spell: u32, hits: &[Entity], dest: Option<Vec3>) {
@@ -501,6 +533,80 @@ pub(super) const COLOR_HEAL: u32 = 0xFF30_FF30;
 #[cfg(test)]
 mod trap_tests {
     use super::*;
+
+    #[test]
+    fn frost_trap_has_a_visible_armed_gameobject_and_a_child_frost_layer() {
+        let mut world = World::new();
+        let pos = Vec3::new(3.0, 5.0, 7.0);
+        let trap = spawn_frost_trap(&mut world.commands(), 42, 6.0, 1.0, pos);
+        world.flush();
+        assert_eq!(world.get::<NetEntity>(trap).unwrap().display_id, Some(3073));
+        let store = world.get::<ObjectStore>(trap).unwrap();
+        assert_eq!(store.0.gameobject_state(), Some(GO_STATE_READY));
+        assert_eq!(store.0.gameobject_type_id(), 6);
+        let children: Vec<_> = world
+            .query::<(&ChildOf, &ObjectStore, &Transform)>()
+            .iter(&world)
+            .filter(|(parent, _, _)| parent.parent() == trap)
+            .collect();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].1 .0.dynamicobject_spell_id(), Some(13810));
+        assert_eq!(children[0].2.translation, Vec3::Y * 0.03);
+        world.despawn(trap);
+        assert_eq!(world.query::<&NetEntity>().iter(&world).count(), 0);
+    }
+
+    #[test]
+    fn physical_trap_models_exist_in_the_wow_install() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let catalog = benilla_formats::load_gameobject_catalog(&mut chain).unwrap();
+        for (display, model) in [
+            (3072, "world\\goober\\g_explosivetrap"),
+            (3073, "world\\goober\\g_frosttrap"),
+        ] {
+            assert_eq!(
+                catalog.model_path(display).unwrap().to_ascii_lowercase(),
+                format!("{model}.mdx")
+            );
+            assert!(chain.read_file(&format!("{model}.m2")).is_ok());
+        }
+    }
+
+    #[test]
+    fn frost_trap_arms_its_persistent_wow_frost_layer_at_the_gameplay_radius() {
+        for radius in [6.0, 12.0] {
+            let mut world = World::new();
+            let pos = Vec3::new(3.0, 5.0, 7.0);
+            let entity =
+                spawn_area_object(&mut world.commands(), 42, 13809, radius, radius / 6.0, pos);
+            world.flush();
+            let store = world.get::<ObjectStore>(entity).unwrap();
+            assert_eq!(store.0.dynamicobject_spell_id(), Some(13810));
+            assert_eq!(store.0.dynamicobject_radius(), Some(radius));
+            assert!((store.0.object_scale_x().unwrap() * 12.5 - radius).abs() < 0.001);
+            assert_eq!(
+                world.get::<Transform>(entity).unwrap().translation,
+                pos + Vec3::Y * 0.03
+            );
+        }
+    }
+
+    #[test]
+    fn frost_trap_aura_resolves_to_the_real_iceslick_model_in_the_install() {
+        let data = benilla_formats::wow_data_or_skip!();
+        let mut chain = benilla_formats::open_chain(&data).unwrap();
+        let spells = benilla_formats::load_spell_catalog(&mut chain).unwrap();
+        let visuals = benilla_formats::load_spell_visual_catalog(&mut chain).unwrap();
+        let place = visuals.stages(spells.get(13809).unwrap().visual).unwrap();
+        assert_eq!(place.area_effect, 0);
+        let aura = visuals.stages(spells.get(13810).unwrap().visual).unwrap();
+        assert_ne!(aura.area_gate, 0);
+        let path = visuals.effect_path(aura.area_effect).unwrap();
+        assert_eq!(path.to_ascii_lowercase(), "spells\\frosttrap_aura.mdx");
+        assert!(chain.read_file("spells\\frosttrap_aura.m2").is_ok());
+        assert!(chain.read_file("SPELLS\\ICESLICK_AREA.BLP").is_ok());
+    }
 
     #[test]
     fn trap_uses_animated_wow_gameobject_and_explosion() {

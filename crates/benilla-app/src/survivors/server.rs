@@ -334,6 +334,7 @@ impl Run {
         s.growth += self.equipment.experience;
         s.speed *= 1.0 + self.rune.movement;
         s.growth += self.rune.experience;
+        let mut passive_regeneration = 0.0;
         for &(p, level) in &self.passives {
             let data::PassiveEffect::Stat(stat, per_level) = p.effect else {
                 continue;
@@ -345,7 +346,7 @@ impl Run {
                 Stat::Might => s.might += v,
                 Stat::MaxHp => s.max_hp *= 1.0 + v,
                 Stat::Speed => s.speed *= 1.0 + v,
-                Stat::Regen => s.regen += v,
+                Stat::Regen => passive_regeneration += v,
                 Stat::Haste => s.haste += v,
                 Stat::Area => s.area += v,
                 Stat::Magnet => s.magnet *= 1.0 + v,
@@ -365,6 +366,7 @@ impl Run {
         s.speed *= 1.0
             + self.support.power(self.elapsed, "aspect_of_the_pack")
             + self.support.power(self.elapsed, "stampeding_roar");
+        s.regen += s.max_hp * passive_regeneration;
         s
     }
 

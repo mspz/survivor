@@ -53,7 +53,7 @@ pub(super) fn category_text(
     let s = run.stats();
     match category {
         0=>{let p=primary(inventory);format!("Stamina: {:.0}\nStrength: {:.0}\nAgility: {:.0}\nIntelligence: {:.0}",p[0],p[1],p[2],p[3])},
-        1=>{let mut text=format!("Health: {:.0} / {:.0}\nArmour: {:.0}\nArmour reduction: {:.1}%\nFlat reduction: {:.1}%\nDamage reduction: {:.1}%\nDamage taken: {:.1}%\nEffective health: {:.0}\nBlock chance: {:.1}%",run.hp,s.max_hp,s.armor,crate::survivors::items::armour::reduction(s.armor)*100.0,run.equipment.reduction.clamp(0.0,0.75)*100.0,run.damage_reduction()*100.0,(1.0-run.damage_reduction())*100.0,s.max_hp/(1.0-run.damage_reduction()).max(0.0001),run.equipment.block.clamp(0.0,0.75)*100.0); for (tag, label, total) in s.resistances.entries() { text.push_str(&format!("\n{label}: {:.1}% (total: {total:.0}%, cap: 75%)", s.resistances.reduction(tag)*100.0)); } text },
+        1=>{let mut text=format!("Health: {:.0} / {:.0}\nArmour: {:.0}\nArmour reduction: {:.1}%\nFlat reduction: {:.1}%\nDamage reduction: {:.1}%\nDamage taken: {:.1}%\nEffective health: {:.0}\nBlock chance: {:.1}%",run.hp,s.max_hp,s.armor,crate::survivors::items::armour::reduction(s.armor)*100.0,run.equipment.reduction.clamp(0.0,0.75)*100.0,run.damage_reduction()*100.0,(1.0-run.damage_reduction())*100.0,s.max_hp/(1.0-run.damage_reduction()).max(0.0001),run.equipment.block.clamp(0.0,0.75)*100.0); text.push_str(&format!("\nDodge chance: {:.1}%", crate::survivors::extra_spells::dodge_chance(run) * 100.0)); for (tag, label, total) in s.resistances.entries() { text.push_str(&format!("\n{label}: {:.1}% (total: {total:.0}%, cap: 75%)", s.resistances.reduction(tag)*100.0)); } text },
         2=>{
             let mut rows=Vec::new();
             for (kind,label) in [(Tags::ATTACK,"Attack"),(Tags::SPELL,"Spell")] {
@@ -293,6 +293,7 @@ fn explanation(label: &str) -> Option<&'static str> {
         "Damage reduction" => "Combined protection against Physical damage. Elemental damage uses its matching resistance.",
         "Damage taken" => "The percentage of incoming damage left after reductions.",
         "Effective health" => "The raw damage your full health can withstand after reductions.",
+        "Dodge chance" => "Chance to avoid physical and magical damage, including boss areas. Capped at 75%.",
         "Block chance" => "Your chance to completely block an incoming melee hit.",
         "Attack" => "The attack skill used to preview your offensive stats.",
         "Spell" => "The spell used to preview your offensive stats.",

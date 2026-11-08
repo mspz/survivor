@@ -54,6 +54,290 @@ impl Hit {
 
 #[cfg(test)]
 mod spell_engine_integration_tests {
+    #[test]
+    fn hungry_pack_meter_separates_wolf_attacks_and_bleed_and_both_inherit_the_bow() {
+        use super::super::{items::{Config, EquipmentType, Inventory, weapons::DamageRange}, minions, talent_runtime};
+        let mut totals = Vec::new();
+        for bow_damage in [0.0, 25.0] {
+            let (mut world, targets) = legendary_world("arcane_shot", 0, &[3.0]);
+            {
+                let mut run = world.resource_mut::<Run>();
+                run.class = &data::CLASSES[2];
+                run.talent_build[0][8] = 1;
+                run.talent_build[0][12] = 1;
+                talent_runtime::configure(&mut run);
+            }
+            if bow_damage > 0.0 {
+                let config = Config::builtin();
+                let mut rng = Rng(123);
+                let mut bow = (0..1000).find_map(|_| {
+                    let item = config.generate(1, &mut rng).unwrap();
+                    (item.equipment_type == EquipmentType::Bow).then_some(item)
+                }).unwrap();
+                bow.affixes.clear();
+                bow.base_damage = Some(DamageRange { min: bow_damage, max: bow_damage });
+                let mut inventory = Inventory::fixture(vec![bow]);
+                inventory.equip(1, "Ranged").unwrap();
+                inventory.apply(&mut world.resource_mut::<Run>());
+            }
+            world.run_system_once(talent_runtime::tick).unwrap();
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(600));
+            world.resource_mut::<Run>().elapsed += 0.6;
+            world.run_system_once(talent_runtime::tick).unwrap();
+            world.run_system_once(apply_hits).unwrap();
+            let bleed = world.get::<Enemy>(targets[0]).unwrap().dots.iter()
+                .find(|d| d.meter_source == Some(minions::PACK_BLEED_SOURCE)).unwrap();
+            assert!((bleed.dps - (18.0 + bow_damage) * 0.2).abs() < 0.001);
+            let run = world.resource::<Run>();
+            let direct = run.meter.rows(run.elapsed).into_iter()
+                .find(|r| r.key == minions::PACK_ATTACK_SOURCE).unwrap().total;
+            world.resource_mut::<Messages<Hit>>().clear();
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+            world.resource_mut::<Run>().elapsed += 1.0;
+            world.run_system_once(apply_hits).unwrap();
+            let run = world.resource::<Run>();
+            let rows = run.meter.rows(run.elapsed);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows.iter().find(|r| r.key == minions::PACK_ATTACK_SOURCE).unwrap().total, direct);
+            let periodic = rows.iter().find(|r| r.key == minions::PACK_BLEED_SOURCE).unwrap().total;
+            assert!(direct > 0.0 && periodic > 0.0);
+            totals.push((direct, periodic));
+        }
+        assert!(totals[1].0 > totals[0].0);
+        assert!(totals[1].1 > totals[0].1);
+    }
+
+    #[test]
+    fn hungry_pack_triggers_from_minion_skill_damage_without_replacing_native_dots_or_recursing() {
+        use super::super::{talent_runtime, items::legendary::periodic};
+        for pack in [false, true] {
+            for skill in ["stomp", "kill_command", "proc_pet_bite", "proc_demon_bolt", "arcane_shot"] {
+                let (mut world, targets) = legendary_world("arcane_shot", 0, &[3.0]);
+                if pack {
+                    let mut run = world.resource_mut::<Run>();
+                    run.class = &data::CLASSES[2];
+                    run.talent_build[0][12] = 1;
+                    talent_runtime::configure(&mut run);
+                }
+                let mut hit = Hit::direct(skill, targets[0], 100.0, false);
+                hit.tags = Some(engine::tags::for_spell(data::ability(skill)));
+                hit.triggered = true;
+                hit.proc_resolved = true;
+                hit.dot = 3.0;
+                hit.dot_dur = 4.0;
+                world.write_message(hit);
+                world.run_system_once(apply_hits).unwrap();
+                let en = world.get::<Enemy>(targets[0]).unwrap();
+                let bleed = en.dots.iter().find(|d| d.meter_source == Some(super::super::minions::PACK_BLEED_SOURCE));
+                assert_eq!(bleed.is_some(), pack && skill != "arcane_shot", "{skill}");
+                assert!(en.dots.iter().any(|d| d.skill == skill && d.dps == 3.0));
+                if let Some(bleed) = bleed {
+                    assert!((bleed.dps - 20.0).abs() < 0.001);
+                    assert!((bleed.left - (4.0 - world.resource::<Time>().delta_secs())).abs() < 0.001);
+                    assert!(matches!(periodic::family(bleed), periodic::Family::Bleed));
+                }
+                let count = en.dots.len();
+                world.resource_mut::<Messages<Hit>>().clear();
+                world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+                world.run_system_once(apply_hits).unwrap();
+                assert_eq!(world.get::<Enemy>(targets[0]).unwrap().dots.len(), count);
+            }
+        }
+    }
+
+    #[test]
+    fn freeze_status_and_fifty_percent_slow_remain_on_bosses_and_elites() {
+        for rank in [enemies::Rank::Normal, enemies::Rank::Elite, enemies::Rank::Boss] {
+            let (mut world, targets) = legendary_world("frost_nova", 0, &[3.0]);
+            world.entity_mut(targets[0]).insert(rank);
+            world.get_mut::<Enemy>(targets[0]).unwrap().boss = rank == enemies::Rank::Boss;
+            let mut hit = Hit::direct("frost_nova", targets[0], 1.0, false);
+            hit.effect = Effect::Root(2.5);
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            assert!(world.get::<Enemy>(targets[0]).unwrap().root_t > 0.0);
+            let mut hit = Hit::direct("frostbolt", targets[0], 1.0, false);
+            hit.effect = Effect::Slow(0.1, 3.0);
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            let en = world.get::<Enemy>(targets[0]).unwrap();
+            assert_eq!(en.slow, if rank == enemies::Rank::Normal { 0.1 } else { 0.5 });
+            assert!(en.root_t > 0.0);
+        }
+    }
+
+    #[test]
+    fn pet_damage_leeches_life_for_its_owner_without_triggering_ailments() {
+        use super::super::multiplayer::{Companion, Companions};
+        for guest in [false, true] {
+            for skill in ["proc_pet_bite", "proc_demon_bolt", "kill_command", "stomp", "proc_fireburst"] {
+                let (mut world, targets) = legendary_world("arcane_shot", 0, &[3.0]);
+                let mut player = Run::default();
+                player.hp = 10.0;
+                player.replace_spell_modifiers(903, [engine::Change::LifeLeech(0.5), engine::Change::BleedChance(1.0)]
+                    .into_iter().map(|change| engine::Modifier {
+                        source: 903, filter: engine::Filter::requiring(engine::Tags::ATTACK), change,
+                    }));
+                if guest {
+                    player.owner = Some(7);
+                    let mut players = Companions::default();
+                    players.0.insert(7, Companion {
+                        entity: Entity::PLACEHOLDER, run: player,
+                        physics: Hero { vy: 0.0, air: 0.0 }, offer: default(), offer_id: 0,
+                    });
+                    world.insert_resource(players);
+                } else {
+                    let mut host = world.resource_mut::<Run>();
+                    host.hp = player.hp;
+                    host.replace_spell_modifiers(903, player.spell_modifiers.entries().iter().copied());
+                }
+                // Prepared hits cover Tame Beast, repeats and commands; hidden hits cover wolves/demons.
+                let mut hit = Hit::direct(skill, targets[0], 10.0, false);
+                hit.triggered = true;
+                hit.owner = guest.then_some(7);
+                if matches!(skill, "kill_command" | "stomp") {
+                    hit.tags = Some(engine::tags::for_spell(data::ability(skill)));
+                    hit.proc_resolved = true;
+                }
+                world.write_message(hit);
+                world.run_system_once(apply_hits).unwrap();
+                let recovered = if guest { world.resource::<Companions>().0[&7].run.hp - 10.0 }
+                    else { world.resource::<Run>().hp - 10.0 };
+                let dealt = 1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp;
+                if skill == "proc_fireburst" { assert_eq!(recovered, 0.0); }
+                else { assert!(dealt > 0.0); assert!((recovered - dealt * 0.5).abs() < 0.001); }
+                assert!(world.get::<Enemy>(targets[0]).unwrap().dots.is_empty());
+                if guest { assert_eq!(world.resource::<Run>().damage_done, 0.0); }
+            }
+        }
+    }
+
+    #[test]
+    fn contact_threats_override_ranged_boss_priority_until_they_leave_the_danger_zone() {
+        let (mut world, targets) = legendary_world("frostbolt", 0, &[1.0, 4.0, 6.0]);
+        world.resource_mut::<Run>().legendary.equipped.clear();
+        world.get_mut::<Enemy>(targets[1]).unwrap().hp = 1.0;
+        world.get_mut::<Enemy>(targets[2]).unwrap().boss = true;
+        world.run_system_once(cast_abilities).unwrap();
+        let first: Vec<_> = world
+            .resource_mut::<Messages<SpellGoTargets>>()
+            .drain()
+            .collect();
+        assert_eq!(first[0].hits[0], targets[0]);
+        world
+            .get_mut::<Transform>(targets[0])
+            .unwrap()
+            .translation
+            .x = 3.0;
+        world.resource_mut::<Run>().abilities[0].cd = 0.0;
+        world.run_system_once(cast_abilities).unwrap();
+        let next: Vec<_> = world
+            .resource_mut::<Messages<SpellGoTargets>>()
+            .drain()
+            .collect();
+        assert_eq!(next[0].hits[0], targets[2]);
+    }
+    #[test]
+    fn minion_stomp_waits_for_pet_range_and_casts_and_slows_from_the_pet() {
+        let (mut world, targets) = legendary_world("tame_beast", 0, &[1.0]);
+        world.resource_mut::<Run>().class = &data::CLASSES[2];
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world.resource::<Run>().talent_runtime.minions.tame_active);
+        world
+            .run_system_once(super::super::talent_runtime::tick)
+            .unwrap();
+        let pet = world
+            .query_filtered::<Entity, With<super::super::talent_runtime::Summon>>()
+            .single(&world)
+            .unwrap();
+        world.get_mut::<Transform>(pet).unwrap().translation.x = 20.0;
+        world.resource_mut::<Run>().abilities.push(Owned {
+            def: data::ability("stomp"),
+            level: 1,
+            cd: 0.0,
+        });
+        world.resource_mut::<Messages<CastEvent>>().clear();
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world
+            .resource::<Run>()
+            .talent_runtime
+            .minions
+            .stomp
+            .is_none());
+        world
+            .get_mut::<Transform>(targets[0])
+            .unwrap()
+            .translation
+            .x = 21.0;
+        world.resource_mut::<Run>().abilities[1].cd = 0.0;
+        world.run_system_once(cast_abilities).unwrap();
+        assert!(world
+            .resource::<Run>()
+            .talent_runtime
+            .minions
+            .stomp
+            .is_some());
+        assert!(world.resource::<Messages<CastEvent>>().is_empty());
+        world
+            .run_system_once(super::super::talent_runtime::tick)
+            .unwrap();
+        let casts: Vec<_> = world
+            .resource_mut::<Messages<CastEvent>>()
+            .drain()
+            .filter(|event| event.spell_id == 20549)
+            .collect();
+        assert_eq!(casts.len(), 1);
+        assert_eq!(casts[0].entity, pet);
+        world.run_system_once(apply_hits).unwrap();
+        let enemy = world.get::<Enemy>(targets[0]).unwrap();
+        assert_eq!(enemy.slow, 0.5);
+        assert!(enemy.slow_t > 0.0);
+        assert!(enemy.hp < 1000.0);
+    }
+    #[test]
+    fn totems_replace_oldest_at_each_spells_limit() {
+        for key in [
+            "searing_totem",
+            "magma_totem",
+            "earthbind_totem",
+            "healing_stream_totem",
+            "strength_of_earth_totem",
+        ] {
+            for extra in [0, 1, 3] {
+                let (mut world, _) = legendary_world(key, 0, &[1.0]);
+                {
+                    let mut run = world.resource_mut::<Run>();
+                    run.abilities.retain(|o| o.def.key == key);
+                    run.replace_spell_modifiers(
+                        901,
+                        [engine::Modifier {
+                            source: 901,
+                            filter: engine::Filter::requiring(engine::Tags::TOTEM),
+                            change: engine::Change::AdditionalTotems(extra),
+                        }],
+                    );
+                }
+                for _ in 0..6 {
+                    world.resource_mut::<Run>().abilities[0].cd = 0.0;
+                    world.run_system_once(cast_abilities).unwrap();
+                }
+                let count = world
+                    .query::<&Totem>()
+                    .iter(&world)
+                    .filter(|t| t.skill == key)
+                    .count()
+                    + world
+                        .resource::<Run>()
+                        .support
+                        .zones
+                        .iter()
+                        .filter(|z| z.key == key)
+                        .count();
+                assert_eq!(count, 1 + extra as usize, "{key}");
+            }
+        }
+    }
+
     use super::super::{data, Owned};
     use super::*;
     use crate::combat_text::CombatTextSpawn;
@@ -479,10 +763,19 @@ mod spell_engine_integration_tests {
         for key in ["frost_trap", "earthbind_totem"] {
             let (mut world, targets) = legendary_world(key, 0, &[1.0]);
             world.run_system_once(cast_abilities).unwrap();
+            let physical_trap = if key == "frost_trap" {
+                let entity = world.query_filtered::<Entity, With<GroundArea>>().single(&world).unwrap();
+                assert_eq!(world.get::<crate::net::NetEntity>(entity).unwrap().display_id, Some(3073));
+                assert_eq!(world.get::<ObjectStore>(entity).unwrap().0.gameobject_state(), Some(1));
+                Some(entity)
+            } else { None };
             world
                 .resource_mut::<Time>()
                 .advance_by(std::time::Duration::from_secs(1));
             world.run_system_once(tick_areas).unwrap();
+            if let Some(entity) = physical_trap {
+                assert_eq!(world.get::<ObjectStore>(entity).unwrap().0.gameobject_state(), Some(0));
+            }
             world.run_system_once(apply_hits).unwrap();
             let en = world.get::<Enemy>(targets[0]).unwrap();
             assert!(en.slow_t > 0.0, "{key}");
@@ -791,7 +1084,12 @@ mod spell_engine_integration_tests {
             "shadow_word_pain",
             "heroic_strike",
         ] {
-            let (mut world, targets) = legendary_world(key, 286, &[1.0, 3.0, 200.0]);
+            let positions = if key == "heroic_strike" {
+                [1.0, 3.0, 200.0]
+            } else {
+                [4.0, 6.0, 200.0]
+            };
+            let (mut world, targets) = legendary_world(key, 286, &positions);
             world.resource_mut::<Run>().legendary.equipped.clear();
             world.get_mut::<Enemy>(targets[1]).unwrap().hp = 50.0;
             world.get_mut::<Enemy>(targets[2]).unwrap().hp = 1.0;
@@ -824,7 +1122,7 @@ mod spell_engine_integration_tests {
             "chain_lightning",
             "shadow_word_pain",
         ] {
-            let (mut world, targets) = legendary_world(key, 286, &[1.0, 3.0, 5.0, 200.0]);
+            let (mut world, targets) = legendary_world(key, 286, &[4.0, 6.0, 8.0, 200.0]);
             world.resource_mut::<Run>().legendary.equipped.clear();
             world.get_mut::<Enemy>(targets[1]).unwrap().hp = 1.0;
             world.get_mut::<Enemy>(targets[2]).unwrap().boss = true;
@@ -1370,10 +1668,12 @@ mod spell_engine_integration_tests {
                 .filter(|h| h.skill == "arcane_missiles")
                 .collect();
             let extras: Vec<_> = wave.iter().filter(|h| h.skill == "fireball").collect();
+            let meter = serde_json::to_value(&world.resource::<Run>().meter).unwrap();
+            assert_eq!(meter["entries"]["fireball"]["casts"], 1);
             assert!(!copies.is_empty());
             assert_eq!(
                 !extras.is_empty(),
-                ordinal == 1 || ordinal == 4,
+                ordinal == 1,
                 "companion proc ICD at repeat {ordinal}"
             );
             for hit in copies {
@@ -1725,7 +2025,7 @@ mod spell_engine_integration_tests {
         let guest = &players.0[&7].run;
         assert!((guest.damage_done - 118.4).abs() < 0.001);
         assert_eq!(guest.meter.rows(0.2)[0].key, "Demonic Pact");
-        // Melee target cards also apply to hidden companion attacks.
+        // Milestone wolves hit three nearby enemies without extra-target cards.
         let previous: Vec<_> = targets
             .iter()
             .map(|e| world.get::<Enemy>(*e).unwrap().hp)
@@ -1742,7 +2042,6 @@ mod spell_engine_integration_tests {
             .replace_spell_modifiers(
                 777,
                 [
-                    Change::AdditionalMeleeTargets(2),
                     Change::CriticalChance(-1.0),
                 ]
                 .into_iter()
@@ -2486,6 +2785,7 @@ pub(super) struct GroundArea {
 
 #[derive(Component)]
 pub(super) struct Totem {
+    spawned_at: f32,
     projectiles: Params,
     effect: Effect,
     triggered: bool,
@@ -2755,6 +3055,21 @@ pub(super) fn cast_abilities(
             .map_or(0.0, |d| d.speed)
     };
 
+    let mut totem_slots = super::totem_limits::Slots::default();
+    let mut active_totems: Vec<_> = totems
+        .iter()
+        .filter(|(_, _, t)| t.owner == run.owner && t.left > 0.0)
+        .map(|(e, _, t)| (t.skill, e, t.spawned_at))
+        .collect();
+    active_totems.sort_by(|a, b| a.2.total_cmp(&b.2));
+    for (key, entity, _) in active_totems {
+        totem_slots.track(key, entity);
+    }
+    for zone in &run.support.zones {
+        if zone.until > now && data::ability(zone.key).totem.0 != 0 {
+            totem_slots.track(zone.key, zone.entity);
+        }
+    }
     let mut casts = std::collections::VecDeque::new();
     for i in 0..run.abilities.len() {
         if run.disabled_spells.contains(run.abilities[i].def.key) {
@@ -2818,6 +3133,7 @@ pub(super) fn cast_abilities(
         } else {
             foes.sort_by(|a, b| a.dist.total_cmp(&b.dist));
         }
+        foes.sort_by_key(|foe| !engine::targeting::threatens_owner(foe.dist, foe.radius));
         let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
         if def.key == "mongoose_bite" && run.extra_spells.dodge_until > now {
             p.dmg *= 1.75;
@@ -2853,7 +3169,34 @@ pub(super) fn cast_abilities(
         }
         let intercepted =
             super::items::legendary::casting::intercept(&mut run, def, p, &foes, hpos, repeated);
-        let fired = if let Some((fired, target)) = intercepted {
+        let minion_ready = match def.key {
+            "stomp" | "kill_command" => summons.iter().any(|(_, tf, pet)| {
+                pet.owned_pet(run.owner)
+                    && foes.iter().any(|foe| {
+                        flat(foe.pos - tf.translation).length()
+                            <= if def.key == "stomp" {
+                                p.radius
+                            } else {
+                                p.range
+                            }
+                    })
+            }),
+            "bestial_wrath" => summons.iter().any(|(_, _, pet)| pet.owned_pet(run.owner)),
+            _ => !foes.is_empty(),
+        };
+        let fired = if let Some(fired) = super::minions::cast(&mut run, def, p, minion_ready) {
+            if fired && def.key == "tame_beast" {
+                fx.cast(me, def.spell, &[me], None);
+            }
+            if fired && def.key == "bestial_wrath" {
+                for (entity, _, pet) in &summons {
+                    if pet.owned_pet(run.owner) {
+                        fx.cast(entity, def.spell, &[entity], None);
+                    }
+                }
+            }
+            fired
+        } else if let Some((fired, target)) = intercepted {
             primary = target;
             fired
         } else {
@@ -2931,6 +3274,12 @@ pub(super) fn cast_abilities(
                             commands
                                 .entity(entity)
                                 .insert(super::multiplayer::OwnedEffect(owner));
+                        }
+                        if p.max_totems > 0 {
+                            for retired in totem_slots.insert(def.key, entity, p.max_totems) {
+                                run.support.zones.retain(|z| z.entity != retired);
+                                commands.entity(retired).despawn();
+                            }
                         }
                         run.support.zones.push(super::support_spells::Zone {
                             entity,
@@ -3091,6 +3440,8 @@ pub(super) fn cast_abilities(
                             fx.cast(me, if trap { 13813 } else { def.spell }, &[], Some(center));
                             let area = if trap {
                                 units::spawn_explosive_trap(&mut commands, run.guid(), center)
+                            } else if def.key == "frost_trap" {
+                                units::spawn_frost_trap(&mut commands, run.guid(), p.radius, area_scale, center)
                             } else if def.overhead {
                                 commands
                                     .spawn((Transform::from_translation(center), RunEntity))
@@ -3391,7 +3742,11 @@ pub(super) fn cast_abilities(
                             pos,
                             0.0,
                         );
+                        for retired in totem_slots.insert(def.key, totem, p.max_totems) {
+                            commands.entity(retired).despawn();
+                        }
                         commands.entity(totem).insert(Totem {
+                            spawned_at: now,
                             projectiles: p,
                             effect: p.effect,
                             triggered: p.triggered,
@@ -3567,7 +3922,7 @@ pub(super) fn tick_areas(
         }
         if area.next_tick <= 0.0 {
             area.next_tick += area.every;
-            if area.skill == "explosive_trap" {
+            if matches!(area.skill, "explosive_trap" | "frost_trap") {
                 if let (Some(guid), Some(mut store)) = (guid, store) {
                     fx.trigger_trap(e, guid.0, &mut store, tf.translation, &mut fields);
                 }
@@ -3889,7 +4244,7 @@ pub(super) fn apply_hits(
                 h.dot,
                 h.dot_dur,
                 h.splash,
-                if h.skill == "proc_spirit_bolt" { 3 } else { 1 },
+                if matches!(h.skill, "proc_spirit_bolt" | "proc_pet_bite") { 3 } else { 1 },
             );
             p.roll_extras(std::array::from_fn(|i| {
                 if p.extra_chances[i] > 0.0 {
@@ -4146,7 +4501,9 @@ pub(super) fn apply_hits(
             super::training::actor(en.def),
         );
         if !h.can_proc() {
-            mods.leech = 0.0;
+            if !tags.contains(engine::Tags::MINION | engine::Tags::DAMAGE) {
+                mods.leech = 0.0;
+            }
             mods.bleed = 0.0;
             mods.ignite = 0.0;
             mods.chill = 0.0;
@@ -4305,6 +4662,9 @@ pub(super) fn apply_hits(
                 }
             }
         }
+        if dealt_effective > 0.0 {
+            super::minions::on_hit(run, &h, tags, &mut en, e, tf.translation);
+        }
         if h.dot > 0.0 && h.dot_dur > 0.0 {
             super::items::legendary::periodic::install(
                 run,
@@ -4367,7 +4727,7 @@ pub(super) fn apply_hits(
         }
         match h.effect {
             Effect::Slow(m, t) => {
-                let m = if boss { m.max(0.75) } else { m };
+                let m = if en.ignores_freeze(ranks.get(e).ok()) { m.max(0.5) } else { m };
                 en.slow = if en.slow_t > 0.0 { en.slow.min(m) } else { m };
                 en.slow_t = en.slow_t.max(t);
             }
@@ -4398,6 +4758,7 @@ pub(super) fn apply_hits(
             was_feared,
             &mut rng,
         );
+        en.cap_slow(ranks.get(e).ok());
         legendary_events::hit(
             run,
             &h,

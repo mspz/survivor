@@ -205,6 +205,7 @@ fn run_ranks_boost_specializations_and_grant_one_signature_effect_for_every_spel
             );
             let extra = usize::from(
                 level == 6
+                    && def.key != "kill_command"
                     && matches!(
                         def.kind,
                         Kind::Bolt

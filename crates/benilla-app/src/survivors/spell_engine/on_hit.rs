@@ -26,10 +26,15 @@ pub fn modifiers_tagged(skill: &str, tags: Tags, entries: &[Modifier]) -> HitMod
         tags,
         ..Default::default()
     };
-    for m in entries.iter().filter(|m| m.filter.matches_hit(skill, tags)) {
+    let minion_damage = tags.contains(Tags::MINION | Tags::DAMAGE);
+    for m in entries.iter().filter(|m| {
+        m.filter.matches_hit(skill, tags)
+            || (minion_damage && matches!(m.change, Change::LifeLeech(_))
+                && m.filter.matches_hit(skill, tags | Tags::ATTACK))
+    }) {
         let attack = tags::weapon_hit(tags);
         match m.change {
-            Change::LifeLeech(v) if attack => out.leech += finite(v),
+            Change::LifeLeech(v) if attack || minion_damage => out.leech += finite(v),
             Change::DamageAgainstBosses(v) => out.boss += finite(v),
             Change::DamageAgainstFullLife(v) => out.full += finite(v),
             Change::DamageAgainstLowLife(v) => out.low += finite(v),

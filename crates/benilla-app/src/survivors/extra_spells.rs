@@ -10,6 +10,7 @@ use bevy::prelude::*;
 
 #[derive(Default)]
 pub(super) struct Runtime {
+    pub dodge_rng: super::Rng,
     pub revenge_until: f32,
     pub dodge_until: f32,
     pub holy_until: f32,
@@ -123,11 +124,21 @@ pub(super) fn block_bonus(run: &Run) -> f32 {
     }
 }
 pub(super) fn dodge_chance(run: &Run) -> f32 {
-    if owned(run, "mongoose_bite").is_some() || owned(run, "revenge").is_some() {
+    let base = if owned(run, "mongoose_bite").is_some() || owned(run, "revenge").is_some() {
         0.05
     } else {
         0.0
-    }
+    };
+    let bonus: f32 = run
+        .spell_modifiers
+        .entries()
+        .iter()
+        .filter_map(|modifier| match modifier.change {
+            spell_engine::Change::DodgeChance(value) if value.is_finite() => Some(value),
+            _ => None,
+        })
+        .sum();
+    (base + bonus).clamp(0.0, 0.75)
 }
 pub(super) fn reacted(run: &mut Run, dodged: bool) {
     run.extra_spells.revenge_until = run.elapsed + 5.0;

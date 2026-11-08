@@ -76,12 +76,17 @@ fn input(
                 let mut valid = true;
                 for (i, field) in editor.fields.iter().enumerate() {
                     match field.parse::<u32>() {
-                        Ok(value) if value <= 61 => rules[i].below_ilvl = value,
+                        Ok(value) if value <= AutoSalvageRule::MAX_BELOW_ILVL => {
+                            rules[i].below_ilvl = value
+                        }
                         _ => valid = false,
                     }
                 }
                 if !valid {
-                    editor.error = "Saisissez un seuil entre 0 et 61 pour chaque rareté.".into();
+                    editor.error = format!(
+                        "Saisissez un seuil entre 0 et {} pour chaque rareté.",
+                        AutoSalvageRule::MAX_BELOW_ILVL
+                    );
                 } else {
                     match inventory.set_auto_salvage(rules) {
                         Ok(()) => {
@@ -119,7 +124,7 @@ fn input(
                         editor.fields[index].clear();
                         editor.replace = false;
                     }
-                    if editor.fields[index].len() < 2 {
+                    if editor.fields[index].len() < 3 {
                         editor.fields[index].push(ch);
                     }
                 }
@@ -353,14 +358,14 @@ mod tests {
         click(&mut world, Click::Field(0));
         world.write_message(KeyboardInput {
             key_code: KeyCode::Digit4,
-            logical_key: Key::Character("40".into()),
+            logical_key: Key::Character("999".into()),
             state: ButtonState::Pressed,
-            text: Some("40".into()),
+            text: Some("999".into()),
             repeat: false,
             window: Entity::PLACEHOLDER,
         });
         world.run_system_once(input).unwrap();
-        assert_eq!(world.resource::<Editor>().fields[0], "40");
+        assert_eq!(world.resource::<Editor>().fields[0], "999");
         world.resource_mut::<Messages<KeyboardInput>>().clear();
         click(&mut world, Click::Save);
         assert!(!world.resource::<Editor>().open);
@@ -368,7 +373,7 @@ mod tests {
             world.resource::<Inventory>().auto_salvage()[0],
             AutoSalvageRule {
                 enabled: true,
-                below_ilvl: 40
+                below_ilvl: 999
             }
         );
     }
@@ -376,7 +381,7 @@ mod tests {
     fn cancel_discards_changes_and_invalid_threshold_keeps_editor_open() {
         let mut world = world();
         click(&mut world, Click::Open);
-        world.resource_mut::<Editor>().fields[0] = "99".into();
+        world.resource_mut::<Editor>().fields[0] = "1000".into();
         click(&mut world, Click::Save);
         assert!(world.resource::<Editor>().open);
         assert!(!world.resource::<Editor>().error.is_empty());

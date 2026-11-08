@@ -133,6 +133,7 @@ pub(super) fn plugin(app: &mut App) {
             Update,
             ui::input
                 .after(super::combat_ui::input)
+                .after(super::hub_interact::click)
                 .before(super::client::input)
                 .before(hud::keys),
         )

@@ -350,6 +350,32 @@ impl Account {
     pub fn reset(&mut self, class: usize) {
         self.builds[class] = [[0; NODES]; 3];
     }
+    pub fn can_refund(&self, class: usize, tree: usize, node: usize) -> bool {
+        if class >= CLASSES || tree >= 3 || node >= NODES {
+            return false;
+        }
+        let mut ranks = self.builds[class][tree];
+        if ranks[node] == 0 {
+            return false;
+        }
+        ranks[node] -= 1;
+        ranks.iter().enumerate().all(|(index, &rank)| {
+            rank == 0
+                || (ranks[..tier(index) * 3]
+                    .iter()
+                    .map(|&r| u32::from(r))
+                    .sum::<u32>()
+                    >= tier(index) as u32 * 5
+                    && prerequisite(index).is_none_or(|parent| ranks[parent] == max_rank(parent)))
+        })
+    }
+    pub fn refund(&mut self, class: usize, tree: usize, node: usize) -> bool {
+        if !self.can_refund(class, tree, node) {
+            return false;
+        }
+        self.builds[class][tree][node] -= 1;
+        true
+    }
     pub fn save(&self) {
         if let Some(home) = crate::local_state::home() {
             let mut text = format!("v4 {}", self.xp);
@@ -489,6 +515,46 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
 mod tests {
     use super::*;
     #[test]
+    fn single_point_refunds_preserve_tier_requirements_and_other_trees() {
+        let mut a = account();
+        for _ in 0..5 {
+            assert!(a.buy(0, 0, 0));
+        }
+        assert!(a.buy(0, 0, 3));
+        assert!(a.buy(0, 1, 0));
+        assert!(!a.refund(0, 0, 0));
+        assert_eq!(a.rank(0, 0, 0), 5);
+        assert!(a.buy(0, 0, 1));
+        let available = a.available(0);
+        assert!(a.refund(0, 0, 0));
+        assert_eq!(a.available(0), available + 1);
+        assert_eq!(a.rank(0, 0, 0), 4);
+        assert_eq!(a.rank(0, 0, 3), 1);
+        assert_eq!(a.rank(0, 1, 0), 1);
+        assert!(!a.refund(0, 0, 2));
+        assert!(!a.refund(CLASSES, 0, 0));
+        assert!(!a.refund(0, 3, 0));
+        assert!(!a.refund(0, 0, NODES));
+    }
+    #[test]
+    fn milestones_must_be_refunded_from_child_to_parent() {
+        let mut a = account();
+        for node in [0, 1, 3, 4, 6, 7] {
+            for _ in 0..5 {
+                assert!(a.buy(0, 0, node));
+            }
+        }
+        for node in [8, 12, 18] {
+            assert!(a.buy(0, 0, node));
+        }
+        assert!(!a.refund(0, 0, 8));
+        assert!(!a.refund(0, 0, 12));
+        assert!(a.refund(0, 0, 18));
+        assert!(a.refund(0, 0, 12));
+        assert!(a.refund(0, 0, 8));
+        assert!(!a.refund(0, 0, 8));
+    }
+    #[test]
     fn post_cap_xp_survives_save_loading_without_extra_talent_points_or_character_levels() {
         let cap = threshold(60);
         let mut account = Account::from_save(&format!("v4 {}", cap - 25));
@@ -536,7 +602,7 @@ mod tests {
     }
     #[test]
     fn bleed_milestones_filter_physical_skill_hits_and_keep_ferals_melee_requirement() {
-        for (class, tree, chance) in [(0, 1, 1.0), (2, 0, 0.5), (2, 2, 1.0), (8, 1, 1.0)] {
+        for (class, tree, chance) in [(0, 1, 1.0), (2, 0, 0.0), (2, 2, 1.0), (8, 1, 1.0)] {
             let mut account = Account::fresh();
             account.builds[class][tree][8] = 1;
             let mut run = Run {

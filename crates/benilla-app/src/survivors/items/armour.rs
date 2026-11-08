@@ -75,6 +75,42 @@ mod tests {
     use crate::survivors::{hero, Run};
 
     #[test]
+    fn thick_skin_rolls_reduce_all_damage_separately_from_armour_and_resistances() {
+        use crate::survivors::{data, spell_engine::Tags};
+        let passive = data::PASSIVES.iter().find(|p| p.key == "wild").unwrap();
+        let mut run = Run {
+            equipment_armour: 100.0,
+            ..Default::default()
+        };
+        run.equipment.resistances.fire = 50.0;
+        for (rank, expected) in [
+            (1, 0.02),
+            (2, 0.04),
+            (3, 0.06),
+            (4, 0.08),
+            (37, 0.74),
+            (38, 0.75),
+            (100, 0.75),
+        ] {
+            run.passives = vec![(passive, rank)];
+            assert_eq!(run.stats().armor, 100.0);
+            assert_eq!(run.stats().resistances.fire, 50.0);
+            for (tags, remaining) in [
+                (Tags::PHYSICAL, 1.0 - reduction(100.0)),
+                (Tags::FIRE, 0.5),
+                (Tags::PHYSICAL | Tags::FIRE, (1.0 - reduction(100.0)) * 0.5),
+                (Tags::SHADOW | Tags::DOT, 1.0),
+            ] {
+                let actual = 1.0 - run.damage_reduction_tagged(tags);
+                assert!(
+                    (actual - remaining * (1.0 - expected)).abs() < 0.00001,
+                    "rank {rank}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn logarithmic_armour_has_diminishing_returns_and_absorption_follows_mitigation() {
         assert_eq!(reduction(0.0), 0.0);
         assert_eq!(reduction(-10.0), 0.0);

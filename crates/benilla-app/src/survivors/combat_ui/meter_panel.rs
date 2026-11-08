@@ -387,6 +387,15 @@ mod tests {
 }
 
 fn identity(run: &Run, key: &str, spells: Option<&crate::ui_action::Spells>) -> (String, u32) {
+    if key == "Pack Frenzy" {
+        return ("Pack Frenzy (explosion)".to_owned(), 1449);
+    }
+    if key == super::super::minions::PACK_ATTACK_SOURCE {
+        return (key.to_owned(), 772);
+    }
+    if key == super::super::minions::PACK_BLEED_SOURCE {
+        return (key.to_owned(), 1943);
+    }
     if let Some(def) = data::ABILITIES.iter().find(|d| d.key == key) {
         return (hud::spell_name(spells, def.spell, def.key), def.spell);
     }

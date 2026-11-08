@@ -807,7 +807,7 @@ impl Inventory {
             || save
                 .auto_salvage
                 .iter()
-                .any(|r| r.below_ilvl > MAX_ITEM_LEVEL + 1)
+                .any(|r| r.below_ilvl > AutoSalvageRule::MAX_BELOW_ILVL)
         {
             return Err("unsupported inventory".into());
         }

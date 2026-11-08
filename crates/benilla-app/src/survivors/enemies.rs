@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use super::abilities::Hit;
 use super::data::{self, EnemyDef};
-use super::hero::{self, Hero, HERO_RADIUS};
+use super::hero::{self, Hero};
 use super::units::{self, flat, yaw_toward, Fx, Marks, UnitSpec, COLOR_HURT};
 use super::{Phase, Rng, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
@@ -53,6 +53,18 @@ pub(super) enum Rank {
     Healer,
     Protector,
     Boss,
+}
+impl Enemy {
+    /// Retain root/freeze timers for spell interactions without immobilizing major enemies.
+    pub(super) fn ignores_freeze(&self, rank: Option<&Rank>) -> bool {
+        self.boss || matches!(rank, Some(Rank::Elite | Rank::Boss))
+    }
+
+    pub(super) fn cap_slow(&mut self, rank: Option<&Rank>) {
+        if self.ignores_freeze(rank) {
+            self.slow = self.slow.max(0.5);
+        }
+    }
 }
 fn roll_rank(roll: f32, config: &super::expedition_config::Config, map: usize) -> Rank {
     let zone = data::CAMPAIGN
@@ -476,6 +488,7 @@ pub(super) fn move_enemies(
             Option<&super::talent_runtime::Taunted>,
             Option<&super::ranged_enemies::Caster>,
             Option<&super::boss_spells::Skills>,
+            Option<&Rank>,
         ),
         Without<Hero>,
     >,
@@ -550,7 +563,7 @@ pub(super) fn move_enemies(
         push.insert(ent, acc);
     }
 
-    for (ent, mut tf, mut e, mut mv, taunt, caster, skills) in &mut enemies {
+    for (ent, mut tf, mut e, mut mv, taunt, caster, skills, rank) in &mut enemies {
         let e = &mut *e;
         if e.dead {
             if mv.speed != 0.0 || mv.flags != 0 {
@@ -645,8 +658,9 @@ pub(super) fn move_enemies(
 
         // Under Fade the horde has lost the hero: it mills where it stands.
         let lost = target_run.mobile.vanish_t > 0.0 && !e.boss;
-        let held = e.stun_t > 0.0 || e.root_t > 0.0 || lost;
-        let contact = dist <= HERO_RADIUS + e.radius + 0.35;
+        e.cap_slow(rank);
+        let held = e.stun_t > 0.0 || (e.root_t > 0.0 && !e.ignores_freeze(rank)) || lost;
+        let contact = dist <= super::spell_engine::targeting::melee_contact_range(e.radius);
         let mut step = Vec3::ZERO;
         let mut speed = 0.0;
         if !held && !hero_down {

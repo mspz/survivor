@@ -70,6 +70,8 @@ pub(super) fn input(
     mut account: ResMut<Account>,
     mut run: ResMut<super::Run>,
     buttons: Query<(&Interaction, &Action), Changed<Interaction>>,
+    hovered: Query<(&Interaction, &Action)>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
 ) {
     if !matches!(
         *phase.get(),
@@ -93,6 +95,26 @@ pub(super) fn input(
         selection.talents_open = false;
         keys.clear_just_pressed(KeyCode::Escape);
     }
+    let right_click = mouse
+        .as_ref()
+        .is_some_and(|m| m.just_pressed(MouseButton::Right));
+    if right_click && selection.talents_open && editable(*phase.get(), &selection) {
+        if let Some((tree, node)) = hovered
+            .iter()
+            .find_map(|(interaction, action)| match action {
+                Action::Buy(tree, node) if *interaction != Interaction::None => {
+                    Some((*tree, *node))
+                }
+                _ => None,
+            })
+        {
+            let class = view.class.unwrap_or(0);
+            if account.refund(class, tree, node) {
+                apply_refund(&account, class, &mut run);
+                account.save();
+            }
+        }
+    }
     for (interaction, action) in &buttons {
         if *interaction != Interaction::Pressed {
             continue;
@@ -106,7 +128,7 @@ pub(super) fn input(
                 }
             }
             Action::Buy(tree, node)
-                if selection.talents_open && editable(*phase.get(), &selection) =>
+                if !right_click && selection.talents_open && editable(*phase.get(), &selection) =>
             {
                 if account.buy(view.class.unwrap_or(0), tree, node) {
                     account.save();
@@ -142,9 +164,107 @@ fn editable(phase: Phase, selection: &Selection) -> bool {
     phase == Phase::Hub || (phase == Phase::CharacterSheet && selection.in_hub)
 }
 
+fn apply_refund(account: &Account, class: usize, run: &mut super::Run) {
+    let previous: std::collections::HashMap<_, _> = run
+        .abilities
+        .iter()
+        .map(|a| (a.def.key, (a.level, a.cd)))
+        .collect();
+    let starter = run.starter_spell.unwrap_or(run.class.start);
+    run.abilities.retain(|a| a.def.key == starter);
+    if run.abilities.is_empty() {
+        run.starter_spell = None;
+        run.abilities.push(super::Owned {
+            def: data::ability(run.class.start),
+            level: 1,
+            cd: 0.5,
+        });
+    }
+    account.apply(class, run);
+    for owned in &mut run.abilities {
+        if let Some(&(level, cd)) = previous.get(owned.def.key) {
+            owned.level = owned.level.max(level);
+            owned.cd = owned.cd.min(cd);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn partial_refunds_preserve_starting_spell_and_ranks_and_remove_revoked_unlocks() {
+        let mut build = [[0; NODES]; 3];
+        build[1][0] = 5;
+        build[1][1] = 5;
+        build[1][3] = 1;
+        build[1][8] = 1;
+        let mut account = Account::from_shared(8, u64::MAX, build);
+        let mut run = super::super::Run {
+            class: &data::CLASSES[8],
+            ..Default::default()
+        };
+        run.abilities.push(super::super::Owned {
+            def: data::ability("wrath"),
+            level: 4,
+            cd: 0.3,
+        });
+        account.apply(8, &mut run);
+        assert_eq!(run.abilities[0].def.key, "claw");
+        assert!(account.refund(8, 1, 0));
+        apply_refund(&account, 8, &mut run);
+        assert_eq!(run.abilities[0].def.key, "claw");
+        assert_eq!(run.abilities[0].level, 4);
+        assert!(account.refund(8, 1, 8));
+        apply_refund(&account, 8, &mut run);
+        assert_eq!(run.abilities[0].def.key, "wrath");
+        assert_eq!(run.abilities[0].level, 4);
+        assert!(!run
+            .abilities
+            .iter()
+            .any(|a| matches!(a.def.key, "claw" | "swipe")));
+    }
+    #[test]
+    fn right_click_refunds_one_point_in_hub_and_keeps_run_talents_read_only() {
+        for hub in [false, true] {
+            let mut app = pause_app(hub);
+            let mut build = [[0; NODES]; 3];
+            build[0][0] = 2;
+            build[1][0] = 1;
+            app.world_mut()
+                .insert_resource(Account::from_shared(0, u64::MAX, build));
+            key(&mut app, KeyCode::KeyT);
+            let available = app.world().resource::<Account>().available(0);
+            app.world_mut()
+                .spawn((Interaction::Hovered, Action::Buy(0, 0)));
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(MouseButton::Right);
+            app.update();
+            let account = app.world().resource::<Account>();
+            assert_eq!(account.rank(0, 0, 0), if hub { 1 } else { 2 });
+            assert_eq!(account.rank(0, 1, 0), 1);
+            assert_eq!(account.available(0), available + u32::from(hub));
+            if hub {
+                assert_eq!(
+                    app.world().resource::<super::super::Run>().talent_build[0][0],
+                    1
+                );
+                assert_eq!(
+                    app.world().resource::<super::super::Run>().talent_build[1][0],
+                    1
+                );
+            }
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear_just_pressed(MouseButton::Right);
+            app.update();
+            assert_eq!(
+                app.world().resource::<Account>().rank(0, 0, 0),
+                if hub { 1 } else { 2 }
+            );
+        }
+    }
     fn pause_app(hub: bool) -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))

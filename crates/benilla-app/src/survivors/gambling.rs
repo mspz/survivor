@@ -7,13 +7,14 @@ use super::{
     talents, units, Phase, Rng, Run, Selection,
 };
 use bevy::prelude::*;
-const NPC_ENTRY: u32 = 9_000_001;
+pub(super) const NPC_ENTRY: u32 = 9_000_001;
 pub(super) const SLOTS: &[(SlotKind, &str)] = &[
     (SlotKind::Head, "Tête"),
     (SlotKind::Neck, "Cou"),
     (SlotKind::Shoulders, "Épaules"),
     (SlotKind::Back, "Cape"),
     (SlotKind::Chest, "Torse"),
+    (SlotKind::Tabard, "Tabard"),
     (SlotKind::Wrists, "Poignets"),
     (SlotKind::Hands, "Mains"),
     (SlotKind::Waist, "Taille"),
@@ -46,7 +47,7 @@ pub(super) fn position() -> Vec3 {
     // East of goldshireblacksmith.wmo (-9460.033, 94.203), facing the crossroads.
     units::wow_to_bevy([-9460.0, 80.0, 56.960_007])
 }
-fn near(pos: Vec3) -> bool {
+pub(super) fn near(pos: Vec3) -> bool {
     units::flat(pos - position()).length() <= 4.5
 }
 #[derive(Resource)]
@@ -91,6 +92,7 @@ pub(super) fn plugin(app: &mut App) {
             Update,
             input
                 .after(super::combat_ui::input)
+                .after(super::hub_interact::click)
                 .before(super::client::input)
                 .before(hud::keys),
         )
@@ -175,7 +177,7 @@ pub(super) fn input(
 ) {
     let was_open = view.open;
     let accessible = selection.in_hub
-        && *phase.get() == Phase::Hub
+        && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
         && heroes.single().is_ok_and(|t| near(t.translation));
     if !accessible {
         view.open = false;
@@ -261,7 +263,7 @@ fn render(
 ) {
     let Some(font) = font else { return };
     let accessible = selection.in_hub
-        && *phase.get() == Phase::Hub
+        && matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
         && heroes.single().is_ok_and(|t| near(t.translation));
     let level = talents::level(account.xp);
     let stamp = format!(
@@ -589,6 +591,24 @@ fn tooltip(
 mod tests {
     use super::*;
     #[test]
+    fn tabards_are_available_to_every_class_at_the_tabard_price() {
+        assert!(SLOTS.iter().any(|(slot, _)| *slot == SlotKind::Tabard));
+        let config = super::super::items::Config::builtin();
+        for class in super::super::data::CLASSES {
+            assert!(config.gamble_available(SlotKind::Tabard, class.id));
+        }
+        let mut inventory = Inventory::fixture(vec![]);
+        inventory.add_money(10_000).unwrap();
+        let before = inventory.money();
+        let item = inventory
+            .gamble(SlotKind::Tabard, 12, &mut Rng(456))
+            .unwrap();
+        assert_eq!(item.slot, SlotKind::Tabard);
+        assert_eq!(item.level, 12);
+        assert_eq!(inventory.money(), before - price(SlotKind::Tabard, 12));
+        assert!(inventory.item(item.id).is_some());
+    }
+    #[test]
     fn slot_prices_compound_gently_and_jewellery_costs_more() {
         assert_eq!(price(SlotKind::Hands, 1), 500);
         assert!(price(SlotKind::Ring, 30) > price(SlotKind::Hands, 30));
@@ -667,6 +687,9 @@ mod tests {
         press(&mut app, false);
         assert!(app.world().resource::<View>().open);
         assert!(app.world().resource::<Selection>().bags_open);
+        app.insert_resource(State::new(Phase::CharacterSheet));
+        app.update();
+        assert!(app.world().resource::<View>().open);
         let world = app.world_mut();
         let head = world
             .query::<(Entity, &Click)>()

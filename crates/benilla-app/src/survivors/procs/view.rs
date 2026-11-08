@@ -45,10 +45,11 @@ pub(in crate::survivors) fn views(run: &Run) -> Vec<ViewSpell> {
                     |m| m.name.to_owned(),
                 )
             };
-            let mut lines = vec![
-                "Talent proc".to_owned(),
-                super::find(def.key).unwrap().tags.labels(),
-            ];
+            let mut tags = super::find(def.key).unwrap().tags;
+            if def.key == "proc_bloodburst" && run.class.id == 3 {
+                tags = tags | Tags::MINION;
+            }
+            let mut lines = vec!["Talent proc".to_owned(), tags.labels()];
             if let Some(source) = source {
                 lines.push(source.description.to_owned());
             }

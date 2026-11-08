@@ -42,6 +42,7 @@ impl Family {
 struct Blessing {
     family: Family,
     power: f32,
+    buff_scale: f32,
     duration: f32,
     radius: f32,
 }
@@ -102,13 +103,16 @@ fn resolve(run: &Run, family: Family, def: &AbilityDef, level: u8) -> Blessing {
     def.radius = 12.0;
     // This is a percentage payload, never a hit. Retain the original heal/school/skill tags
     // and opt into spell-damage scaling, without weapons, crits, or outgoing class balance.
-    let tags = spell_engine::tags::for_spell(&def)
+    let mut tags = spell_engine::tags::for_spell(&def)
         | Tags::DAMAGE
         | Tags::HEAL
         | Tags::UTILITY
         | Tags::AURA
         | Tags::AREA
         | Tags::DURATION;
+    if family == Family::Tides {
+        tags = tags | Tags::BUFF;
+    }
     // Party damage must not feed back into its own next refresh (including the old Nature aura).
     let modifiers: Vec<_> = run
         .spell_modifiers
@@ -123,7 +127,14 @@ fn resolve(run: &Run, family: Family, def: &AbilityDef, level: u8) -> Blessing {
     let p = spell_engine::resolve_tagged(&def, level, &stats, &modifiers, 0.0, tags);
     Blessing {
         family,
-        power: (p.dmg / 100.0).clamp(0.0, 2.0),
+        power: (p.dmg / 100.0
+            * if family == Family::Tides {
+                1.0 + p.buff_effect
+            } else {
+                1.0
+            })
+        .clamp(0.0, 2.0),
+        buff_scale: 1.0 + p.buff_effect,
         duration: p.duration,
         radius: p.radius,
     }
@@ -159,13 +170,13 @@ pub(super) fn source(run: &mut Run) -> Source {
     }
 }
 
-fn bonuses(powers: [f32; 4]) -> Bonuses {
+fn bonuses(powers: [f32; 4], tides_scale: f32) -> Bonuses {
     let [light, inspiration, tides, wild] = powers;
     Bonuses {
         damage: inspiration + 0.4 * (light + tides + wild),
         reduction: light.min(0.5),
-        recovery: tides.min(1.0),
-        repeat: (tides * 0.25).min(1.0),
+        recovery: (0.25 * tides_scale).min(1.0),
+        repeat: (0.10 * tides_scale).min(1.0),
         speed: wild.min(0.6),
         resistance: (wild * 25.0).min(25.0),
     }
@@ -182,11 +193,15 @@ pub(super) fn receive<'a>(
     }
     state.timed.retain(|buff| buff.left > 0.0);
     let mut powers = [0.0_f32; 4];
+    let mut tides_scale = 0.0_f32;
     let mut visible = [None; 4];
     if run.dead_t.is_none() {
         for (source_pos, source) in sources {
             let distance = units::flat(source_pos - pos).length();
             if let Some(aura) = source.aura.filter(|b| distance <= b.radius) {
+                if aura.family == Family::Tides {
+                    tides_scale = tides_scale.max(aura.buff_scale);
+                }
                 let value = &mut powers[aura.family.index()];
                 if aura.power >= *value {
                     visible[aura.family.index()] = Some((aura, None));
@@ -215,6 +230,9 @@ pub(super) fn receive<'a>(
             }
         }
         for buff in &state.timed {
+            if buff.blessing.family == Family::Tides {
+                tides_scale = tides_scale.max(buff.blessing.buff_scale);
+            }
             let value = &mut powers[buff.blessing.family.index()];
             if buff.blessing.power > *value || visible[buff.blessing.family.index()].is_none() {
                 visible[buff.blessing.family.index()] = Some((buff.blessing, Some(buff.left)));
@@ -242,7 +260,7 @@ pub(super) fn receive<'a>(
             )
         })
         .collect();
-    let next = bonuses(powers);
+    let next = bonuses(powers, tides_scale);
     apply(run, next);
 }
 fn apply(run: &mut Run, next: Bonuses) {
@@ -314,7 +332,17 @@ pub(super) fn restore(run: &mut Run, values: [f32; 6]) {
 fn description(blessing: Blessing) -> String {
     let mut powers = [0.0; 4];
     powers[blessing.family.index()] = blessing.power;
-    let b = bonuses(powers);
+    let b = bonuses(
+        powers,
+        if blessing.family == Family::Tides {
+            blessing.buff_scale
+        } else {
+            0.0
+        },
+    );
+    if blessing.family == Family::Tides {
+        return format!("Nearby allies, including you:\n+{:.1}% damage\n+{:.1}% cooldown recovery\n+{:.1}% offensive spell repeat chance\nRadius: {:.1} yd.\nBonuses scale with buff effect.\nDoes not stack with other Tides blessings; the strongest bonus applies.", b.damage * 100.0, b.recovery * 100.0, b.repeat * 100.0, blessing.radius);
+    }
     let extra = match blessing.family {
         Family::Light => format!(", {:.1}% less damage taken", b.reduction * 100.0),
         Family::Inspiration => String::new(),
@@ -364,12 +392,74 @@ pub(super) fn talent_tooltip(spec: &super::talents::Spec, node: usize) -> Option
         26 => Family::Wild,
         _ => return None,
     };
-    Some(format!("Support aura: {} Scales with Intelligence, spell damage and the spell's school; party buffs cannot amplify it.", description(Blessing { family, power: 0.2, duration: 8.0, radius: 12.0 })))
+    Some(format!("Support aura: {} Damage scales with Intelligence, spell damage and the spell's school; party damage buffs cannot amplify it.", description(Blessing { family, power: 0.2, buff_scale: 1.0, duration: 8.0, radius: 12.0 })))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tides_recovery_and_repeat_use_buff_effect_instead_of_spell_damage() {
+        let mut run = Run::default();
+        let def = Family::Tides.aura_spell();
+        let baseline = resolve(&run, Family::Tides, def, 1);
+        let base_source = Source {
+            owner: None,
+            aura: Some(baseline),
+            casts: vec![],
+        };
+        receive_one(&mut run, &base_source);
+        near(run.healer_buffs.bonuses.recovery, 0.25);
+        near(run.healer_buffs.bonuses.repeat, 0.10);
+        run.replace_spell_modifiers(
+            321,
+            [
+                Modifier {
+                    source: 321,
+                    filter: Filter::requiring(Tags::BUFF),
+                    change: Change::IncreasedBuffEffect(0.5),
+                },
+                Modifier {
+                    source: 321,
+                    filter: Filter::requiring(Tags::SPELL),
+                    change: Change::FlatSpellDamage(1000.0),
+                },
+            ],
+        );
+        let scaled = resolve(&run, Family::Tides, def, 1);
+        let source = Source {
+            owner: None,
+            aura: Some(scaled),
+            casts: vec![],
+        };
+        receive_one(&mut run, &source);
+        near(run.healer_buffs.bonuses.recovery, 0.375);
+        near(run.healer_buffs.bonuses.repeat, 0.15);
+        assert!(description(scaled).contains("+37.5% cooldown recovery\n+15.0%"));
+        assert!(description(scaled).lines().count() >= 6);
+    }
+
+    #[test]
+    fn totemic_harmony_adds_one_slot_without_duration_or_recovery_bonuses() {
+        use super::super::talents;
+        let mut run = Run::default();
+        let mut build = [[0; talents::NODES]; 3];
+        build[2][8] = 1;
+        talents::Account::from_shared(5, 2, build).apply(5, &mut run);
+        let def = data::ability("searing_totem");
+        let before = run.resolve_spell(def, 1);
+        build[2][12] = 1;
+        talents::Account::from_shared(5, 2, build).apply(5, &mut run);
+        let after = run.resolve_spell(def, 1);
+        assert_eq!(after.max_totems, before.max_totems + 1);
+        near(after.duration, before.duration);
+        near(after.cooldown, before.cooldown);
+        for key in ["proc_totem_heal", "proc_totem_bolt"] {
+            assert!(spell_engine::tags::for_spell(data::ability(key))
+                .contains(Tags::BUFF | Tags::TOTEM));
+        }
+    }
 
     fn near(a: f32, b: f32) {
         assert!((a - b).abs() < 0.0001, "{a} != {b}");
@@ -379,6 +469,7 @@ mod tests {
             owner: Some(owner),
             aura: None,
             casts: vec![Blessing {
+                buff_scale: 1.0,
                 family,
                 power,
                 duration,
@@ -407,7 +498,11 @@ mod tests {
             assert_eq!(blessing.family, family);
             assert!(aura_tooltip(&run, family.aura_spell().key)
                 .unwrap()
-                .contains("20.0%"));
+                .contains(if family == Family::Tides {
+                    "25.0%"
+                } else {
+                    "20.0%"
+                }));
             run.replace_spell_modifiers(
                 321,
                 [Modifier {
@@ -447,15 +542,21 @@ mod tests {
                 Family::Light => near(b.reduction, 0.2),
                 Family::Inspiration => near(b.damage, 0.2),
                 Family::Tides => {
-                    near(b.recovery, 0.2);
-                    near(b.repeat, 0.05);
+                    near(b.recovery, 0.25);
+                    near(b.repeat, 0.10);
                 }
                 Family::Wild => {
                     near(b.speed, 0.2);
                     near(b.resistance, 5.0);
                 }
             }
-            assert!(tooltip(&run, family.spell(), 1).unwrap().contains("20.0%"));
+            assert!(tooltip(&run, family.spell(), 1).unwrap().contains(
+                if family == Family::Tides {
+                    "25.0%"
+                } else {
+                    "20.0%"
+                }
+            ));
         }
         assert!(damages[1] > damages[0] && damages[1] > damages[2] && damages[1] > damages[3]);
     }
@@ -548,9 +649,9 @@ mod tests {
         near(run.resolve_spell(dot, 1).dot, before.1.dot * 1.44);
         near(
             run.resolve_spell(spell, 1).cooldown,
-            before.2.cooldown / 1.2,
+            before.2.cooldown / 1.25,
         );
-        near(run.resolve_spell(spell, 1).recast, before.2.recast + 0.05);
+        near(run.resolve_spell(spell, 1).recast, before.2.recast + 0.10);
         near(run.resolve_spell(hit, 1).recast, before.0.recast);
         near(run.stats().speed, before.3 * 1.2);
         near(run.damage_reduction_tagged(Tags::PHYSICAL), 0.2);

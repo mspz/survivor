@@ -139,7 +139,14 @@ pub(super) fn tooltip(
     let spec = &TREES[class][tree];
     let rank = account.rank(class, tree, node);
     let title = super::super::talent_effects::name(spec, node);
-    let body = super::super::talent_effects::description(spec, node, rank);
+    let mut body = super::super::talent_effects::description(spec, node, rank);
+    if selection.in_hub && rank > 0 {
+        body.push_str(if account.can_refund(class, tree, node) {
+            "\nRight-click to refund one point."
+        } else {
+            "\nCannot refund: other learned talents require this point."
+        });
+    }
     for mut t in &mut titles {
         if t.0 != title {
             t.0 = title.clone();

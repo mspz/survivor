@@ -182,6 +182,43 @@ mod tests {
         (world, hero, enemy)
     }
     #[test]
+    fn bosses_and_elites_move_while_frozen_and_slow_is_capped_at_fifty_percent() {
+        for rank in [
+            enemies::Rank::Normal,
+            enemies::Rank::Elite,
+            enemies::Rank::Boss,
+        ] {
+            let (mut world, _, enemy) = combat();
+            world.entity_mut(enemy).remove::<Caster>();
+            world.entity_mut(enemy).insert(rank);
+            {
+                let mut en = world.get_mut::<enemies::Enemy>(enemy).unwrap();
+                en.boss = rank == enemies::Rank::Boss;
+                en.speed = 10.0;
+                en.root_t = 2.0;
+                en.slow = 0.1;
+                en.slow_t = 2.0;
+            }
+            world.run_system_once(enemies::move_enemies).unwrap();
+            let en = world.get::<enemies::Enemy>(enemy).unwrap();
+            assert!(en.root_t > 0.0, "freeze state must remain available");
+            let resistant = rank != enemies::Rank::Normal;
+            assert!(
+                (world.get::<Transform>(enemy).unwrap().translation.x
+                    - if resistant { 15.75 } else { 16.0 })
+                .abs()
+                    < 0.001
+            );
+            assert_eq!(en.slow, if resistant { 0.5 } else { 0.1 });
+            world.get_mut::<enemies::Enemy>(enemy).unwrap().root_t = 0.0;
+            let before = world.get::<Transform>(enemy).unwrap().translation.x;
+            world.run_system_once(enemies::move_enemies).unwrap();
+            let after = world.get::<Transform>(enemy).unwrap().translation.x;
+            assert!((before - after - if resistant { 0.25 } else { 0.05 }).abs() < 0.001);
+        }
+    }
+
+    #[test]
     fn distant_monsters_walk_towards_host_or_guest_at_their_speed_and_respect_stuns() {
         use super::super::multiplayer::{Companion, Companions, RemoteOwner};
         for guest_target in [false, true] {

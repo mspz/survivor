@@ -137,7 +137,11 @@ mod tests {
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_plugins((boss_spells::plugin, super::enemy_visuals::plugin));
+    app.add_plugins((
+        boss_spells::plugin,
+        super::enemy_visuals::plugin,
+        super::revival_visuals::plugin,
+    ));
     app.add_message::<units::CombatNumber>()
         .init_resource::<session::LocalSession>()
         .add_plugins(grade::plugin)
@@ -152,6 +156,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(shared_chest::plugin)
         .add_plugins(super::bank::plugin)
         .add_plugins(super::gambling::plugin)
+        .add_plugins(super::hub_interact::plugin)
         .add_plugins(runes::plugin)
         .add_plugins(damage_colors::plugin)
         .add_plugins(diagnostics::plugin)

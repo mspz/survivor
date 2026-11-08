@@ -3,12 +3,13 @@
 version = 1
 # Tous les tags correspondants se multiplient avec la classe et le sort.
 [tags]
+minion = 1.0
 buff = 1.0
 attack = 1.0
 spell = 1.4
 melee = 1.0
 projectile = 1.0
-area = 0.3
+area = 0.5
 chain = 1.0
 dot = 2
 duration = 1.0
@@ -73,6 +74,10 @@ judgement = 1.0
 multiplier = 1.2
 
 [classes.hunter.spells]
+tame_beast = 1.0
+stomp = 1.0
+kill_command = 1.5
+bestial_wrath = 1.0
 hunters_mark = 1.0
 aspect_of_the_pack = 1.0
 frost_trap = 1.0
@@ -123,7 +128,7 @@ psychic_scream = 1.0
 power_word_shield = 1.0
 
 [classes.shaman]
-multiplier = 1.1
+multiplier = 1.0
 
 [classes.shaman.spells]
 strength_of_earth_totem = 1.0
@@ -143,7 +148,7 @@ magma_totem = 1.0
 lightning_shield = 1.0
 
 [classes.mage]
-multiplier = 1.2
+multiplier = 1
 
 [classes.mage.spells]
 arcane_intellect = 1.0
@@ -157,7 +162,7 @@ fireball = 1.0
 arcane_missiles = 1.0
 frost_nova = 1.0
 arcane_explosion = 1.0
-blizzard = 1.0
+blizzard = 0.6
 flamestrike = 1.0
 fire_blast = 1.0
 cone_of_cold = 1.0

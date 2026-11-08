@@ -6,6 +6,9 @@ pub(in crate::survivors) struct Rule {
     pub enabled: bool,
     pub below_ilvl: u32,
 }
+impl Rule {
+    pub const MAX_BELOW_ILVL: u32 = 999;
+}
 fn index(rarity: Rarity) -> usize {
     match rarity {
         Rarity::Normal => 0,
@@ -43,8 +46,11 @@ impl Inventory {
         &mut self,
         rules: [Rule; 4],
     ) -> Result<(), String> {
-        if rules.iter().any(|r| r.below_ilvl > MAX_ITEM_LEVEL + 1) {
-            return Err("Le seuil doit etre compris entre 0 et 61.".into());
+        if rules.iter().any(|r| r.below_ilvl > Rule::MAX_BELOW_ILVL) {
+            return Err(format!(
+                "Le seuil doit etre compris entre 0 et {}.",
+                Rule::MAX_BELOW_ILVL
+            ));
         }
         let mut save = self.save.clone();
         save.auto_salvage = rules;
@@ -96,7 +102,7 @@ mod tests {
         let mut inventory = Inventory::fixture(vec![]);
         let rules = [Rule {
             enabled: true,
-            below_ilvl: 40,
+            below_ilvl: 999,
         }; 4];
         inventory.set_auto_salvage(rules).unwrap();
         for rarity in [

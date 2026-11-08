@@ -20,6 +20,7 @@ pub(in crate::survivors) enum Tag {
     Dot,
     Duration,
     Totem,
+    Minion,
     Trap,
     Damage,
     Physical,
@@ -43,6 +44,7 @@ impl Tag {
             Self::Dot => Tags::DOT,
             Self::Duration => Tags::DURATION,
             Self::Totem => Tags::TOTEM,
+            Self::Minion => Tags::MINION,
             Self::Trap => Tags::TRAP,
             Self::Damage => Tags::DAMAGE,
             Self::Physical => Tags::PHYSICAL,
@@ -150,7 +152,8 @@ struct AffixDef {
 }
 impl AffixDef {
     fn compatible_base(&self, base: &Base) -> bool {
-        self.slots.contains(&base.slot)
+        !matches!(self.effect, Effect::Experience | Effect::MagicFind | Effect::Luck)
+            && self.slots.contains(&base.slot)
             && self.effect.valid_equipment_type(base.equipment_type)
             && !(matches!(
                 base.equipment_type,
@@ -1781,6 +1784,12 @@ mod tests {
     #[test]
     fn new_effects_have_configured_pools_and_jewellery_proc_restrictions_are_enforced() {
         let c = Config::builtin();
+        for effect in [Effect::Experience, Effect::MagicFind, Effect::Luck] {
+            let mut affix = c.affixes.iter().find(|a| a.effect == effect).unwrap().clone();
+            assert_eq!(affix.weight, 0.0);
+            affix.weight = 100.0; // Old/custom tables cannot re-enable these drop stats.
+            assert!(c.bases.iter().all(|base| !affix.compatible_base(base)));
+        }
         for id in [
             "vampiric",
             "life_on_kill",
@@ -1797,9 +1806,6 @@ mod tests {
             "knockback_chance",
             "armour_penetration",
             "pickup_radius",
-            "experience",
-            "luck",
-            "magic_find",
             "proc_class_spell",
         ] {
             assert!(
@@ -1840,7 +1846,8 @@ mod tests {
             assert!(item
                 .affixes
                 .iter()
-                .all(|a| !matches!(a.effect, Effect::Life | Effect::Damage | Effect::FlatDamage)));
+                .all(|a| !matches!(a.effect, Effect::Life | Effect::Damage | Effect::FlatDamage
+                    | Effect::Experience | Effect::MagicFind | Effect::Luck)));
             let mut groups = BTreeSet::new();
 
             for a in &item.affixes {

@@ -164,6 +164,7 @@ pub(super) fn grant(
 }
 pub(super) fn cast_ready(run: &Run, key: &str) -> bool {
     match key {
+        "tame_beast" => !run.talent_runtime.minions.tame_active,
         "savage_roar" => run.support.melee >= 3,
         "slice_and_dice" => run.support.attacks >= 3,
         _ => true,

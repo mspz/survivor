@@ -541,6 +541,23 @@ mod tests {
             assert_eq!(world.resource::<Run>().hp, 100.0);
         }
     }
+
+    #[test]
+    fn dodge_stat_avoids_boss_area_damage_while_standing_inside_the_telegraph() {
+        use super::super::spell_engine::{Change, Filter, Modifier};
+        let (mut world, _, _) = arena(Spell::Cone);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.replace_spell_modifiers(904, [Modifier {
+                source: 904, filter: Filter::default(), change: Change::DodgeChance(0.75),
+            }]);
+            run.extra_spells.dodge_rng = Rng(1);
+        }
+        advance(&mut world, 0.1);
+        advance(&mut world, Spell::Cone.windup() + 0.4);
+        assert_eq!(world.resource::<Run>().hp, 100.0);
+        assert!(world.resource::<Run>().extra_spells.dodge_until > 0.0);
+    }
     #[test]
     fn charge_moves_over_time_and_hits_the_swept_path_once() {
         let (mut world, player, boss) = arena(Spell::Charge);
