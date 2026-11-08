@@ -88,7 +88,7 @@ mod tests {
                 .single(world)
                 .unwrap()
                 .0,
-            "Mort"
+            "Dead"
         );
         world.despawn(ally);
         app.update();
@@ -132,7 +132,7 @@ pub(super) fn refresh(
     }
     let label = |s: &Status| {
         if s.health <= 0.0 {
-            "Mort".to_owned()
+            "Dead".to_owned()
         } else {
             format!("{:.0} / {:.0}", s.health, s.maximum)
         }

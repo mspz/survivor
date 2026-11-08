@@ -7,9 +7,9 @@ pub fn parse(text: &str) -> Result<SocketAddr, String> {
     let ip: Ipv4Addr = text
         .trim()
         .parse()
-        .map_err(|_| "Entrez l’IPv4 Hamachi de l’hôte (exemple : 25.12.34.56).".to_owned())?;
+        .map_err(|_| "Enter the host's Hamachi IPv4 address (for example: 25.12.34.56).".to_owned())?;
     if ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
-        return Err("Cette IPv4 ne désigne pas un hôte.".into());
+        return Err("This IPv4 address does not identify a host.".into());
     }
     Ok(SocketAddr::from((ip, PORT)))
 }

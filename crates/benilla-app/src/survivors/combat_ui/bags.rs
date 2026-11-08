@@ -327,13 +327,13 @@ fn tooltip(
         }
     }
     if preview.is_some() {
-        lines.push(("Apercu uniquement - non recuperable".into(), GREY));
+        lines.push(("Preview only - cannot be collected".into(), GREY));
     } else {
         lines.push((
             if vendor.as_ref().is_some_and(|v| v.open) {
-                "Clic droit : vendre"
+                "Right-click: sell"
             } else {
-                "Alt-clic : vendre"
+                "Alt-click: sell"
             }
             .to_owned(),
             GREY,
@@ -449,8 +449,8 @@ mod tests {
         assert!(texts.contains(&name.as_str()));
         assert!(texts.contains(&"Ilvl 22"));
         assert!(texts.contains(&expected_affix.as_str()));
-        assert!(texts.iter().any(|text| text.contains("non recuperable")));
-        assert!(!texts.iter().any(|text| text.contains("vendre")));
+        assert!(texts.iter().any(|text| text.contains("cannot be collected")));
+        assert!(!texts.iter().any(|text| text.contains("sell")));
         assert!(world.get::<ItemTip>(entity).is_none());
         assert!(world.get::<DropTarget>(entity).is_none());
         assert!(world.resource::<Inventory>().all().is_empty());

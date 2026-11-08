@@ -482,7 +482,7 @@ impl Config {
         rng: &mut Rng,
     ) -> Result<Item, String> {
         if !self.gamble_available(slot, class) {
-            return Err("Aucun objet disponible pour cette classe et cet emplacement.".into());
+            return Err("No items available for this class and slot.".into());
         }
         let mut pool = self.clone();
         pool.bases.retain(|b| {

@@ -48,7 +48,7 @@ impl Inventory {
     ) -> Result<(), String> {
         if rules.iter().any(|r| r.below_ilvl > Rule::MAX_BELOW_ILVL) {
             return Err(format!(
-                "Le seuil doit etre compris entre 0 et {}.",
+                "The threshold must be between 0 and {}.",
                 Rule::MAX_BELOW_ILVL
             ));
         }

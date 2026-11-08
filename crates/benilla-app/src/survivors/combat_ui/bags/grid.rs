@@ -76,9 +76,9 @@ pub(super) fn panel(
         if let Some(item) = view.selected_item.and_then(|id| inventory.item(id)) {
             // Two clicks: the rolled item cannot be recovered.
             let label = if view.delete_armed == Some(item.id) {
-                "Confirmer"
+                "Confirm"
             } else {
-                "Vendre"
+                "Sell"
             };
             action(footer, font, label, Action::Delete(item.id));
             for &(slot, kind) in &SLOTS {

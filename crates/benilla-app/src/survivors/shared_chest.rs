@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod ui;
 type OtherView = super::bank::View;
-const TITLE: &str = "Coffre partagé";
-const OPEN_LABEL: &str = "Ouvrir le coffre partagé";
+const TITLE: &str = "Shared chest";
+const OPEN_LABEL: &str = "Open shared chest";
 const PROMPT_OFFSET: f32 = -115.0;
 
 pub(super) fn nonce() -> String {
@@ -168,7 +168,7 @@ impl Store {
             Some(Ok(save)) if save.version == 1 && !save.identity.is_empty() => self.save = save,
             Some(_) => {
                 self.blocked = true;
-                self.error = "Sauvegarde du coffre illisible ; aucun transfert autorisé.".into();
+                self.error = "The chest save cannot be read; transfers are disabled.".into();
             }
             None => {
                 if let Err(e) = self.persist(&self.save) {
@@ -230,18 +230,18 @@ impl Store {
                     return Ok(());
                 }
                 if !accessible {
-                    return Err("Approchez du coffre dans le Hub pour déposer un objet.".into());
+                    return Err("Move closer to the chest in the hub to deposit an item.".into());
                 }
                 let transfer = pending
                     .iter()
                     .find(|t| t.token == token)
-                    .ok_or("Transfert introuvable dans l'inventaire.")?;
+                    .ok_or("Transfer not found in the inventory.")?;
                 if transfer.vault != self.save.identity {
-                    return Err("Ce dépôt appartient à un autre coffre.".into());
+                    return Err("This deposit belongs to another chest.".into());
                 }
                 let mut save = self.save.clone();
                 let id = save.next_id;
-                save.next_id = id.checked_add(1).ok_or("Coffre plein.")?;
+                save.next_id = id.checked_add(1).ok_or("Chest full.")?;
                 save.entries.push(Entry {
                     id,
                     item: transfer.item.clone(),
@@ -251,10 +251,10 @@ impl Store {
             }
             Request::Withdraw { vault, entry } => {
                 if !accessible || vault != self.save.identity {
-                    return Err("Approchez du coffre dans le Hub pour récupérer un objet.".into());
+                    return Err("Move closer to the chest in the hub to withdraw an item.".into());
                 }
                 if identity.is_empty() {
-                    return Err("Identité de transfert manquante.".into());
+                    return Err("Missing transfer identity.".into());
                 }
                 if self
                     .save
@@ -269,10 +269,10 @@ impl Store {
                     .entries
                     .iter()
                     .position(|e| e.id == entry)
-                    .ok_or("Cet objet a déjà été récupéré.")?;
+                    .ok_or("This item has already been withdrawn.")?;
                 let item = save.entries.remove(index).item;
                 let token = format!("{}:{}", save.identity, save.next_id);
-                save.next_id = save.next_id.checked_add(1).ok_or("Identifiants épuisés.")?;
+                save.next_id = save.next_id.checked_add(1).ok_or("No more identifiers available.")?;
                 save.deliveries.push(Delivery {
                     identity: identity.into(),
                     entry,

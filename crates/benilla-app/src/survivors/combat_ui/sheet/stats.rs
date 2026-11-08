@@ -15,12 +15,12 @@ pub(super) struct StatTooltip;
 #[derive(Component)]
 pub(super) struct StatScroll;
 const CATEGORIES: [&str; 6] = [
-    "Attributs",
-    "Défense",
-    "Offensive",
-    "Récupération",
-    "Utilitaire",
-    "Sorts",
+    "Attributes",
+    "Defense",
+    "Offense",
+    "Recovery",
+    "Utility",
+    "Spells",
 ];
 
 pub(super) fn primary(inventory: Option<&Inventory>) -> [f32; 4] {

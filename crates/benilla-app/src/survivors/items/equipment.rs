@@ -210,7 +210,7 @@ mod tests {
         inventory.character_level = 16;
         assert!(!inventory.equippable(inventory.item(1).unwrap()));
         assert!(inventory.equip(1, "Head").is_err());
-        assert!(inventory.item(1).unwrap().tooltip_lines(&inventory).iter().any(|(line,color)| line == "Niveau requis : 17" && *color == Color::srgb(1.0,0.15,0.15)));
+        assert!(inventory.item(1).unwrap().tooltip_lines(&inventory).iter().any(|(line,color)| line == "Requires level: 17" && *color == Color::srgb(1.0,0.15,0.15)));
         inventory.character_level = 17;
         inventory.equip(1, "Head").unwrap();
         inventory.character_level = 16;
@@ -591,7 +591,7 @@ impl Inventory {
                 .find(|(s, _)| s == name)
                 .map(|(_, s)| *s)
                 .ok_or("Invalid equipment slot")?;
-            if self.character_level < item.required_level() { return Err(format!("Niveau {} requis pour equiper cet objet.", item.required_level())); }
+            if self.character_level < item.required_level() { return Err(format!("Requires level {} to equip this item.", item.required_level())); }
             if !item.usable(self.class, slot)
                 && !(save.titan_grip
                     && slot == SlotKind::OffHand

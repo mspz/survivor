@@ -12,8 +12,8 @@ use bevy::prelude::*;
 #[path = "shared_chest/ui.rs"]
 mod ui;
 type OtherView = super::shared_chest::View;
-const TITLE: &str = "Banque personnelle";
-const OPEN_LABEL: &str = "Ouvrir la banque personnelle";
+const TITLE: &str = "Personal bank";
+const OPEN_LABEL: &str = "Open personal bank";
 const PROMPT_OFFSET: f32 = 130.0;
 #[cfg(test)]
 use super::shared_chest::fixture_item;

@@ -248,7 +248,7 @@ impl Item {
                 Color::WHITE,
             ),
         ];
-        lines.push((format!("Niveau requis : {}", self.required_level()),
+        lines.push((format!("Requires level: {}", self.required_level()),
             if inventory.character_level < self.required_level() { Color::srgb(1.0,0.15,0.15) } else { Color::WHITE }));
         if self.armour() > 0.0 {
             lines.push((format!("{:.0} Armour", self.armour()), Color::WHITE));
@@ -297,7 +297,7 @@ impl Item {
         }
         let (gold, silver, copper) = super::super::currency::split(self.sale_price());
         lines.push((
-            format!("Prix de vente : {gold} po {silver} pa {copper} pc"),
+            format!("Sell price: {gold}g {silver}s {copper}c"),
             Color::srgb(1.0, 0.82, 0.0),
         ));
         lines

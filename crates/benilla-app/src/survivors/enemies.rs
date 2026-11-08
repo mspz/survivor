@@ -333,7 +333,7 @@ fn spawn_rank(
     if elite {
         commands
             .entity(e)
-            .insert(super::unit_frames::Label(format!("{} · Élite", def.name)));
+            .insert(super::unit_frames::Label(format!("{} · Elite", def.name)));
     }
     let special_label = match rank {
         Rank::Explosive => Some("Explosif"),
@@ -1268,7 +1268,7 @@ mod elite_tests {
         assert_eq!(sprinter.xp, normal.xp);
         assert_eq!(sprinter_model.scale, normal_model.scale);
         assert!(!sprinter.boss);
-        assert!(label.unwrap().0.ends_with("Élite"));
+        assert!(label.unwrap().0.ends_with("Elite"));
         assert!(
             query
                 .iter(&world)

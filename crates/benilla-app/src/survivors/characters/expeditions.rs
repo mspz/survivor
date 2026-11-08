@@ -241,7 +241,7 @@ fn detail(
         ui.spawn(label(
             font,
             if index == data::TRAINING_MAP {
-                "60 yd triangle / 40 mobs / Boss: 3 sec / Mobs: 1 sec".into()
+                format!("60 yd triangle / {} mobs / Boss: 3 sec / Mobs: 1 sec", super::super::training::PACK_SIZE)
             } else {
                 format!(
                     "{}  |  Survive {} minutes",
@@ -421,7 +421,7 @@ pub(super) fn draw(
                                     },
                                 ))
                                 .with_children(|list| {
-                                    group(list, font, 0, "Expéditions", open[0]);
+                                    group(list, font, 0, "Expeditions", open[0]);
                                     if open[0] {
                                         if selection.test_character {
                                             list.spawn(label(font, "PRACTICE", 11.0, MUTED));
@@ -450,7 +450,7 @@ pub(super) fn draw(
                                     if open[1] {
                                         list.spawn(label(
                                             font,
-                                            "Aucun donjon disponible.",
+                                            "No dungeons available.",
                                             13.0,
                                             MUTED,
                                         ));
@@ -459,7 +459,7 @@ pub(super) fn draw(
                                     if open[2] {
                                         list.spawn(label(
                                             font,
-                                            "Aucun raid disponible.",
+                                            "No raids available.",
                                             13.0,
                                             MUTED,
                                         ));

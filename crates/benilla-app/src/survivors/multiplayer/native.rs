@@ -279,7 +279,7 @@ fn pump(world: &mut World) {
             warn!("Survivors disconnected: {error}");
             rooms::close(world, &mut network);
             if let Some(mut lobby) = world.get_resource_mut::<super::lobby::Lobby>() {
-                lobby.fail(format!("Connexion au salon interrompue : {error}"));
+                lobby.fail(format!("Game connection interrupted: {error}"));
             }
             world.resource_mut::<Run>().banner = Some((format!("Disconnected: {error}"), 60.0));
             world.resource_mut::<NextState<Phase>>().set(Phase::Menu);
@@ -343,7 +343,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
                 wire::ToServer::Join { version, profile } if peer.session.is_none() => {
                     if version != wire::VERSION || !valid_profile(&profile) {
                         let _ = peer.socket.send(&wire::ToClient::Error(
-                            "Personnage ou version du jeu incompatible.".into(),
+                            "Incompatible character or game version.".into(),
                         ));
                         failed = true;
                         break;
@@ -454,7 +454,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
                                     });
                             world
                                 .get_resource_mut::<game::shared_chest::Store>()
-                                .ok_or_else(|| "Coffre indisponible.".to_string())?
+                                .ok_or_else(|| "Chest unavailable.".to_string())?
                                 .request_for(
                                     &peer.trade.identity,
                                     &peer.trade.pending_deposits,
@@ -781,7 +781,7 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
             .and_then(|r| r.active)
             != Some(key.0)
         {
-            return Err(std::io::Error::other("Le personnage a quitté le salon."));
+            return Err(std::io::Error::other("The character has left the game."));
         }
     }
     let phase = *world.resource::<State<Phase>>().get();
@@ -1214,7 +1214,7 @@ fn publish(world: &mut World) {
     let host_name = world
         .get_resource::<game::characters::Roster>()
         .and_then(|r| r.current())
-        .map_or_else(|| "Hôte".into(), |c| c.name.clone());
+        .map_or_else(|| "Host".into(), |c| c.name.clone());
     let summary = |id, name, run: &Run| {
         let rows = run.meter.rows(run.elapsed);
         game::combat_ui::PartyRow {

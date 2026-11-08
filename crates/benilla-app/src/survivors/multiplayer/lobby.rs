@@ -162,7 +162,7 @@ pub(super) fn input(
                 }
                 lobby.busy = true;
                 lobby.error.clear();
-                lobby.status = "Connexion au salon…".into();
+                lobby.status = "Connecting to the game…".into();
                 lobby.request = Some(Request::Join(lobby.input.clone()));
                 lobby.revision += 1;
             }
@@ -181,7 +181,7 @@ pub(super) fn input(
                         lobby.error.clear();
                         lobby.revision += 1;
                     }
-                    Err(_) => lobby.fail("Impossible de lire le presse-papiers."),
+                    Err(_) => lobby.fail("Cannot read the clipboard."),
                 }
             }
             Action::Leave => {
@@ -247,7 +247,7 @@ fn draw(
                     .with_children(|ui| {
                         skin::backdrop(ui);
                         ui.spawn((
-                            Text::new("Rejoindre un salon"),
+                            Text::new("Join a game"),
                             TextFont {
                                 font: f.clone(),
                                 font_size: 24.0,
@@ -256,7 +256,7 @@ fn draw(
                             TextColor(hud::GOLD_TONE),
                         ));
                         ui.spawn((
-                            Text::new("Entrez l'IPv4 Hamachi de l'hôte (exemple : 25.12.34.56)."),
+                            Text::new("Enter the host's Hamachi IPv4 address (for example: 25.12.34.56)."),
                             TextFont {
                                 font: f.clone(),
                                 font_size: 16.0,
@@ -299,10 +299,10 @@ fn draw(
                             ));
                         }
                         if !lobby.busy {
-                            skin::button(ui, f, "Coller l'IPv4", Action::Paste, 240.0);
-                            skin::button(ui, f, "Rejoindre", Action::Join, 240.0);
+                            skin::button(ui, f, "Paste IPv4", Action::Paste, 240.0);
+                            skin::button(ui, f, "Join", Action::Join, 240.0);
                         }
-                        skin::button(ui, f, "Annuler", Action::Cancel, 240.0);
+                        skin::button(ui, f, "Cancel", Action::Cancel, 240.0);
                     });
             });
     } else if lobby.active && lobby.panel_open && *phase.get() != Phase::Menu && in_hub {
@@ -325,7 +325,7 @@ fn draw(
             .with_children(|ui| {
                 skin::backdrop(ui);
                 ui.spawn((
-                    Text::new(format!("Connecté · {}/8 joueurs", lobby.members)),
+                    Text::new(format!("Connected · {}/8 players", lobby.members)),
                     TextFont {
                         font: f.clone(),
                         font_size: 13.0,
@@ -338,7 +338,7 @@ fn draw(
                     ..default()
                 })
                 .with_children(|row| {
-                    skin::button(row, f, "Quitter", Action::Leave, 85.0);
+                    skin::button(row, f, "Leave", Action::Leave, 85.0);
                 });
             });
     } else if !lobby.error.is_empty() && *phase.get() == Phase::Menu {

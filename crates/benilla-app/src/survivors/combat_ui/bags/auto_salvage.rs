@@ -84,7 +84,7 @@ fn input(
                 }
                 if !valid {
                     editor.error = format!(
-                        "Saisissez un seuil entre 0 et {} pour chaque rareté.",
+                        "Enter a threshold between 0 and {} for each rarity.",
                         AutoSalvageRule::MAX_BELOW_ILVL
                     );
                 } else {
@@ -202,21 +202,21 @@ fn render(
                     panel.spawn(text(f, "Auto-salvage", 22.0, GOLD));
                     panel.spawn(text(
                         f,
-                        "Vendre si l'ilvl est strictement inférieur au seuil.",
+                        "Sell items with an item level below the threshold.",
                         13.0,
                         Color::WHITE,
                     ));
                     panel.spawn(text(
                         f,
-                        "Objets en sac et nouveaux objets. Équipés conservés.",
+                        "Applies to bag items and new loot. Equipped items are kept.",
                         12.0,
                         GREY,
                     ));
                     for (i, (name, rarity)) in [
-                        ("Commun", Rarity::Normal),
-                        ("Vert", Rarity::Magic),
-                        ("Épique", Rarity::Epic),
-                        ("Légendaire", Rarity::Legendary),
+                        ("Normal", Rarity::Normal),
+                        ("Magic", Rarity::Magic),
+                        ("Epic", Rarity::Epic),
+                        ("Legendary", Rarity::Legendary),
                     ]
                     .into_iter()
                     .enumerate()
@@ -297,7 +297,7 @@ fn render(
                     }
                     panel.spawn(text(
                         f,
-                        "Enregistrer applique aussi les règles aux objets déjà en sac.",
+                        "Saving also applies these rules to items already in your bags.",
                         12.0,
                         GREY,
                     ));
@@ -307,8 +307,8 @@ fn render(
                             ..default()
                         })
                         .with_children(|footer| {
-                            skin::button(footer, f, "Annuler", Click::Cancel, 125.0);
-                            skin::button(footer, f, "Enregistrer", Click::Save, 145.0);
+                            skin::button(footer, f, "Cancel", Click::Cancel, 125.0);
+                            skin::button(footer, f, "Save", Click::Save, 145.0);
                         });
                 });
         });

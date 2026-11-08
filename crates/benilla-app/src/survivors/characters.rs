@@ -849,7 +849,7 @@ pub(super) fn input(
                         lobby.open_join();
                     }
                 } else {
-                    roster.error = "Choisissez un personnage.".into();
+                    roster.error = "Select a character.".into();
                 }
             }
             Click::Delete if *phase.get() == Phase::Menu && !roster.creating && !roster.blocked => {
@@ -998,7 +998,7 @@ pub(super) fn activate_selected(
         .selected
         .and_then(|id| roster.save.characters.iter().find(|c| c.id == id))
         .cloned()
-        .ok_or("Choisissez ou créez un personnage.")?;
+        .ok_or("Select or create a character.")?;
     *account = talents::Account::load_character(c.id);
     account.xp = account.xp.max(if is_test_character(&c.name) {
         c.xp.max(talents::threshold(60))

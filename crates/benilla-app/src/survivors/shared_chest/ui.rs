@@ -369,7 +369,7 @@ pub(super) fn render(
             .with_children(|footer| {
                 footer.spawn(text(
                     &font.0,
-                    format!("{} objets", view.replica.entries.len()),
+                    format!("{} items", view.replica.entries.len()),
                     11.0,
                     Color::WHITE,
                 ));
@@ -388,7 +388,7 @@ pub(super) fn render(
                 text(
                     &font.0,
                     if view.notice.is_empty() {
-                        "Clic droit ou glisser-déposer entre les sacs et le coffre."
+                        "Right-click or drag items between your bags and the chest."
                     } else {
                         &view.notice
                     },

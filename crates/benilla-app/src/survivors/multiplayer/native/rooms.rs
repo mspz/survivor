@@ -85,14 +85,14 @@ pub(super) fn update(world: &mut World) {
                         lobby.joining = false;
                         lobby.busy = false;
                         lobby.error.clear();
-                        lobby.status = "Vos amis doivent saisir votre IPv4 Hamachi.".into();
+                        lobby.status = "Your friends must enter your Hamachi IPv4 address.".into();
                         lobby.members = 1;
                         lobby.revision += 1;
                         world.resource_mut::<NextState<Phase>>().set(Phase::Hub);
                     }
                     Err(error) => world
                         .resource_mut::<Lobby>()
-                        .fail(format!("Impossible de créer le salon : {error}")),
+                        .fail(format!("Cannot host the game: {error}")),
                 }
             }
             Request::Join(text) => {
@@ -101,7 +101,7 @@ pub(super) fn update(world: &mut World) {
                     Ok(address) => {
                         let (send, receive) = crossbeam_channel::bounded(1);
                         std::thread::spawn(move || {
-                            let result = TcpStream::connect_timeout(&address, Duration::from_secs(3)).map_err(|_| "Salon introuvable. Vérifiez que votre ami héberge toujours le salon et que vous êtes sur le même réseau ou VPN.".to_owned());
+                            let result = TcpStream::connect_timeout(&address, Duration::from_secs(3)).map_err(|_| "Game not found. Make sure your friend is still hosting and that you are on the same network or VPN.".to_owned());
                             let _ = send.send(result);
                         });
                         network.connecting = Some((address, receive));
@@ -109,7 +109,7 @@ pub(super) fn update(world: &mut World) {
                         lobby.joining = true;
                         lobby.busy = true;
                         lobby.error.clear();
-                        lobby.status = "Connexion au salon…".into();
+                        lobby.status = "Connecting to the game…".into();
                         lobby.revision += 1;
                     }
                     Err(error) => world.resource_mut::<Lobby>().fail(error),
@@ -124,7 +124,7 @@ pub(super) fn update(world: &mut World) {
             .and_then(|(address, receive)| match receive.try_recv() {
                 Ok(result) => Some((*address, result)),
                 Err(crossbeam_channel::TryRecvError::Empty) => None,
-                Err(_) => Some((*address, Err("La connexion a été interrompue.".into()))),
+                Err(_) => Some((*address, Err("The connection was interrupted.".into()))),
             });
     if let Some((_address, result)) = result {
         network.connecting = None;
@@ -148,7 +148,7 @@ pub(super) fn update(world: &mut World) {
                 world.insert_resource(Role::Guest);
                 let mut lobby = world.resource_mut::<Lobby>();
                 lobby.active = true;
-                lobby.status = "Entrée dans le salon…".into();
+                lobby.status = "Joining the game…".into();
                 lobby.revision += 1;
             }
             Err(error) => {

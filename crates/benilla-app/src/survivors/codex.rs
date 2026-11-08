@@ -32,10 +32,10 @@ enum Click {
     Close,
 }
 const RARITIES: [(cards::Rarity, &str); 4] = [
-    (cards::Rarity::Common, "Commun"),
-    (cards::Rarity::Uncommon, "Inhabituel"),
-    (cards::Rarity::Epic, "Épique"),
-    (cards::Rarity::Legendary, "Légendaire"),
+    (cards::Rarity::Common, "Common"),
+    (cards::Rarity::Uncommon, "Uncommon"),
+    (cards::Rarity::Epic, "Epic"),
+    (cards::Rarity::Legendary, "Legendary"),
 ];
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<Panel>()
@@ -245,7 +245,7 @@ fn render(
                         })
                         .with_children(|head| {
                             head.spawn(text(&font.0, "CODEX", 26.0, hud::GOLD_TONE));
-                            skin::button(head, &font.0, "Retour [Échap]", Click::Close, 180.0);
+                            skin::button(head, &font.0, "Back [Esc]", Click::Close, 180.0);
                         });
                     frame
                         .spawn(Node {
@@ -253,7 +253,7 @@ fn render(
                             ..default()
                         })
                         .with_children(|tabs| {
-                            for (tab, label) in [(Tab::Spells, "Sorts"), (Tab::Passives, "Passifs")]
+                            for (tab, label) in [(Tab::Spells, "Spells"), (Tab::Passives, "Passives")]
                             {
                                 skin::button_sized(
                                     tabs,
@@ -279,7 +279,7 @@ fn render(
                                 skin::button_sized(
                                     classes,
                                     &font.0,
-                                    "Toutes",
+                                    "All",
                                     Click::Class(None),
                                     100.0,
                                     28.0,
@@ -303,9 +303,9 @@ fn render(
                     frame.spawn(text(
                         &font.0,
                         if panel.tab == Tab::Spells {
-                            "Valeurs de référence au rang 1 · Survolez un sort pour ses effets"
+                            "Rank 1 reference values · Hover over a spell to view its effects"
                         } else {
-                            "Une ligne par carte · Toutes les raretés obtenables sont regroupées"
+                            "One row per card · All available rarities are grouped together"
                         },
                         13.0,
                         hud::GOLD_TONE,
@@ -358,7 +358,7 @@ fn render(
                                             class.name.into(),
                                             p.tags.labels(),
                                             card.desc,
-                                            format!("Recharge : {:.1} s", p.cooldown),
+                                            format!("Cooldown: {:.1} s", p.cooldown),
                                         ];
                                         entry(list, &font.0, def.spell, card.name, lines, vec![]);
                                     }
@@ -373,7 +373,7 @@ fn render(
                                         .iter()
                                         .map(|&i| {
                                             format!(
-                                                "{} : {}",
+                                                "{}: {}",
                                                 RARITIES[i].1,
                                                 hud::passive_effect_text(
                                                     p,

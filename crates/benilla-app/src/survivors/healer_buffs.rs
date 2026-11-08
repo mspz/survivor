@@ -250,10 +250,10 @@ pub(super) fn receive<'a>(
             super::player_auras::Aura::buff(
                 b.family.aura_spell().spell,
                 match b.family {
-                    Family::Light => "Bénédiction de lumière",
+                    Family::Light => "Blessing of Light",
                     Family::Inspiration => "Inspiration",
-                    Family::Tides => "Bénédiction des marées",
-                    Family::Wild => "Bienfait sauvage",
+                    Family::Tides => "Blessing of the Tides",
+                    Family::Wild => "Blessing of the Wild",
                 },
                 description(b),
                 left,

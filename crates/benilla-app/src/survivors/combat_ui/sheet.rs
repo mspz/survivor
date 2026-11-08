@@ -220,7 +220,7 @@ pub(super) fn render(
                 skin::backdrop(panel);
                 panel.spawn((
                     ParagonLabel,
-                    text(f, "Parangon", 13.0, Color::srgb(0.45, 0.75, 1.0)),
+                    text(f, "Paragon", 13.0, Color::srgb(0.45, 0.75, 1.0)),
                     rect(12.0, 5.0, 310.0, 20.0),
                 ));
                 panel
@@ -419,7 +419,7 @@ pub(super) fn render(
                 skin::frame(panel, 372.0, panel_height);
                 panel.spawn((
                     EquipmentLevel,
-                    text(f, "Niveau moyen équipé", 15.0, GOLD),
+                    text(f, "Average equipped item level", 15.0, GOLD),
                     rect(18.0, 12.0, 290.0, 26.0),
                 ));
                 stats::draw(panel, f, &run, &view, panel_height);
@@ -665,11 +665,11 @@ fn refresh_character_xp(
 ) {
     let level = talents::level(account.xp);
     let (label, percent) = if level >= 60 {
-        ("Niveau 60 - XP au maximum".to_owned(), 100.0)
+        ("Level 60 - Maximum XP".to_owned(), 100.0)
     } else {
         let xp = account.xp.saturating_sub(talents::threshold(level));
         let needed = talents::threshold(level + 1) - talents::threshold(level);
-        (format!("Niveau {level} - {xp} / {needed} XP"), (xp as f64 / needed as f64 * 100.0) as f32)
+        (format!("Level {level} - {xp} / {needed} XP"), (xp as f64 / needed as f64 * 100.0) as f32)
     };
     for mut text in &mut labels {
         if text.0 != label { text.0 = label.clone(); }
@@ -686,11 +686,11 @@ fn refresh_paragon(
     let progress = super::super::paragon::progress(account.xp);
     let label = if active {
         format!(
-            "Parangon {}  -  {} / {} XP",
+            "Paragon {} - {} / {} XP",
             progress.level, progress.xp, progress.needed
         )
     } else {
-        "Parangon - disponible au niveau 60".to_owned()
+        "Paragon - Available at level 60".to_owned()
     };
     for mut text in &mut labels {
         if text.0 != label {
@@ -810,7 +810,7 @@ fn refresh(
             / equipped.len() as f64
     };
     for mut text in &mut texts.p5() {
-        text.0 = format!("Niveau moyen équipé : {average:.1}");
+        text.0 = format!("Average equipped item level: {average:.1}");
     }
     let hint = slots
         .iter()
@@ -875,21 +875,21 @@ mod tests {
         let character_fill = world.spawn((CharacterXpFill, Node::default())).id();
         world.resource_mut::<talents::Account>().xp = talents::threshold(10) + 250;
         world.run_system_once(refresh_character_xp).unwrap();
-        assert_eq!(world.get::<Text>(character_label).unwrap().0, "Niveau 10 - 250 / 1000 XP");
+        assert_eq!(world.get::<Text>(character_label).unwrap().0, "Level 10 - 250 / 1000 XP");
         assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(25.0));
         world.resource_mut::<talents::Account>().xp = 0;
         world.run_system_once(refresh_character_xp).unwrap();
         assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(0.0));
         world.run_system_once(refresh_paragon).unwrap();
-        assert!(world.get::<Text>(label).unwrap().0.contains("niveau 60"));
+        assert!(world.get::<Text>(label).unwrap().0.contains("level 60"));
         world.resource_mut::<talents::Account>().xp = talents::threshold(60) + 125;
         world.run_system_once(refresh_paragon).unwrap();
-        assert!(world.get::<Text>(label).unwrap().0.contains("Parangon 1"));
+        assert!(world.get::<Text>(label).unwrap().0.contains("Paragon 1"));
         assert!(world.get::<Text>(label).unwrap().0.contains("25 / 200 XP"));
         assert_eq!(world.get::<Node>(fill).unwrap().width, Val::Percent(12.5));
         world.run_system_once(refresh_character_xp).unwrap();
         assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(100.0));
-        assert!(world.get::<Text>(character_label).unwrap().0.contains("maximum"));
+        assert!(world.get::<Text>(character_label).unwrap().0.contains("Maximum"));
     }
     #[test]
     fn learned_proc_icons_are_selectable_in_spells_and_show_the_same_live_values_as_the_hud() {

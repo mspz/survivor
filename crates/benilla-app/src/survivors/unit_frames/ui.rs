@@ -433,7 +433,7 @@ mod tests {
             .world_mut()
             .query::<&Text>()
             .iter(app.world())
-            .any(|t| t.0 == "Temps restant : 4.0 s"));
+            .any(|t| t.0 == "Time remaining: 4.0 s"));
         app.world_mut().get_mut::<Status>(enemy).unwrap().debuffs[0].1 = 2.4;
         app.world_mut()
             .get_mut::<Status>(enemy)
@@ -451,7 +451,7 @@ mod tests {
             .world_mut()
             .query::<&Text>()
             .iter(app.world())
-            .any(|t| t.0 == "Temps restant : 2.4 s"));
+            .any(|t| t.0 == "Time remaining: 2.4 s"));
         app.world_mut()
             .get_mut::<Status>(enemy)
             .unwrap()
@@ -462,7 +462,7 @@ mod tests {
             .world_mut()
             .query::<&Text>()
             .iter(app.world())
-            .any(|t| t.0.starts_with("Temps restant :")));
+            .any(|t| t.0.starts_with("Time remaining:")));
         assert_eq!(
             app.world_mut()
                 .query::<&hud::SpellIcon>()

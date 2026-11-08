@@ -47,7 +47,7 @@ mod tests {
         assert!(world
             .query::<&Text>()
             .iter(world)
-            .any(|t| t.0.contains("Recharge")));
+            .any(|t| t.0.contains("Cooldown")));
         world.entity_mut(icon).insert(Interaction::None);
         app.update();
         let world = app.world_mut();
@@ -131,7 +131,7 @@ pub(super) fn menu(
                 skin::button_sized(
                     ui,
                     font,
-                    "Quitter le jeu",
+                    "Quit game",
                     hud::UiAction::Quit,
                     180.0,
                     36.0,
@@ -351,7 +351,7 @@ pub(super) fn menu(
                         skin::button_sized(
                             actions,
                             font,
-                            "Entrer dans le monde",
+                            "Enter world",
                             Click::Enter,
                             272.0,
                             42.0,
@@ -371,7 +371,7 @@ pub(super) fn menu(
                             ));
                             actions.spawn(label(
                                 font,
-                                "MULTIJOUEUR",
+                                "MULTIPLAYER",
                                 11.0,
                                 Color::srgb(0.7, 0.64, 0.48),
                             ));
@@ -385,7 +385,7 @@ pub(super) fn menu(
                                     skin::button_sized(
                                         lobby,
                                         font,
-                                        "Créer un salon",
+                                        "Host a game",
                                         Click::HostLobby,
                                         272.0,
                                         34.0,
@@ -395,7 +395,7 @@ pub(super) fn menu(
                                     skin::button_sized(
                                         lobby,
                                         font,
-                                        "Rejoindre un salon",
+                                        "Join a game",
                                         Click::JoinLobby,
                                         272.0,
                                         34.0,
@@ -516,7 +516,7 @@ pub(super) fn spell_hover(
                 class_def.name.into(),
                 p.tags.labels(),
                 card.desc,
-                format!("Recharge : {:.1} s · Rang 1", p.cooldown),
+                format!("Cooldown: {:.1} s · Rank 1", p.cooldown),
             ],
         ));
     }
