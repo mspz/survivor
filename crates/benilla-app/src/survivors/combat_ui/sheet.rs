@@ -5,7 +5,7 @@ use super::super::{
 };
 use super::*;
 mod stats;
-pub(super) const HEIGHT: f32 = 592.0;
+pub(super) const HEIGHT: f32 = 626.0;
 const FRAME_HEIGHT: f32 = 532.0;
 #[derive(Component)]
 pub(super) struct Root;
@@ -19,6 +19,10 @@ struct EquipmentLevel;
 struct ParagonLabel;
 #[derive(Component)]
 struct ParagonFill;
+#[derive(Component)]
+struct CharacterXpLabel;
+#[derive(Component)]
+struct CharacterXpFill;
 #[derive(Component)]
 struct SkillTitle;
 #[derive(Component)]
@@ -120,7 +124,8 @@ pub(super) fn plugin(app: &mut App) {
     app.add_message::<bevy::input::mouse::MouseWheel>()
         .add_systems(Update, stats::scroll)
         .add_systems(Update, stats::tooltip.after(refresh))
-        .add_systems(Update, refresh_paragon.after(refresh));
+        .add_systems(Update, refresh_paragon.after(refresh))
+        .add_systems(Update, refresh_character_xp.after(refresh));
     app.add_systems(
         Update,
         (render, refresh)
@@ -231,6 +236,38 @@ pub(super) fn render(
                         bar.spawn((
                             ParagonFill,
                             BackgroundColor(Color::srgb(0.2, 0.5, 1.0)),
+                            Node {
+                                width: Val::Percent(0.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                        ));
+                    });
+            });
+            root.spawn((
+                BackgroundColor(Color::srgb(0.045, 0.025, 0.075)),
+                rect(12.0, 584.0, 800.0, 30.0),
+            ))
+            .with_children(|panel| {
+                skin::backdrop(panel);
+                panel.spawn((
+                    CharacterXpLabel,
+                    text(f, "Experience", 13.0, Color::srgb(0.8, 0.55, 1.0)),
+                    rect(12.0, 5.0, 310.0, 20.0),
+                ));
+                panel
+                    .spawn((
+                        BackgroundColor(Color::srgb(0.12, 0.08, 0.16)),
+                        BorderColor::all(Color::srgb(0.48, 0.34, 0.57)),
+                        Node {
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..rect(332.0, 8.0, 454.0, 14.0)
+                        },
+                    ))
+                    .with_children(|bar| {
+                        bar.spawn((
+                            CharacterXpFill,
+                            BackgroundColor(Color::srgb(0.6, 0.25, 0.9)),
                             Node {
                                 width: Val::Percent(0.0),
                                 height: Val::Percent(100.0),
@@ -621,6 +658,25 @@ pub(super) fn spell_stats(run: &Run, index: usize) -> String {
     }
     rows.join("\n")
 }
+fn refresh_character_xp(
+    account: Res<talents::Account>,
+    mut labels: Query<&mut Text, With<CharacterXpLabel>>,
+    mut fills: Query<&mut Node, With<CharacterXpFill>>,
+) {
+    let level = talents::level(account.xp);
+    let (label, percent) = if level >= 60 {
+        ("Niveau 60 - XP au maximum".to_owned(), 100.0)
+    } else {
+        let xp = account.xp.saturating_sub(talents::threshold(level));
+        let needed = talents::threshold(level + 1) - talents::threshold(level);
+        (format!("Niveau {level} - {xp} / {needed} XP"), (xp as f64 / needed as f64 * 100.0) as f32)
+    };
+    for mut text in &mut labels {
+        if text.0 != label { text.0 = label.clone(); }
+    }
+    for mut node in &mut fills { node.width = Val::Percent(percent); }
+}
+
 fn refresh_paragon(
     account: Res<talents::Account>,
     mut labels: Query<&mut Text, With<ParagonLabel>>,
@@ -815,6 +871,15 @@ mod tests {
         world.insert_resource(talents::Account::fresh());
         let label = world.spawn((ParagonLabel, Text::new(""))).id();
         let fill = world.spawn((ParagonFill, Node::default())).id();
+        let character_label = world.spawn((CharacterXpLabel, Text::new(""))).id();
+        let character_fill = world.spawn((CharacterXpFill, Node::default())).id();
+        world.resource_mut::<talents::Account>().xp = talents::threshold(10) + 250;
+        world.run_system_once(refresh_character_xp).unwrap();
+        assert_eq!(world.get::<Text>(character_label).unwrap().0, "Niveau 10 - 250 / 1000 XP");
+        assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(25.0));
+        world.resource_mut::<talents::Account>().xp = 0;
+        world.run_system_once(refresh_character_xp).unwrap();
+        assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(0.0));
         world.run_system_once(refresh_paragon).unwrap();
         assert!(world.get::<Text>(label).unwrap().0.contains("niveau 60"));
         world.resource_mut::<talents::Account>().xp = talents::threshold(60) + 125;
@@ -822,6 +887,9 @@ mod tests {
         assert!(world.get::<Text>(label).unwrap().0.contains("Parangon 1"));
         assert!(world.get::<Text>(label).unwrap().0.contains("25 / 200 XP"));
         assert_eq!(world.get::<Node>(fill).unwrap().width, Val::Percent(12.5));
+        world.run_system_once(refresh_character_xp).unwrap();
+        assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(100.0));
+        assert!(world.get::<Text>(character_label).unwrap().0.contains("maximum"));
     }
     #[test]
     fn learned_proc_icons_are_selectable_in_spells_and_show_the_same_live_values_as_the_hud() {
