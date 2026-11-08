@@ -527,7 +527,7 @@ pub(super) fn move_enemies(
             &mut Enemy,
             &mut MovementState,
             Option<&super::talent_runtime::Taunted>,
-            Option<&super::ranged_enemies::Caster>,
+            Option<&mut super::ranged_enemies::Caster>,
             Option<&super::boss_spells::Skills>,
             Option<&Rank>,
         ),
@@ -604,7 +604,7 @@ pub(super) fn move_enemies(
         push.insert(ent, acc);
     }
 
-    for (ent, mut tf, mut e, mut mv, taunt, caster, skills, rank) in &mut enemies {
+    for (ent, mut tf, mut e, mut mv, taunt, mut caster, skills, rank) in &mut enemies {
         let e = &mut *e;
         if e.dead {
             if mv.speed != 0.0 || mv.flags != 0 {
@@ -636,6 +636,7 @@ pub(super) fn move_enemies(
             continue;
         }
         if skills.is_some_and(|s| s.busy()) {
+            if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             continue;
         }
         let host_visible = targetable(&run, e.boss);
@@ -675,6 +676,7 @@ pub(super) fn move_enemies(
             }
         }
         let Some((owner, hero_e, hpos)) = target else {
+            if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             mv.speed = 0.0;
             mv.flags = 0;
             e.attack_cd -= dt;
@@ -699,6 +701,11 @@ pub(super) fn move_enemies(
 
         // Under Fade the horde has lost the hero: it mills where it stands.
         let lost = target_run.mobile.vanish_t > 0.0 && !e.boss;
+        let cast_ready = caster.as_deref_mut().is_some_and(|caster| {
+            let eligible = dist <= caster.range && !lost && e.stun_t <= 0.0
+                && e.fear_t <= 0.0 && e.attack_cd <= 0.0 && !hero_down;
+            caster.ready(eligible.then_some(hero_e), dt)
+        });
         e.cap_slow(rank);
         let held = e.stun_t > 0.0 || (e.root_t > 0.0 && !e.ignores_freeze(rank)) || lost;
         let contact = dist <= super::spell_engine::targeting::melee_contact_range(e.radius);
@@ -710,7 +717,8 @@ pub(super) fn move_enemies(
             } else {
                 to_hero.normalize_or_zero()
             };
-            if caster.map_or(!contact, |c| dist > c.stand_off) || e.fear_t > 0.0 {
+            if (caster.as_deref().map_or(!contact, |c| dist > c.stand_off)
+                && !caster.as_deref().is_some_and(|c| c.casting())) || e.fear_t > 0.0 {
                 speed = e.speed * e.slow;
                 step = dir * speed;
             }
@@ -731,8 +739,8 @@ pub(super) fn move_enemies(
             mv.flags = 0;
         }
 
-        if let Some(caster) = caster.filter(|caster| dist <= caster.range) {
-            if !lost && e.stun_t <= 0.0 && e.fear_t <= 0.0 && e.attack_cd <= 0.0 && !hero_down {
+        if let Some(caster) = caster.as_deref() {
+            if cast_ready {
                 e.attack_cd = caster.interval;
                 let speed = spells
                     .as_deref()

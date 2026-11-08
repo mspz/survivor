@@ -15,6 +15,34 @@ pub(super) struct Caster {
     pub stand_off: f32,
     pub interval: f32,
     name: &'static str,
+    cast: Option<(Entity, f32)>,
+}
+impl Caster {
+    pub fn cancel(&mut self) {
+        self.cast = None;
+    }
+    pub fn casting(&self) -> bool {
+        self.cast.is_some()
+    }
+    /// A new target always requires a full second before the projectile can launch.
+    pub fn ready(&mut self, target: Option<Entity>, dt: f32) -> bool {
+        let Some(target) = target else {
+            self.cancel();
+            return false;
+        };
+        if let Some((previous, left)) = &mut self.cast {
+            if *previous == target {
+                *left -= dt;
+                if *left <= 0.00001 {
+                    self.cancel();
+                    return true;
+                }
+                return false;
+            }
+        }
+        self.cast = Some((target, 1.0));
+        false
+    }
 }
 pub(super) fn profile(map: usize) -> Option<Caster> {
     let (name, spell, school) = match data::CAMPAIGN.iter().position(|m| *m == map)? {
@@ -32,6 +60,7 @@ pub(super) fn profile(map: usize) -> Option<Caster> {
         range: 20.0,
         stand_off: 16.0,
         interval: 3.0,
+        cast: None,
     })
 }
 pub(super) fn spawn(
@@ -127,6 +156,22 @@ pub(super) fn impact(missile: Missile, run: &mut Run, fx: &mut Fx) {
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn cast_requires_one_full_second_and_restarts_after_interruption_or_target_change() {
+        let mut caster = profile(data::CAMPAIGN[1]).unwrap();
+        let first = Entity::from_raw_u32(1).unwrap();
+        let second = Entity::from_raw_u32(2).unwrap();
+        assert!(!caster.ready(Some(first), 0.5));
+        assert!(!caster.ready(Some(first), 0.9));
+        assert!(caster.ready(Some(first), 0.1));
+        assert!(!caster.ready(Some(first), 0.1));
+        assert!(!caster.ready(None, 1.0));
+        assert!(!caster.ready(Some(first), 1.0));
+        assert!(!caster.ready(Some(second), 1.0));
+        assert!(!caster.ready(Some(second), 0.9));
+        assert!(caster.ready(Some(second), 0.1));
+    }
+
     fn combat() -> (World, Entity, Entity) {
         use crate::{
             combat_text::CombatTextSpawn,
@@ -256,7 +301,7 @@ mod tests {
                         let speed = world.get::<enemies::Enemy>(enemy).unwrap().speed;
                         world.run_system_once(enemies::move_enemies).unwrap();
                         let position = world.get::<Transform>(enemy).unwrap().translation;
-                        let expected = distance - if stunned { 0.0 } else { speed * 0.05 };
+                        let expected = distance - if stunned || (ranged && distance <= 20.0) { 0.0 } else { speed * 0.05 };
                         assert!((position.x - expected).abs() < 0.001, "guest={guest_target}, ranged={ranged}, stunned={stunned}, distance={distance}: {position:?}");
                         assert_eq!(position.z, 0.0);
                     }
@@ -310,6 +355,10 @@ mod tests {
                     world.run_system(system).unwrap();
                     let expected = if protect_guest { host } else { guest };
                     if ranged {
+                        assert!(world.resource::<Messages<SpellGoTargets>>().is_empty());
+                        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+                        world.resource_mut::<Run>().elapsed += 1.0;
+                        world.run_system(system).unwrap();
                         let cast = world
                             .resource_mut::<Messages<SpellGoTargets>>()
                             .drain()
@@ -352,6 +401,7 @@ mod tests {
                         !world.resource::<Messages<SpellGoTargets>>().is_empty()
                             || !world.resource::<Messages<SwingMessage>>().is_empty()
                             || world.get::<MovementState>(enemy).unwrap().speed > 0.0
+                            || world.get::<Caster>(enemy).is_some_and(Caster::casting)
                     );
                 }
             }
@@ -376,7 +426,12 @@ mod tests {
             0.0
         );
         let casts = world.resource::<Messages<crate::creature_anim::SpellGoTargets>>();
-        assert_eq!(casts.len(), 1);
+        assert_eq!(casts.len(), 0, "caster must wind up before launching");
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+        world.resource_mut::<Run>().elapsed += 1.0;
+        world.run_system(system).unwrap();
+        assert_eq!(world.resource::<Messages<crate::creature_anim::SpellGoTargets>>().len(), 1);
+        assert_eq!(world.resource::<Run>().hp, 100.0);
         world
             .resource_mut::<Time>()
             .advance_by(std::time::Duration::from_secs(1));
@@ -423,6 +478,9 @@ mod tests {
         world
             .resource_mut::<Time>()
             .advance_by(std::time::Duration::from_secs(1));
+        world.resource_mut::<Run>().elapsed += 1.0;
+        world.run_system(system).unwrap();
+        assert_eq!(world.resource::<Companions>().0[&42].run.hp, 100.0, "only launched after the cast time");
         world.resource_mut::<Run>().elapsed += 1.0;
         world.run_system(system).unwrap();
         assert_eq!(world.resource::<Run>().hp, 100.0);
