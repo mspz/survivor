@@ -124,6 +124,49 @@ mod tests {
         );
         run
     }
+    fn enemy() -> Enemy {
+        Enemy {
+            def: &crate::survivors::training::DUMMY,
+            hp: 1000.0, max_hp: 1000.0, speed: 0.0, damage: 0.0, radius: 1.0,
+            xp: 0, boss: false, attack_cd: 0.0, slow: 1.0, slow_t: 0.0,
+            root_t: 0.0, stun_t: 0.0, fear_t: 0.0, weaken: 1.0, weaken_t: 0.0,
+            dots: Vec::new(), dead: false,
+        }
+    }
+
+    #[test]
+    fn dots_and_poison_reserves_preserve_more_than_six_instances() {
+        let mut run = owner(66);
+        let mut target = enemy();
+        let entity = Entity::from_bits(1);
+        for index in 0..24 {
+            let mut dot = dot();
+            dot.skill = "proc_poison";
+            dot.meta.family = Family::Poison;
+            dot.owner = if index % 2 == 0 { None } else { Some(7) };
+            dot.left = 2.5;
+            dot.tick = 0.25;
+            dot.dps = index as f32 + 1.0;
+            install(&mut run, &mut target, entity, Vec3::ZERO, dot);
+        }
+        assert_eq!(target.dots.len(), 24);
+        assert_eq!(target.dots[0].dps, 1.0);
+        assert_eq!(target.dots[23].dps, 24.0);
+        death(&mut run, entity, &target, Vec3::ZERO);
+        assert_eq!(run.legendary.periodic.reserve.len(), 12);
+        let hit = Hit::direct("heroic_strike", entity, 10.0, false);
+        before_hit(&mut run, &hit, &mut target, Vec3::ZERO, Tags::PHYSICAL | Tags::ATTACK);
+        assert_eq!(target.dots.len(), 36);
+        assert!(target.dots.iter().all(|d| d.left == 2.5 && d.tick == 0.25));
+        assert!(run.legendary.periodic.reserve.is_empty());
+        let mut run = owner(229);
+        let mut poison = dot();
+        poison.meta.family = Family::Poison;
+        poison.meta.last_tick = 10.0;
+        for _ in 0..12 { expired(&mut run, entity, &poison, Vec3::ZERO); }
+        assert_eq!(run.legendary.periodic.reserve.len(), 12);
+    }
+
     #[test]
     fn finite_budget_counts_only_future_ticks_and_held_damage() {
         let mut d = dot();
@@ -265,9 +308,6 @@ pub(in crate::survivors) fn install(
         en.dots
             .retain(|d| !(d.owner == dot.owner && d.meter_source == dot.meter_source));
     }
-    if en.dots.len() >= 6 {
-        en.dots.remove(0);
-    }
     let other = en.dots.iter().any(|d| {
         d.owner == dot.owner
             && d.left > 0.0
@@ -403,9 +443,7 @@ pub(in crate::survivors) fn expired(run: &mut Run, target: Entity, dot: &Dot, po
         reserve.meta.held = 0.0;
         reserve.meta.last_tick = 0.0;
         reserve.meta.no_reserve = true;
-        if run.legendary.periodic.reserve.len() < 6 {
-            run.legendary.periodic.reserve.push(reserve);
-        }
+        run.legendary.periodic.reserve.push(reserve);
         run.legendary.periodic.reserve_until = run.elapsed + 3.0;
     }
     if run.legendary.has(230) && dot.meta.nails > 0 {
@@ -460,9 +498,7 @@ pub(in crate::survivors) fn death(run: &mut Run, target: Entity, en: &Enemy, pos
             );
         }
         if run.legendary.has(66) && fam == Family::Poison {
-            if run.legendary.periodic.reserve.len() < 6 {
-                run.legendary.periodic.reserve.push(dot.clone());
-            }
+            run.legendary.periodic.reserve.push(dot.clone());
             run.legendary.periodic.reserve_until = run.elapsed + 6.0;
         }
         if run.legendary.has(226) && fam == Family::Poison {
@@ -503,9 +539,6 @@ pub(in crate::survivors) fn before_hit(
         for mut dot in reserve {
             dot.owner = h.owner;
             dot.meta.transferred = false;
-            if en.dots.len() >= 6 {
-                en.dots.remove(0);
-            }
             en.dots.push(dot);
         }
     }
@@ -818,9 +851,6 @@ pub(in crate::survivors) fn tick_world(
     for (target, dot) in transfers {
         if let Ok((_, _, mut en)) = enemies.get_mut(target) {
             if !en.dead {
-                if en.dots.len() >= 6 {
-                    en.dots.remove(0);
-                }
                 en.dots.push(dot);
             }
         }

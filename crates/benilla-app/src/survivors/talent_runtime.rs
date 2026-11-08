@@ -2720,7 +2720,7 @@ mod tests {
             run.elapsed += 0.5;
             on_hit(&mut run, &hit, &mut enemy, Vec3::ZERO, &mut rng, &mut pending);
         }
-        assert_eq!(enemy.dots.len(), 6);
+        assert_eq!(enemy.dots.len(), 12);
         assert!(enemy.dots.iter().all(|d| d.skill == "proc_poison" && d.owner == Some(7) && d.dps == 18.0));
         hit.triggered = true;
         hit.proc_chain = chain_bit(M::Poison);
@@ -2825,7 +2825,7 @@ mod tests {
             run.elapsed += 0.5;
             on_hit(&mut run, &hit, &mut target, Vec3::ZERO, &mut rng, &mut pending);
         }
-        assert_eq!(target.dots.len(), 6);
+        assert_eq!(target.dots.len(), 12);
         assert!(target.dots.iter().all(|d| d.skill == "proc_plague" && (d.dps - 22.5).abs() < 0.001));
         target.dots.clear();
         hit.triggered = true;
