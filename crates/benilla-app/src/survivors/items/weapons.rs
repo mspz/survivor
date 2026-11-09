@@ -1,5 +1,5 @@
-//! Intrinsic weapon damage, separate from rolled affixes and spell power.
-use super::{Appearance, EquipmentType, Item};
+//! Intrinsic weapon damage and local modifiers, separate from global attack and spell power.
+use super::{Appearance, Effect, EquipmentType, Item};
 use crate::survivors::{
     data::AbilityDef,
     spell_engine::{self, Tags},
@@ -63,8 +63,12 @@ pub(super) fn base_for(kind: EquipmentType, appearance: Option<Appearance>) -> D
 }
 impl Item {
     pub fn weapon_damage(&self) -> DamageRange {
-        self.base_damage
-            .unwrap_or_else(|| base_for(self.equipment_type, self.appearance).scaled(self.level))
+        let base = self.base_damage
+            .unwrap_or_else(|| base_for(self.equipment_type, self.appearance).scaled(self.level));
+        let local = self.affixes.iter().filter(|a| a.effect == Effect::WeaponDamage)
+            .map(|a| a.value).sum::<f32>();
+        let factor = (1.0 + local).max(0.0);
+        DamageRange { min: base.min * factor, max: base.max * factor }
     }
 }
 
@@ -249,6 +253,42 @@ mod tests {
         },
         spell_engine::{Change, Filter, Modifier},
     };
+
+    #[test]
+    fn increased_weapon_damage_is_local_to_each_weapon_and_never_scales_spells() {
+        let mut main = item(SlotKind::MainHand,
+            vec![affix(Effect::WeaponDamage, 0.5, AffixKind::Prefix, vec![])]);
+        main.equipment_type = EquipmentType::MeleeOneHand;
+        main.base_damage = Some(DamageRange { min: 10.0, max: 20.0 });
+        let mut off = item(SlotKind::OffHand,
+            vec![affix(Effect::Armour, 1.0, AffixKind::Suffix, vec![])]);
+        off.equipment_type = EquipmentType::MeleeOneHand;
+        off.base_damage = Some(DamageRange { min: 4.0, max: 8.0 });
+        let mut bow = item(SlotKind::Ranged,
+            vec![affix(Effect::WeaponDamage, 0.25, AffixKind::Prefix, vec![])]);
+        bow.equipment_type = EquipmentType::Bow;
+        bow.base_damage = Some(DamageRange { min: 20.0, max: 40.0 });
+        assert_eq!(main.weapon_damage(), DamageRange { min: 15.0, max: 30.0 });
+        assert_eq!(off.weapon_damage(), DamageRange { min: 4.0, max: 8.0 });
+        let mut inventory = Inventory::fixture(vec![main, off, bow]);
+        inventory.class = 3;
+        for (id, slot) in [(1, "Main hand"), (2, "Off hand"), (3, "Ranged")] {
+            inventory.equip(id, slot).unwrap();
+        }
+        let mut run = Run { class: &data::CLASSES[2], ..Default::default() };
+        let spell = data::ability("fireball");
+        let before = run.resolve_spell(spell, 1).dmg;
+        for _ in 0..2 {
+            inventory.apply(&mut run);
+            assert_eq!(run.weapon_damage_range(data::ability("heroic_strike")),
+                DamageRange { min: 19.0, max: 38.0 });
+            assert_eq!(run.weapon_damage_range(data::ability("arcane_shot")),
+                DamageRange { min: 25.0, max: 50.0 });
+            assert_eq!(run.resolve_spell(spell, 1).dmg, before);
+        }
+        let saved = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        assert_eq!(saved.items[0].weapon_damage(), DamageRange { min: 15.0, max: 30.0 });
+    }
 
     #[test]
     fn hunter_bow_damage_scales_attacks_and_minions_once_and_updates_on_equipment_changes() {

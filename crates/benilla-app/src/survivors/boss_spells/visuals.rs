@@ -88,6 +88,43 @@ impl Geometry {
             return;
         }
         match w.spell {
+            Spell::Dungeon(_) => {
+                for zone in &w.zones {
+                    match *zone {
+                        dungeons::Zone::Ring { center, inner, outer } => {
+                            let center = Vec3::from_array(center);
+                            self.band(center, inner, outer, 0.0, tau, base, ground);
+                            self.band(center, inner, inner + (outer - inner) * p, 0.0, tau, fill, ground);
+                            for radius in [inner, outer] {
+                                self.band(center, (radius - 0.07).max(0.0), radius + 0.07, 0.0, tau, edge, ground);
+                            }
+                        }
+                        dungeons::Zone::Lane { from, to, width } => {
+                            let from = Vec3::from_array(from);
+                            let to = Vec3::from_array(to);
+                            let side = flat(to - from).normalize_or_zero().cross(Vec3::Y) * width;
+                            self.quad([from - side, from + side, to + side, to - side], base, ground);
+                            if p > 0.0 {
+                                self.quad([from - side * p, from + side * p, to + side * p, to - side * p], fill, ground);
+                            }
+                            self.line(from - side, to - side, edge, ground);
+                            self.line(from + side, to + side, edge, ground);
+                        }
+                        dungeons::Zone::Sector { center, inner, outer, start, angle } => {
+                            let center = Vec3::from_array(center);
+                            self.band(center, inner, outer, start, angle, base, ground);
+                            self.band(center, inner, inner + (outer - inner) * p, start, angle, fill, ground);
+                            for radius in [inner, outer] {
+                                self.band(center, radius - 0.07, radius + 0.07, start, angle, edge, ground);
+                            }
+                            for a in [start, start + angle] {
+                                let direction = Vec3::new(a.cos(), 0.0, a.sin());
+                                self.line(center + direction * inner, center + direction * outer, edge, ground);
+                            }
+                        }
+                    }
+                }
+            }
             Spell::Cone => {
                 let start = direction.z.atan2(direction.x) - std::f32::consts::FRAC_PI_4;
                 let angle = std::f32::consts::FRAC_PI_2;
@@ -188,9 +225,8 @@ fn draw(
     }
     let mut geometry = Geometry::default();
     for warning in &warnings.0 {
-        let fallback = warning.origin[1];
         geometry.warning(warning, &|p| {
-            enemies::ground(&world, p, fallback) + Vec3::Y * 0.12
+            enemies::ground(&world, p, p.y) + Vec3::Y * 0.12
         });
     }
     let mesh = geometry.mesh();
@@ -229,6 +265,30 @@ pub(super) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     #[test]
+    fn dungeon_mesh_fill_matches_the_authoritative_damage_shapes() {
+        let targets = [Player { entity: Entity::PLACEHOLDER, owner: None, pos: Vec3::X * 20.0 }];
+        for &map in super::super::super::data::DUNGEONS {
+        for boss in &super::super::super::data::roster(map).bosses {
+        let skills = dungeons::loadout(map, boss.name, 3);
+        for slot in skills.slots {
+            let Spell::Dungeon(ability) = slot.spell else { unreachable!() };
+            for phase in 0..=2 {
+                let mut warning = dungeons::warning(ability, Vec3::ZERO, phase, &targets);
+                warning.elapsed = warning.spell.windup();
+                let mut mesh = Geometry::default();
+                mesh.warning(&warning, &|p| p);
+                assert!(!mesh.positions.is_empty());
+                for (triangle, colors) in mesh.positions.chunks_exact(3).zip(mesh.colors.chunks_exact(3)) {
+                    if (colors[0][3] - 0.8).abs() > 0.001 { continue; }
+                    let center = triangle.iter().map(|&p| Vec3::from_array(p)).sum::<Vec3>() / 3.0;
+                    assert!(warning.contains(center, 0.01), "{center:?}");
+                }
+            }
+        }
+        }
+        }
+    }
+    #[test]
     fn fills_grow_inside_the_same_footprint_and_ring_gaps_stay_empty() {
         let mut w = Warning {
             spell: Spell::Rings,
@@ -237,6 +297,8 @@ mod tests {
             mortars: vec![],
             elapsed: 0.0,
             circle: None,
+            windup_seconds: None,
+            zones: vec![],
         };
         let mut empty = Geometry::default();
         empty.warning(&w, &|p| p);

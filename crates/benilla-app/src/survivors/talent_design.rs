@@ -104,7 +104,7 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Bloodbath","Bleeding enemies explode on death for 30% of the dying enemy's maximum health, capped at 1000 base damage before damage modifiers and critical strikes. +20% attack speed.",Bloodburst,C::IncreasedAttackSpeed(0.2)),
         m!("Titan's Grip","Equip two two-handed weapons. +25% attack speed.",Titans,C::IncreasedAttackSpeed(0.25))]},
     Design {title:"Protection",focus:"Taunting, blocking and Thunder Clap",filter:T::PHYSICAL,milestones:[
-        m!("Taunt","Taunt enemies within 12 yards for 3 sec every 6 sec. Unlocks Thunder Clap.",Taunt),
+        m!("Taunt","Taunt enemies within 12 yards for 3 sec every 6 sec. Taunted enemies take 25% more damage from all sources. Unlocks Thunder Clap.",Taunt),
         m!("Bulwark","+20% block chance. Blocking reduces Thunder Clap's cooldown by 1 sec.",Block),
         m!("Thunder Fortress","Blocking releases a 45-damage shockwave within 6 yards, once per second. +40% area.",Bulwark,C::IncreasedArea(0.4))]},
     Design {title:"Holy",focus:"Healing, Holy Shock and Exorcism",filter:T::HOLY,milestones:[
@@ -112,7 +112,7 @@ pub(super) static DESIGNS: [Design; 27] = [
         m!("Healing Shock","Every 6 sec, heal nearby allies for 12% max health and deal 40 Holy damage around you.",HolyBurst),
         m!("Judgment of Light","Holy hits heal for 8% extra damage and strike 2 nearby enemies for 50% damage.",HolyJudgement)]},
     Design {title:"Protection",focus:"Consecration, blocking and self-healing",filter:T::HOLY,milestones:[
-        m!("Consecrated Defender","Taunt nearby enemies every 6 sec. Unlocks Consecration.",Taunt),
+        m!("Consecrated Defender","Taunt nearby enemies every 6 sec. Taunted enemies take 25% more damage from all sources. Unlocks Consecration.",Taunt),
         m!("Blessed Shield","+20% block chance. Blocking restores 3% max health.",Block),
         m!("Sanctuary","Blocking deals 45 Holy damage around you and restores 2% max health, once per second. +40% area.",Bulwark,C::IncreasedArea(0.4))]},
     Design {title:"Retribution",focus:"Seals and area attacks",filter:T::ATTACK,milestones:[

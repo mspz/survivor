@@ -1131,7 +1131,7 @@ mod spell_engine_integration_tests {
                 .entity_mut(target)
                 .insert(crate::creature_anim::MovementState::default());
         }
-        benilla_world::world_point::init_world_point_resources(&mut world);
+        crate::survivors::geometry::init_test_world(&mut world);
         {
             let mut run = world.resource_mut::<Run>();
             run.legendary.equipped.clear();
@@ -2068,6 +2068,88 @@ mod spell_engine_integration_tests {
     }
 
     #[test]
+    fn thunder_clap_applies_deep_wounds_to_every_target_on_each_skill_hit() {
+        let (mut world, targets) = legendary_world("thunder_clap", 0, &[2.0, 4.0, 6.0]);
+        let mut account = super::super::talents::Account::fresh();
+        account.xp = super::super::talents::threshold(60);
+        for node in [0, 1] { for _ in 0..5 { assert!(account.buy(0, 1, node)); } }
+        assert!(account.buy(0, 1, 8));
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.legendary.equipped.clear();
+            account.apply(0, &mut run);
+        }
+        for expected in 1..=2 {
+            {
+                let mut run = world.resource_mut::<Run>();
+                run.elapsed = (expected - 1) as f32 * 0.1;
+                run.abilities.iter_mut().find(|a| a.def.key == "thunder_clap").unwrap().cd = 0.0;
+            }
+            world.run_system_once(cast_abilities).unwrap();
+            world.run_system_once(apply_hits).unwrap();
+            world.resource_mut::<Messages<Hit>>().clear();
+            for &target in &targets {
+                let enemy = world.get::<Enemy>(target).unwrap();
+                let bleeds: Vec<_> = enemy.dots.iter().filter(|d| d.skill == "proc_bleed").collect();
+                assert_eq!(bleeds.len(), expected, "target={target:?}");
+                assert!(bleeds.iter().all(|dot| dot.meter_source == Some("Deep Wounds") && dot.dps > 0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn taunt_increases_all_owners_direct_and_periodic_sources_only_while_active() {
+        use super::super::multiplayer::{Companion, Companions};
+        for origin in [Origin::Skill, Origin::Talent, Origin::Item, Origin::Legendary] {
+            for owner in [None, Some(42)] {
+                for periodic in [false, true] {
+                    let mut damage = Vec::new();
+                    for until in [None, Some(1.0), Some(0.0)] {
+                        let (mut world, targets) = legendary_world("fireball", 6, &[3.0]);
+                        world.resource_mut::<Run>().legendary.equipped.clear();
+                        if let Some(id) = owner {
+                            let mut guest = world.remove_resource::<Run>().unwrap();
+                            guest.owner = owner;
+                            world.insert_resource(Run::default());
+                            let entity = world.spawn(Transform::default()).id();
+                            let mut players = Companions::default();
+                            players.0.insert(id, Companion {
+                                entity, run: guest, physics: Hero { vy: 0.0, air: 0.0 },
+                                offer: default(), offer_id: 0,
+                            });
+                            world.insert_resource(players);
+                        }
+                        if let Some(until) = until {
+                            // Neither attacker is the player who provoked this enemy.
+                            world.entity_mut(targets[0]).insert(super::super::talent_runtime::Taunted {
+                                owner: Some(99), until,
+                            });
+                        }
+                        if periodic {
+                            world.get_mut::<Enemy>(targets[0]).unwrap().dots.push(enemies::Dot {
+                                item_source: None, meta: default(), origin, owner, skill: "fireball",
+                                meter_source: None, tags: Some(engine::Tags::FIRE | engine::Tags::DOT | engine::Tags::DAMAGE),
+                                dps: 100.0, left: 5.0, tick: 0.0,
+                            });
+                        } else {
+                            let mut hit = Hit::direct("fireball", targets[0], 100.0, false);
+                            hit.origin = origin;
+                            hit.owner = owner;
+                            hit.tags = Some(engine::Tags::FIRE | engine::Tags::DAMAGE);
+                            world.write_message(hit);
+                        }
+                        world.run_system_once(apply_hits).unwrap();
+                        damage.push(1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp);
+                    }
+                    assert!(damage[0] > 0.0, "{origin:?} {owner:?} periodic={periodic}");
+                    assert!((damage[1] - damage[0] * 1.25).abs() < 0.001, "{damage:?}");
+                    assert!((damage[2] - damage[0]).abs() < 0.001, "{damage:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn protection_reduces_direct_and_periodic_damage_multiplicatively_with_elite_defenses() {
         let (mut world, targets) = legendary_world("fireball", 6, &[3.0]);
         let config = include_str!("../../../../config/survivors-expeditions.toml");
@@ -2572,9 +2654,7 @@ mod spell_engine_integration_tests {
                 43,
                 [
                     engine::Change::LifeLeech(1.0),
-                    engine::Change::BleedChance(1.0),
-                    engine::Change::IgniteChance(1.0),
-                    engine::Change::ChillChance(1.0),
+                    engine::Change::AilmentChance(1.0),
                     engine::Change::KnockbackChance(1.0),
                 ]
                 .into_iter()
@@ -2619,6 +2699,45 @@ mod spell_engine_integration_tests {
         ));
         world.run_system_once(apply_hits).unwrap();
         assert_eq!(world.get::<Enemy>(geared_target).unwrap().slow, 0.75);
+        world.resource_mut::<Messages<Hit>>().clear();
+        world.resource_mut::<Messages<Hit>>().write(Hit::direct(
+            "wrath",
+            geared_target,
+            1.0,
+            false,
+        ));
+        world.run_system_once(apply_hits).unwrap();
+        let poison = world.get::<Enemy>(geared_target).unwrap().dots.iter()
+            .find(|dot| dot.skill == "proc_poison").unwrap();
+        assert!((poison.dps - 0.18).abs() < 0.001);
+        assert!((poison.left - 5.9).abs() < 0.001);
+        assert!(poison.meta.family == super::super::items::legendary::periodic::Family::Poison);
+        // Only damaging skill impacts apply ailments: zero-damage events,
+        // triggered hits, item/talent hits and periodic ticks cannot reapply them.
+        let stacks = world.get::<Enemy>(geared_target).unwrap().dots.len();
+        for (skill, damage, triggered, origin) in [
+            ("wrath", 0.0, false, Origin::Skill),
+            ("wrath", 0.01, true, Origin::Skill),
+            ("wrath", 0.01, false, Origin::Item),
+            ("wrath", 0.01, false, Origin::Talent),
+            ("proc_poison", 0.01, false, Origin::Skill),
+        ] {
+            world.resource_mut::<Messages<Hit>>().clear();
+            let mut hit = Hit::direct(skill, geared_target, damage, false);
+            hit.triggered = triggered;
+            hit.origin = origin;
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            assert_eq!(world.get::<Enemy>(geared_target).unwrap().dots.len(), stacks);
+        }
+        for dot in &mut world.get_mut::<Enemy>(geared_target).unwrap().dots {
+            dot.tick = 0.0;
+        }
+        world.resource_mut::<Messages<Hit>>().clear();
+        let before_tick = world.get::<Enemy>(geared_target).unwrap().hp;
+        world.run_system_once(apply_hits).unwrap();
+        assert!(world.get::<Enemy>(geared_target).unwrap().hp < before_tick);
+        assert_eq!(world.get::<Enemy>(geared_target).unwrap().dots.len(), stacks);
         world.resource_mut::<Messages<Hit>>().clear();
         world.resource_mut::<Messages<Hit>>().write(Hit::direct(
             "multi_shot",
@@ -4400,6 +4519,7 @@ pub(super) fn tick_areas(
 pub(super) fn apply_hits(
     ranks: Query<&super::enemies::Rank>,
     protection: Query<&super::special_mobs::Protection>,
+    taunts: Query<&super::talent_runtime::Taunted>,
     mut commands: Commands,
     time: Res<Time>,
     mut run: ResMut<Run>,
@@ -4789,6 +4909,7 @@ pub(super) fn apply_hits(
             mods.bleed = 0.0;
             mods.ignite = 0.0;
             mods.chill = 0.0;
+            mods.poison = 0.0;
             mods.knockback = 0.0;
         }
         let talent_multiplier = if h.origin == Origin::Legendary {
@@ -4819,7 +4940,8 @@ pub(super) fn apply_hits(
         let dmg = engine::damage_on_target(raw, en.hp, en.max_hp, en.boss, h.effect)
             * (1.0 - final_reduction)
             * elite_multiplier
-            * protection_multiplier;
+            * protection_multiplier
+            * taunts.get(e).map_or(1.0, |taunt| taunt.damage_multiplier(now));
         if dmg > 0.0 {
             let immortal = super::training::dummy(&en);
             let effective = if immortal {
@@ -4885,9 +5007,11 @@ pub(super) fn apply_hits(
             if h.can_proc() {
                 super::items::combat::record_hit_from(run, h.skill, mods.tags, h.cast_id);
             }
-            for (chance, factor, seconds, spell) in
-                [(mods.bleed, 0.20, 4.0, 1943), (mods.ignite, 0.25, 3.0, 133)]
-            {
+            for (chance, factor, seconds, spell) in [
+                (mods.bleed, 0.20, 4.0, 1943),
+                (mods.ignite, 0.25, 3.0, 133),
+                (mods.poison, 0.18, 6.0, 2818),
+            ] {
                 if h.can_proc() && en.hp > 0.0 && chance > 0.0 {
                     let roll = rng.f32();
                     if roll >= chance.clamp(0.0, 1.0) {
@@ -4896,12 +5020,14 @@ pub(super) fn apply_hits(
                     let meter_source = super::talent_runtime::ailment_source(run, spell, roll)
                         .or(h.meter_source)
                         .or(Some(h.skill));
-                    let key = if spell == 1943 {
-                        "proc_bleed"
-                    } else {
-                        "proc_ignite"
+                    let key = match spell {
+                        1943 => "proc_bleed",
+                        2818 => "proc_poison",
+                        _ => "proc_ignite",
                     };
-                    if !super::procs::ready(run, key, tags) {
+                    // Bleed chance is evaluated per skill impact, not once per global
+                    // proc cooldown: every victim of Deep Wounds must receive its bleed.
+                    if spell != 1943 && !super::procs::ready(run, key, tags) {
                         continue;
                     }
                     let p =
@@ -5179,7 +5305,8 @@ pub(super) fn apply_hits(
                         * (1.0 - resistance.reduction(tags))
                         * (1.0 - final_reduction)
                         * elite_multiplier
-                        * protection_multiplier;
+                        * protection_multiplier
+                        * taunts.get(e).map_or(1.0, |taunt| taunt.damage_multiplier(now));
                 dealt += amount;
                 *periodic_numbers
                     .entry((d.owner, fx.periodic_color(tags)))

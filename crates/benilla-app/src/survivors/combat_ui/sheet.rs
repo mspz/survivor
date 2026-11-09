@@ -647,6 +647,7 @@ pub(super) fn spell_stats(run: &Run, index: usize) -> String {
         ("Bleed chance", hit.bleed.clamp(0.0, 1.0)),
         ("Ignite chance", hit.ignite.clamp(0.0, 1.0)),
         ("Chill chance", hit.chill.clamp(0.0, 1.0)),
+        ("Poison chance", hit.poison.clamp(0.0, 1.0)),
         ("Knockback chance", hit.knockback.clamp(0.0, 1.0)),
     ] {
         if value > 0.0 {
@@ -679,18 +680,19 @@ fn refresh_character_xp(
 
 fn refresh_paragon(
     account: Res<talents::Account>,
+    roster: Res<super::super::characters::Roster>,
     mut labels: Query<&mut Text, With<ParagonLabel>>,
     mut fills: Query<&mut Node, With<ParagonFill>>,
 ) {
     let active = talents::level(account.xp) == 60;
-    let progress = super::super::paragon::progress(account.xp);
+    let progress = super::super::paragon::progress_shared(roster.paragon_xp());
     let label = if active {
         format!(
-            "Paragon {} - {} / {} XP",
+            "Account Paragon {} - {} / {} XP",
             progress.level, progress.xp, progress.needed
         )
     } else {
-        "Paragon - Available at level 60".to_owned()
+        format!("Account Paragon {} - Earn XP at character level 60", progress.level)
     };
     for mut text in &mut labels {
         if text.0 != label {
@@ -698,11 +700,7 @@ fn refresh_paragon(
         }
     }
     for mut node in &mut fills {
-        node.width = Val::Percent(if active {
-            (progress.xp as f64 / progress.needed as f64 * 100.0) as f32
-        } else {
-            0.0
-        });
+        node.width = Val::Percent((progress.xp as f64 / progress.needed as f64 * 100.0) as f32);
     }
 }
 
@@ -869,6 +867,7 @@ mod tests {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         world.insert_resource(talents::Account::fresh());
+        world.insert_resource(crate::survivors::characters::Roster::paragon_fixture(0));
         let label = world.spawn((ParagonLabel, Text::new(""))).id();
         let fill = world.spawn((ParagonFill, Node::default())).id();
         let character_label = world.spawn((CharacterXpLabel, Text::new(""))).id();
@@ -883,10 +882,16 @@ mod tests {
         world.run_system_once(refresh_paragon).unwrap();
         assert!(world.get::<Text>(label).unwrap().0.contains("level 60"));
         world.resource_mut::<talents::Account>().xp = talents::threshold(60) + 125;
+        world.insert_resource(crate::survivors::characters::Roster::paragon_fixture(talents::threshold(60) + 125));
         world.run_system_once(refresh_paragon).unwrap();
         assert!(world.get::<Text>(label).unwrap().0.contains("Paragon 1"));
         assert!(world.get::<Text>(label).unwrap().0.contains("25 / 200 XP"));
         assert_eq!(world.get::<Node>(fill).unwrap().width, Val::Percent(12.5));
+        world.resource_mut::<talents::Account>().xp = 0;
+        world.run_system_once(refresh_paragon).unwrap();
+        assert!(world.get::<Text>(label).unwrap().0.contains("Account Paragon 1"));
+        assert_eq!(world.get::<Node>(fill).unwrap().width, Val::Percent(12.5));
+        world.resource_mut::<talents::Account>().xp = talents::threshold(60) + 125;
         world.run_system_once(refresh_character_xp).unwrap();
         assert_eq!(world.get::<Node>(character_fill).unwrap().width, Val::Percent(100.0));
         assert!(world.get::<Text>(character_label).unwrap().0.contains("Maximum"));

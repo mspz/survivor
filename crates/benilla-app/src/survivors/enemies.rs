@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use benilla_world::rig_anim::GlobalSeqDrive;
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 use bevy::prelude::*;
 
 use super::abilities::Hit;
@@ -70,7 +70,7 @@ fn roll_rank(roll: f32, config: &super::expedition_config::Config, map: usize) -
     let zone = data::CAMPAIGN
         .iter()
         .position(|&m| m == map)
-        .map_or(0, |i| i + 1);
+        .map_or(if data::dungeon(map) { data::CAMPAIGN.len() } else { 0 }, |i| i + 1);
     let mut threshold = 0.0;
     for (rank, chance, first_zone) in [
         (Rank::Elite, config.elites.chance, config.elites.first_zone),
@@ -262,13 +262,18 @@ fn spawn_rank(
     } else {
         run.expeditions.stats(run.expedition_map, boss)
     };
+    let modifiers = if training { Default::default() } else { run.dungeon_modifiers() };
+    let tuning = data::dungeon(run.expedition_map).then(|| super::dungeon_config::get(run.expedition_map));
+    let actor = tuning.and_then(|c| c.actor(def.name, boss));
+    let base_health = base_health * actor.map_or(1.0, |a| a.health_multiplier);
+    let base_damage = base_damage * actor.map_or(1.0, |a| a.damage_multiplier) * modifiers.damage();
     let scale = if training {
         1.0
     } else {
         run.expeditions.factor(run.elapsed)
     };
     let size_multiplier = if boss {
-        2.0
+        tuning.map_or(2.0, |c| c.boss_size_multiplier)
     } else if elite {
         run.expeditions.elites.size_multiplier
     } else {
@@ -308,7 +313,7 @@ fn spawn_rank(
             def,
             hp,
             max_hp: hp,
-            speed: def.speed
+            speed: def.speed * modifiers.movement()
                 * if rank == Rank::Sprinter {
                     run.expeditions.sprinters.speed_multiplier
                 } else {
@@ -322,7 +327,7 @@ fn spawn_rank(
                 def.xp
             },
             boss,
-            attack_cd: 0.5,
+            attack_cd: tuning.map_or(0.5, |c| c.initial_attack_delay),
             slow: 1.0,
             slow_t: 0.0,
             root_t: 0.0,
@@ -468,29 +473,35 @@ pub(super) fn spawn_enemies(
     run.expedition_map = selection.map;
     let zone = run.expeditions.zone(selection.map);
     let roster = data::roster(selection.map);
-    let pool = data::wave_pool(elapsed, roster.enemies.len());
+    let pool = data::wave_pool(run.expeditions.progress(elapsed) * data::VICTORY_SECS, roster.enemies.len());
 
-    let clearing = elapsed >= data::CLEAR_SECS;
+    let dungeon_balance = data::dungeon(selection.map).then(|| super::dungeon_config::get(selection.map));
+    let boss_interval = dungeon_balance.map_or(data::BOSS_EVERY_SECS, |c| c.boss_wave_seconds);
+    let clearing = !data::dungeon(selection.map) && elapsed >= data::CLEAR_SECS;
     let due_bosses = if clearing {
         roster.bosses.len() as u32
     } else {
-        ((elapsed / data::BOSS_EVERY_SECS) as u32).min(roster.bosses.len() as u32)
+        ((elapsed / boss_interval) as u32).min(roster.bosses.len() as u32)
     };
+    let mut dungeon_boss_active = data::dungeon(selection.map)
+        && enemies.iter().any(|enemy| enemy.boss && !enemy.dead);
     while run.bosses < due_bosses {
+        if dungeon_boss_active { break; }
         let hpos = spawner.next_center(&centers);
         let def = &roster.bosses[run.bosses as usize];
         let a = rng.range(0.0, std::f32::consts::TAU);
         let pos = ground(
             &world,
-            hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 30.0,
+            hpos + Vec3::new(a.cos(), 0.0, a.sin()) * dungeon_balance.map_or(30.0, |c| c.boss_spawn_radius),
             hpos.y,
         );
-        for i in 0..zone.boss_quantity {
+        for i in 0..zone.boss_quantity + run.dungeon_modifiers().extra_bosses() {
             let offset = Vec3::new((i % 4) as f32 * 3.0, 0.0, (i / 4) as f32 * 3.0);
             let position = ground(&world, pos + offset, hpos.y);
             spawn_enemy(&mut commands, &mut run, def, position, hpos, true);
         }
         run.bosses += 1;
+        dungeon_boss_active = data::dungeon(selection.map);
         run.banner = Some((format!("{} approaches!", def.name), 4.0));
     }
 
@@ -504,12 +515,13 @@ pub(super) fn spawn_enemies(
     }
     // Half way between bosses, a closing ring of the moment's weakest.
     let mut ring_spawned = 0;
-    let due_rings = ((elapsed + data::BOSS_EVERY_SECS / 2.0) / data::BOSS_EVERY_SECS) as u32;
+    let due_rings = ((elapsed + boss_interval / 2.0) / boss_interval) as u32;
     if run.rings < due_rings {
         run.rings = due_rings;
         let def = &roster.enemies[pool[0]];
         let alive = enemies.iter().filter(|e| !e.dead && !e.boss).count();
-        let n = (((28.0 + data::progress(elapsed) * 60.0) * zone.monster_quantity).ceil() as usize)
+        let n = (((dungeon_balance.map_or(28.0, |c| c.ring_start)
+            + run.expeditions.progress(elapsed) * dungeon_balance.map_or(60.0, |c| c.ring_growth)) * zone.monster_quantity).ceil() as usize)
             .min(run.expeditions.max_monsters.saturating_sub(alive));
         ring_spawned = n;
         for i in 0..n {
@@ -518,7 +530,7 @@ pub(super) fn spawn_enemies(
             let a = (i / centers.len()) as f32 / count as f32 * std::f32::consts::TAU;
             let pos = ground(
                 &world,
-                hpos + Vec3::new(a.cos(), 0.0, a.sin()) * 26.0,
+                hpos + Vec3::new(a.cos(), 0.0, a.sin()) * dungeon_balance.map_or(26.0, |c| c.ring_radius),
                 hpos.y,
             );
             super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, pos, hpos);
@@ -536,12 +548,12 @@ pub(super) fn spawn_enemies(
     if alive >= target {
         return;
     }
-    let n = (((target - alive) as f32) / 6.0).ceil().min(4.0) as usize;
+    let n = (((target - alive) as f32) / dungeon_balance.map_or(6.0, |c| c.replenish_divisor)).ceil().min(dungeon_balance.map_or(4, |c| c.replenish_max_per_frame) as f32) as usize;
     for _ in 0..n {
         let hpos = spawner.next_center(&centers);
         let def = &roster.enemies[pool[rng.index(pool.len())]];
         let a = rng.range(0.0, std::f32::consts::TAU);
-        let r = rng.range(34.0, 42.0);
+        let r = rng.range(dungeon_balance.map_or(34.0, |c| c.spawn_radius_min), dungeon_balance.map_or(42.0, |c| c.spawn_radius_max));
         let pos = ground(&world, hpos + Vec3::new(a.cos(), 0.0, a.sin()) * r, hpos.y);
         super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, pos, hpos);
     }
@@ -586,6 +598,11 @@ pub(super) fn move_enemies(
         return;
     };
     let hpos = htf.translation;
+    let contact_intervals = if data::dungeon(run.expedition_map) {
+        let c = super::dungeon_config::get(run.expedition_map);
+        [c.monster_attack_interval, c.boss_attack_interval]
+    } else { [1.3, 1.0] };
+    let attack_rate = run.dungeon_modifiers().attack_rate();
     for missile in missiles.advance(run.elapsed, dt) {
         if let Some(owner) = missile.owner {
             if remotes
@@ -716,7 +733,7 @@ pub(super) fn move_enemies(
             if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             mv.speed = 0.0;
             mv.flags = 0;
-            e.attack_cd -= dt;
+            e.attack_cd -= dt * attack_rate;
             continue;
         };
         let target_run = if let Some(owner) = owner {
@@ -731,7 +748,7 @@ pub(super) fn move_enemies(
             &mut *run
         };
         let hero_down = target_run.dead_t.is_some();
-        e.attack_cd -= dt;
+        e.attack_cd -= dt * attack_rate;
         let pos = tf.translation;
         let to_hero = flat(hpos - pos);
         let dist = to_hero.length();
@@ -767,6 +784,7 @@ pub(super) fn move_enemies(
         let shove = push.get(&ent).copied().unwrap_or_default();
         let mut next = pos + step * dt + shove * (dt * 8.0).min(0.5);
         next = ground(&world, next, pos.y);
+        next = world.constrain(pos, next);
         tf.translation = next;
         if speed > 0.0 {
             mv.speed = speed;
@@ -803,7 +821,7 @@ pub(super) fn move_enemies(
             && e.attack_cd <= 0.0
             && !hero_down
         {
-            e.attack_cd = if e.boss { 1.0 } else { 1.3 };
+            e.attack_cd = contact_intervals[usize::from(e.boss)];
             let raw = e.damage * e.weaken;
             let roll = if target_run.equipment.block > 0.0
                 || super::talent_runtime::block_chance(target_run) > 0.0
@@ -1132,6 +1150,43 @@ pub(super) fn still_gems(
 mod elite_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn dungeon_modifiers_apply_to_real_spawns_and_add_a_boss_per_wave() {
+        let mut world = World::new();
+        crate::survivors::geometry::init_test_world(&mut world);
+        world.init_resource::<Time>();
+        world.init_resource::<Spawner>();
+        world.insert_resource(Rng(42));
+        let map = data::DUNGEONS[0];
+        let mut run = Run { expedition_map: map, elapsed: data::BOSS_EVERY_SECS, ..default() };
+        for index in [0, 1, 3] { run.dungeon_mods.toggle(index); }
+        world.insert_resource(run);
+        world.insert_resource(Selection { map, ..default() });
+        world.spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
+        world.run_system_once(spawn_enemies).unwrap();
+        let run = world.resource::<Run>();
+        let expected_damage = run.expeditions.stats(map, true).1 * 1.25
+            * run.expeditions.factor(run.elapsed);
+        let bosses: Vec<_> = world.query::<&Enemy>().iter(&world).filter(|e| e.boss)
+            .map(|e| (e.speed, e.def.speed, e.damage)).collect();
+        assert_eq!(bosses.len(), 2);
+        for &(speed, base_speed, damage) in &bosses {
+            assert!((speed - base_speed * 1.3).abs() < 0.001);
+            assert!((damage - expected_damage).abs() < 0.001);
+        }
+        world.run_system_once(scale_enemies).unwrap();
+        assert!(world.query::<&Enemy>().iter(&world).filter(|e| e.boss)
+            .all(|boss| (boss.damage - expected_damage).abs() < 0.001));
+        world.resource_mut::<Run>().elapsed = data::VICTORY_SECS;
+        world.run_system_once(spawn_enemies).unwrap();
+        assert_eq!(world.resource::<Run>().bosses, 1, "living bosses block the next wave");
+        for mut enemy in world.query::<&mut Enemy>().iter_mut(&mut world) {
+            if enemy.boss { enemy.dead = true; }
+        }
+        world.run_system_once(spawn_enemies).unwrap();
+        assert_eq!(world.resource::<Run>().bosses, 2, "only one overdue wave starts at a time");
+        assert_eq!(world.query::<&Enemy>().iter(&world).filter(|e| e.boss && !e.dead).count(), 2);
+    }
     #[test]
     fn variants_unlock_across_the_campaign_and_accumulate_without_changing_their_chances() {
         let config = super::super::expedition_config::Config::default();

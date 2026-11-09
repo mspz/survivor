@@ -7,11 +7,12 @@ use super::{
     units::{flat, yaw_toward, Fx, COLOR_HURT},
     Phase, Rng, Run,
 };
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod visuals;
+mod dungeons;
 
 // Shared by collision checks and ground telegraphs.
 const CONE_RADIUS: f32 = 13.0 * 1.5;
@@ -30,6 +31,7 @@ pub(super) enum Spell {
     Charge,
     Mortars,
     Rings,
+    Dungeon(dungeons::Ability),
 }
 impl Spell {
     fn windup(self) -> f32 {
@@ -38,6 +40,7 @@ impl Spell {
             Self::Charge => 1.8,
             Self::Mortars => 2.0,
             Self::Rings => 2.4,
+            Self::Dungeon(ability) => ability.windup(),
         }
     }
     fn cooldown(self) -> f32 {
@@ -46,6 +49,7 @@ impl Spell {
             Self::Charge => 12.0,
             Self::Mortars => 10.0,
             Self::Rings => 14.0,
+            Self::Dungeon(ability) => ability.cooldown(),
         }
     }
     fn range(self) -> f32 {
@@ -54,6 +58,7 @@ impl Spell {
             Self::Charge => 28.0,
             Self::Mortars => 45.0,
             Self::Rings => RING_BANDS[4].1,
+            Self::Dungeon(ability) => ability.range(),
         }
     }
     fn multiplier(self) -> f32 {
@@ -62,6 +67,7 @@ impl Spell {
             Self::Charge => 1.6,
             Self::Mortars => 1.4,
             Self::Rings => 1.5,
+            Self::Dungeon(ability) => ability.damage(),
         }
     }
     fn source(self) -> &'static str {
@@ -70,10 +76,12 @@ impl Spell {
             Self::Charge => "Boss: charge",
             Self::Mortars => "Boss: mortar barrage",
             Self::Rings => "Boss: concentric rings",
+            Self::Dungeon(ability) => ability.source(),
         }
     }
     fn tags(self) -> Tags {
         match self {
+            Self::Dungeon(ability) => ability.tags(),
             Self::Mortars => Tags::FIRE | Tags::SPELL | Tags::AREA,
             _ => Tags::PHYSICAL | Tags::AREA,
         }
@@ -91,10 +99,17 @@ pub(super) struct Warning {
     /// Optional circular footprint: radius and windup seconds for monster death explosions.
     #[serde(default)]
     pub circle: Option<[f32; 2]>,
+    #[serde(default)]
+    pub zones: Vec<dungeons::Zone>,
+    #[serde(default)]
+    pub windup_seconds: Option<f32>,
 }
 impl Warning {
+    fn windup(&self) -> f32 {
+        self.circle.map_or_else(|| self.windup_seconds.unwrap_or(self.spell.windup()), |c| c[1])
+    }
     pub fn progress(&self) -> f32 {
-        (self.elapsed / self.circle.map_or(self.spell.windup(), |c| c[1])).clamp(0.0, 1.0)
+        (self.elapsed / self.windup()).clamp(0.0, 1.0)
     }
     fn new(spell: Spell, origin: Vec3, targets: &[Player], rng: &mut Rng) -> Self {
         let nearest = targets
@@ -131,6 +146,8 @@ impl Warning {
             mortars,
             elapsed: 0.0,
             circle: None,
+            windup_seconds: None,
+            zones: vec![],
         }
     }
     pub(super) fn contains(&self, pos: Vec3, radius: f32) -> bool {
@@ -140,6 +157,7 @@ impl Warning {
         let delta = flat(pos - Vec3::from_array(self.origin));
         let distance = delta.length();
         match self.spell {
+            Spell::Dungeon(_) => self.zones.iter().any(|zone| zone.contains(pos, radius)),
             Spell::Cone => {
                 let direction = Vec3::from_array(self.direction);
                 let forward = delta.dot(direction);
@@ -181,11 +199,12 @@ pub(super) struct Skills {
     slots: Vec<Slot>,
     cast: Option<Cast>,
     recovery: f32,
+    dungeon_phase: u8,
 }
 impl Skills {
-    fn roll(elapsed: f32, rng: &mut Rng) -> Self {
+    fn roll(elapsed: f32, extra: usize, rng: &mut Rng) -> Self {
         let mut pool = vec![Spell::Cone, Spell::Charge, Spell::Mortars, Spell::Rings];
-        let count = if elapsed < 600.0 { 1 } else { 2 };
+        let count = ((if elapsed < 600.0 { 1 } else { 2 }) + extra).min(pool.len());
         let slots = (0..count)
             .map(|i| Slot {
                 spell: pool.remove(rng.index(pool.len())),
@@ -196,6 +215,7 @@ impl Skills {
             slots,
             cast: None,
             recovery: 0.0,
+            dungeon_phase: 0,
         }
     }
     pub fn busy(&self) -> bool {
@@ -280,6 +300,13 @@ pub(super) fn tick(
             })
         })
         .collect();
+    let modifiers = run.dungeon_modifiers();
+    let dungeon_run = super::data::dungeon(run.expedition_map);
+    // Extra bosses alternate their large hazards; their safe areas cannot cancel each other.
+    let mut dungeon_busy = bosses.iter_mut().any(|(_, enemy, _, _, skills)| {
+        !enemy.dead && skills.as_ref().is_some_and(|s| s.cast.as_ref()
+            .is_some_and(|cast| matches!(cast.warning.spell, Spell::Dungeon(_))))
+    });
     for (entity, enemy, mut tf, mut movement, skills) in &mut bosses {
         if !enemy.boss {
             continue;
@@ -287,9 +314,24 @@ pub(super) fn tick(
         let Some(mut skills) = skills else {
             commands
                 .entity(entity)
-                .insert(Skills::roll(run.elapsed, &mut rng));
+                .insert(if dungeon_run {
+                    dungeons::loadout(run.expedition_map, enemy.def.name, modifiers.extra_spells())
+                } else { Skills::roll(run.elapsed, modifiers.extra_spells(), &mut rng) });
             continue;
         };
+        if dungeon_run && skills.slots.iter().any(|s| !matches!(s.spell, Spell::Dungeon(_))) {
+            *skills = dungeons::loadout(run.expedition_map, enemy.def.name, modifiers.extra_spells());
+        }
+        if dungeon_run && !enemy.dead {
+            let phase = dungeons::phase_for(enemy.hp, enemy.max_hp, run.expedition_map).max(skills.dungeon_phase);
+            if phase != skills.dungeon_phase {
+                skills.dungeon_phase = phase;
+                skills.cast = None;
+                skills.recovery = if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 };
+                for (index, slot) in skills.slots.iter_mut().enumerate() { slot.left = super::dungeon_config::get(run.expedition_map).spells.phase_pause + index as f32 * super::dungeon_config::get(run.expedition_map).spells.phase_stagger; }
+                run.banner = Some((format!("{} — Phase {}", enemy.def.name, phase + 1), 4.0));
+            }
+        }
         if enemy.dead
             || enemy.hp <= 0.0
             || targets.is_empty()
@@ -297,32 +339,45 @@ pub(super) fn tick(
             || enemy.fear_t > 0.0
         {
             if skills.cast.take().is_some() {
-                skills.recovery = 2.0;
+                skills.recovery = if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 };
             }
             continue;
         }
         for slot in &mut skills.slots {
-            slot.left = (slot.left - dt).max(0.0);
+            slot.left = (slot.left - dt * modifiers.attack_rate()).max(0.0);
         }
-        skills.recovery = (skills.recovery - dt).max(0.0);
-        if skills.cast.is_none() && skills.recovery <= 0.0 {
+        skills.recovery = (skills.recovery - dt * modifiers.attack_rate()).max(0.0);
+        if skills.cast.is_none() && skills.recovery <= 0.0 && (!dungeon_run || !dungeon_busy) {
             let distance = targets
                 .iter()
                 .map(|p| flat(p.pos - tf.translation).length())
                 .fold(f32::INFINITY, f32::min);
+            let health_phase = skills.dungeon_phase;
             if let Some(slot) = skills
                 .slots
                 .iter_mut()
                 .find(|s| s.left <= 0.0 && distance <= s.spell.range())
             {
-                let warning = Warning::new(slot.spell, tf.translation, &targets, &mut rng);
-                slot.left = slot.spell.cooldown() + slot.spell.windup();
+                let mut warning = match slot.spell {
+                    Spell::Dungeon(ability) => {
+                        dungeon_busy = true;
+                        dungeons::warning(ability, tf.translation, health_phase, &targets)
+                    }
+                    _ => Warning::new(slot.spell, tf.translation, &targets, &mut rng),
+                };
+                if matches!(slot.spell, Spell::Dungeon(_)) {
+                    warning.windup_seconds = Some(slot.spell.windup() * modifiers.boss_warning_multiplier());
+                }
+                slot.left = slot.spell.cooldown() + warning.windup()
+                    + if let Spell::Dungeon(ability) = slot.spell { ability.duration() } else { 0.0 };
                 tf.rotation =
                     Quat::from_rotation_y(yaw_toward(Vec3::from_array(warning.direction)));
                 skills.cast = Some(Cast {
                     warning,
                     hit: vec![],
                 });
+                // Give the additional arsenal spells a turn, even under fast recovery.
+                if dungeon_run { skills.slots.rotate_left(1); }
             }
         }
         let Some(cast) = skills.cast.as_mut() else {
@@ -331,20 +386,30 @@ pub(super) fn tick(
         let before = cast.warning.elapsed;
         cast.warning.elapsed += dt;
         let w = &cast.warning;
-        let windup = w.spell.windup();
+        let windup = w.windup();
         movement.speed = 0.0;
         movement.flags = 0;
         let charge = w.spell == Spell::Charge;
-        let end = windup + if charge { 0.65 } else { 0.2 };
-        if w.elapsed >= windup {
+        let dungeon = matches!(w.spell, Spell::Dungeon(_));
+        let end = windup + match w.spell {
+            Spell::Dungeon(ability) => ability.duration(),
+            _ if charge => 0.65,
+            _ => 0.2,
+        };
+        let pulse = if dungeon { super::dungeon_config::get(run.expedition_map).spells.pulse_interval } else { 1.0 };
+        if dungeon && (before < windup || ((before - windup) / pulse).floor() != ((w.elapsed - windup) / pulse).floor()) {
+            cast.hit.clear();
+        }
+        if w.elapsed >= windup && before < end && (!dungeon || w.elapsed < end) {
             let from = ((before - windup) / 0.65).clamp(0.0, 1.0) * 24.0;
             let to = ((w.elapsed - windup) / 0.65).clamp(0.0, 1.0) * 24.0;
             if charge {
-                tf.translation = enemies::ground(
+                let desired = enemies::ground(
                     &world,
                     Vec3::from_array(w.origin) + Vec3::from_array(w.direction) * to,
                     tf.translation.y,
                 );
+                tf.translation = world.constrain(tf.translation, desired);
                 movement.speed = 24.0 / 0.65;
                 movement.flags = crate::creature_anim::move_flags::FORWARD;
             }
@@ -358,7 +423,7 @@ pub(super) fn tick(
                     if along + HERO_RADIUS < from || along - HERO_RADIUS > to {
                         continue;
                     }
-                } else if before >= windup {
+                } else if !dungeon && before >= windup {
                     continue;
                 }
                 if let Some(player) =
@@ -372,7 +437,7 @@ pub(super) fn tick(
         warnings.0.push(w.clone());
         if w.elapsed >= end {
             skills.cast = None;
-            skills.recovery = 2.0;
+            skills.recovery = if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 };
             movement.speed = 0.0;
             movement.flags = 0;
         }
@@ -393,6 +458,163 @@ fn clear(mut warnings: ResMut<Warnings>) {
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn dungeon_phases_replace_locked_zones_and_do_not_roll_back_when_healed() {
+        let (mut world, player, boss) = arena(Spell::Cone);
+        let map = super::super::data::DUNGEONS[0];
+        world.resource_mut::<Run>().expedition_map = map;
+        let center = hero::arena(&super::super::data::MAPS[map]);
+        world.get_mut::<Transform>(player).unwrap().translation = center + Vec3::X * 20.0;
+        world.get_mut::<Transform>(boss).unwrap().translation = center;
+        advance(&mut world, 0.01);
+        assert!(world.get::<Skills>(boss).unwrap().slots.iter().all(|s| matches!(s.spell, Spell::Dungeon(_))));
+        let maximum = world.get::<Enemy>(boss).unwrap().max_hp;
+        for (fraction, expected) in [(0.69, 1), (0.90, 1), (0.34, 2), (0.80, 2)] {
+            world.get_mut::<Enemy>(boss).unwrap().hp = maximum * fraction;
+            advance(&mut world, 0.01);
+            let skills = world.get::<Skills>(boss).unwrap();
+            assert_eq!(skills.dungeon_phase, expected);
+            assert!(skills.cast.is_none());
+        }
+    }
+    #[test]
+    fn dungeon_hazards_warn_then_pulse_and_stop_hitting_players_who_leave() {
+        let (mut world, player, boss) = arena(Spell::Cone);
+        let map = super::super::data::DUNGEONS[0];
+        world.resource_mut::<Run>().expedition_map = map;
+        let center = hero::arena(&super::super::data::MAPS[map]);
+        world.get_mut::<Transform>(player).unwrap().translation = center + Vec3::X * 20.0;
+        world.get_mut::<Transform>(boss).unwrap().translation = center;
+        let mut skills = dungeons::loadout(map, "High Interrogator Gerstahn", 0);
+        skills.slots.retain(|s| s.spell.windup() == 4.5);
+        skills.slots[0].left = 0.0;
+        world.entity_mut(boss).insert(skills);
+        advance(&mut world, 0.01);
+        assert_eq!(world.resource::<Run>().hp, 100.0);
+        advance(&mut world, 2.0);
+        assert_eq!(world.resource::<Run>().hp, 100.0);
+        advance(&mut world, 2.5);
+        let first = world.resource::<Run>().hp;
+        assert!(first < 100.0);
+        advance(&mut world, 0.1);
+        assert_eq!(world.resource::<Run>().hp, first);
+        advance(&mut world, 1.0);
+        let second = world.resource::<Run>().hp;
+        assert!(second < first);
+        world.get_mut::<Transform>(player).unwrap().translation = center + Vec3::X * 55.0;
+        advance(&mut world, 1.0);
+        assert_eq!(world.resource::<Run>().hp, second);
+        world.get_mut::<Enemy>(boss).unwrap().dead = true;
+        advance(&mut world, 0.1);
+        assert!(world.resource::<Warnings>().0.is_empty());
+    }
+    #[test]
+    fn extra_dungeon_bosses_never_cast_overlapping_large_hazards() {
+        let (mut world, player, first) = arena(Spell::Cone);
+        let map = super::super::data::DUNGEONS[0];
+        world.resource_mut::<Run>().expedition_map = map;
+        let center = hero::arena(&super::super::data::MAPS[map]);
+        world.get_mut::<Transform>(player).unwrap().translation = center + Vec3::X * 20.0;
+        world.get_mut::<Transform>(first).unwrap().translation = center;
+        let second = world.run_system_once(move |mut commands: Commands, mut run: ResMut<Run>| {
+            enemies::spawn_enemy(&mut commands, &mut run, &super::super::data::roster(map).bosses[1],
+                center, center + Vec3::X, true)
+        }).unwrap();
+        for boss in [first, second] {
+            let mut skills = dungeons::loadout(map, "High Interrogator Gerstahn", 1);
+            for slot in &mut skills.slots { slot.left = 0.0; }
+            world.entity_mut(boss).insert(skills);
+        }
+        advance(&mut world, 0.01);
+        assert_eq!(world.resource::<Warnings>().0.len(), 1);
+        assert_eq!([first, second].iter().filter(|&&e| world.get::<Skills>(e).unwrap().cast.is_some()).count(), 1);
+    }
+    #[test]
+    fn dungeon_arsenal_adds_a_distinct_spell_and_frenzy_accelerates_spell_recovery() {
+        let (mut world, _, boss) = arena(Spell::Cone);
+        {
+            let mut run = world.resource_mut::<Run>();
+            run.expedition_map = super::super::data::DUNGEONS[0];
+            run.elapsed = 600.0;
+            run.dungeon_mods.toggle(2);
+            run.dungeon_mods.toggle(4);
+        }
+        world.entity_mut(boss).remove::<Skills>();
+        advance(&mut world, 0.01);
+        let mut skills = world.get_mut::<Skills>(boss).unwrap();
+        assert_eq!(skills.slots.len(), 3);
+        for i in 0..skills.slots.len() {
+            assert!(skills.slots[..i].iter().all(|s| s.spell != skills.slots[i].spell));
+        }
+        for slot in &mut skills.slots { slot.left = 10.0; }
+        skills.recovery = 10.0;
+        drop(skills);
+        advance(&mut world, 1.0);
+        let skills = world.get::<Skills>(boss).unwrap();
+        assert!((skills.recovery - 8.7).abs() < 0.001);
+        assert!(skills.slots.iter().all(|s| (s.left - 8.7).abs() < 0.001));
+    }
+
+    #[test]
+    fn hasty_boss_spells_shorten_replicated_warning_without_shortening_hazards() {
+        let (mut world, _, boss) = arena(Spell::Cone);
+        let map = super::super::data::DUNGEONS[0];
+        world.resource_mut::<Run>().expedition_map = map;
+        world.resource_mut::<Run>().dungeon_mods.toggle(5);
+        let mut skills = dungeons::loadout(map, "High Interrogator Gerstahn", 0);
+        for slot in &mut skills.slots { slot.left = 0.0; }
+        world.entity_mut(boss).insert(skills);
+        advance(&mut world, 0.01);
+        let skills = world.get::<Skills>(boss).unwrap();
+        let warning = &skills.cast.as_ref().unwrap().warning;
+        assert!((warning.windup() - warning.spell.windup() * 0.7).abs() < 0.001);
+        let copy: Warning = serde_json::from_str(&serde_json::to_string(warning).unwrap()).unwrap();
+        assert_eq!(copy.windup(), warning.windup());
+        assert_eq!(copy.progress(), warning.progress());
+        let Spell::Dungeon(ability) = warning.spell else { panic!("dungeon spell expected") };
+        let end = warning.windup() + ability.duration();
+        advance(&mut world, end - 0.02);
+        assert!(world.get::<Skills>(boss).unwrap().cast.is_some());
+        advance(&mut world, 0.03);
+        assert!(world.get::<Skills>(boss).unwrap().cast.is_none());
+    }
+
+    #[test]
+    fn maximum_arsenal_actually_cycles_through_every_spell() {
+        let (mut world, hero, boss) = arena(Spell::Cone);
+        let map = super::super::data::DUNGEONS[0];
+        world.resource_mut::<Run>().expedition_map = map;
+        world.get_mut::<Transform>(hero).unwrap().translation = Vec3::X * 500.0;
+        let mut skills = dungeons::loadout(map, "High Interrogator Gerstahn", 3);
+        for slot in &mut skills.slots { slot.left = 0.0; }
+        world.entity_mut(boss).insert(skills);
+        // Keep the target close enough to cast but protected from damage.
+        world.get_mut::<Transform>(hero).unwrap().translation = Vec3::X * 5.0;
+        world.resource_mut::<Run>().hp = 1.0e12;
+        let mut seen = Vec::new();
+        for _ in 0..1800 {
+            advance(&mut world, 0.1);
+            if let Some(cast) = &world.get::<Skills>(boss).unwrap().cast {
+                if !seen.contains(&cast.warning.spell) { seen.push(cast.warning.spell); }
+            }
+        }
+        assert_eq!(seen.len(), 5);
+    }
+
+    #[test]
+    fn dungeon_zones_follow_the_fight_far_from_the_entrance() {
+        let (mut world, player, boss) = arena(Spell::Cone);
+        let map = super::super::data::DUNGEONS[0];
+        world.resource_mut::<Run>().expedition_map = map;
+        let position = hero::arena(&super::super::data::MAPS[map]) + Vec3::X * 1500.0;
+        world.get_mut::<Transform>(player).unwrap().translation = position + Vec3::X * 10.0;
+        world.get_mut::<Transform>(boss).unwrap().translation = position;
+        let mut skills = dungeons::loadout(map, "High Interrogator Gerstahn", 0);
+        for slot in &mut skills.slots { slot.left = 0.0; }
+        world.entity_mut(boss).insert(skills);
+        advance(&mut world, 0.01);
+        assert_eq!(world.get::<Skills>(boss).unwrap().cast.as_ref().unwrap().warning.origin, position.to_array());
+    }
 
     fn arena(spell: Spell) -> (World, Entity, Entity) {
         use crate::{
@@ -401,7 +623,7 @@ mod tests {
             net::FieldChanged,
         };
         let mut world = World::new();
-        benilla_world::world_point::init_world_point_resources(&mut world);
+        crate::survivors::geometry::init_test_world(&mut world);
         world.init_resource::<Time>();
         world.init_resource::<Warnings>();
         world.insert_resource(Rng(123));
@@ -439,6 +661,7 @@ mod tests {
             slots: vec![Slot { spell, left: 0.0 }],
             cast: None,
             recovery: 0.0,
+            dungeon_phase: 0,
         });
         (world, player, boss)
     }
@@ -454,7 +677,7 @@ mod tests {
         let mut seen = vec![];
         for seed in 1..=64 {
             for (elapsed, count) in [(0.0, 1), (599.99, 1), (600.0, 2), (1200.0, 2)] {
-                let skills = Skills::roll(elapsed, &mut Rng(seed));
+                let skills = Skills::roll(elapsed, 0, &mut Rng(seed));
                 assert_eq!(skills.slots.len(), count);
                 if count == 2 {
                     assert_ne!(skills.slots[0].spell, skills.slots[1].spell);
@@ -491,6 +714,8 @@ mod tests {
             mortars: vec![[8.0, 0.0, 3.0]],
             elapsed: 0.0,
             circle: None,
+            windup_seconds: None,
+            zones: vec![],
         };
         assert!(w.contains(Vec3::X * 8.0, HERO_RADIUS));
         assert!(w.contains(Vec3::X * 19.0, 0.0));
@@ -631,6 +856,8 @@ mod tests {
             mortars: vec![[5.0, 6.0, 7.0]],
             elapsed: 1.0,
             circle: None,
+            windup_seconds: None,
+            zones: vec![],
         };
         let decoded: Warning = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
         assert_eq!(decoded.progress(), 0.5);

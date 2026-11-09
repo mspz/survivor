@@ -7,7 +7,7 @@ use super::enemies::Enemy;
 use super::hero::{self, Hero};
 use super::units::{flat, Fx};
 use super::{Phase, Run};
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 
 pub(super) const LEARN_LEVEL: u32 = 5;
 
@@ -243,7 +243,7 @@ pub(super) fn cast_mobility(
     let center = hero::arena(map);
     let leash = |p: Vec3| {
         let off = flat(p - center);
-        if off.length() > map.leash {
+        if !map.full_instance() && off.length() > map.leash {
             center + off.normalize() * map.leash
         } else {
             p
@@ -258,7 +258,7 @@ pub(super) fn cast_mobility(
             tf.rotation = Quat::from_rotation_y(super::units::yaw_toward(toward));
             let mut to = leash(pos + toward * far);
             to.y = ground(to);
-            tf.translation = to;
+            tf.translation = world.constrain(pos, to);
         }
         Move::Charge(yd) => {
             // The enemy in reach nearest the cursor (or the hero, with none).
@@ -286,7 +286,7 @@ pub(super) fn cast_mobility(
             };
             let mut to = leash(to);
             to.y = ground(to);
-            tf.translation = to;
+            tf.translation = world.constrain(pos, to);
         }
         Move::Haste(x) => {
             fx.cast(me, def.spell, &[me], None);

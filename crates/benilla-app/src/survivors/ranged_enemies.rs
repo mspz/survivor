@@ -14,6 +14,7 @@ pub(super) struct Caster {
     pub range: f32,
     pub stand_off: f32,
     pub interval: f32,
+    windup: f32,
     name: &'static str,
     cast: Option<(Entity, f32)>,
 }
@@ -24,7 +25,7 @@ impl Caster {
     pub fn casting(&self) -> bool {
         self.cast.is_some()
     }
-    /// A new target always requires a full second before the projectile can launch.
+    /// A new target always requires its full cast windup before the projectile can launch.
     pub fn ready(&mut self, target: Option<Entity>, dt: f32) -> bool {
         let Some(target) = target else {
             self.cancel();
@@ -40,26 +41,36 @@ impl Caster {
                 return false;
             }
         }
-        self.cast = Some((target, 1.0));
+        self.cast = Some((target, self.windup));
         false
     }
 }
 pub(super) fn profile(map: usize) -> Option<Caster> {
-    let (name, spell, school) = match data::CAMPAIGN.iter().position(|m| *m == map)? {
+    let (name, spell, school) = match map {
+        17 => ("Anvilrage Medic", 585, Tags::HOLY),
+        18 => ("Smolderthorn Shadow Priest", 686, Tags::SHADOW),
+        19 => ("Wildspawn Hellcaller", 133, Tags::FIRE),
+        20 => ("Eldreth Sorcerer", 133, Tags::FIRE),
+        21 => ("Scholomance Necromancer", 686, Tags::SHADOW),
+        22 => ("Thuzadin Shadowcaster", 686, Tags::SHADOW),
+        _ => match data::CAMPAIGN.iter().position(|m| *m == map)? {
         1 => ("Riverpaw Mystic", 5176, Tags::NATURE),
         2 => ("Blackrock Summoner", 133, Tags::FIRE),
         3 => ("Skeletal Mage", 116, Tags::COLD),
         4 => ("Hakkari Shadowcaster", 686, Tags::SHADOW),
         5 => ("Shadowsworn Cultist", 133, Tags::FIRE),
         _ => return None,
+        },
     };
+    let tuning = data::dungeon(map).then(|| &super::dungeon_config::get(map).ranged);
     Some(Caster {
         name,
         spell,
         tags: school | Tags::SPELL | Tags::PROJECTILE | Tags::DAMAGE,
-        range: 20.0,
-        stand_off: 16.0,
-        interval: 3.0,
+        range: tuning.map_or(20.0, |c| c.range),
+        stand_off: tuning.map_or(16.0, |c| c.stand_off),
+        interval: tuning.map_or(3.0, |c| c.interval),
+        windup: tuning.map_or(1.0, |c| c.windup),
         cast: None,
     })
 }
@@ -179,7 +190,7 @@ mod tests {
             net::FieldChanged,
         };
         let mut world = World::new();
-        benilla_world::world_point::init_world_point_resources(&mut world);
+        crate::survivors::geometry::init_test_world(&mut world);
         world.init_resource::<Time>();
         world.insert_resource(Rng(95));
         world.init_resource::<PlaySeq>();
@@ -488,6 +499,10 @@ mod tests {
     }
     #[test]
     fn first_zone_and_non_campaign_maps_have_no_casters_and_other_zones_use_real_roster_casters() {
+        for &map in data::DUNGEONS {
+            let caster = profile(map).unwrap();
+            assert!(data::roster(map).enemies.iter().any(|d| d.name == caster.name));
+        }
         for (tier, map) in data::CAMPAIGN.iter().enumerate() {
             let caster = profile(*map);
             if tier == 0 {

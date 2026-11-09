@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use super::{data, Run, Selection};
+use super::{Run, Selection, data};
 
 pub(super) fn zone_order() -> Vec<usize> {
     data::CAMPAIGN.to_vec()
@@ -32,7 +32,9 @@ impl Default for Progress {
 impl Progress {
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::survivors) fn complete_coop(&mut self, zone: usize) {
-        if data::CAMPAIGN.contains(&zone) && !self.completed.contains(&zone) {
+        if (data::CAMPAIGN.contains(&zone) || data::dungeon(zone))
+            && !self.completed.contains(&zone)
+        {
             self.completed.push(zone);
             self.save();
         }
@@ -81,6 +83,9 @@ impl Progress {
     }
     pub(super) fn allows(&self, zone: usize) -> bool {
         let order = zone_order();
+        if data::dungeon(zone) {
+            return order.iter().all(|i| self.completed.contains(i));
+        }
         order
             .iter()
             .position(|&i| i == zone)
@@ -106,6 +111,25 @@ pub(super) fn finish_run(run: Res<Run>, mut selection: ResMut<Selection>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_dungeon_unlocks_together_only_after_the_whole_campaign() {
+        let mut progress = Progress {
+            character: None,
+            completed: vec![],
+        };
+        for (rank, &zone) in data::CAMPAIGN.iter().enumerate() {
+            assert!(data::DUNGEONS.iter().all(|&d| !progress.allows(d)));
+            progress.complete(zone);
+            if rank + 1 < data::CAMPAIGN.len() {
+                assert!(data::DUNGEONS.iter().all(|&d| !progress.allows(d)));
+            }
+        }
+        assert!(data::DUNGEONS.iter().all(|&d| progress.allows(d)));
+        progress.complete(data::DUNGEONS[5]);
+        assert!(data::DUNGEONS.iter().all(|&d| progress.allows(d)));
+        assert!(!progress.allows(data::TRAINING_MAP));
+    }
 
     #[test]
     fn zones_require_all_previous_victories() {

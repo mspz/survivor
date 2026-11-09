@@ -130,6 +130,7 @@ pub(super) fn dual_wield(class: u8) -> bool {
 impl Effect {
     pub(super) fn valid_equipment_type(self, kind: EquipmentType) -> bool {
         match self {
+            Self::WeaponDamage => weapons::is_weapon(kind) && kind != EquipmentType::Wand,
             Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent => {
                 kind == EquipmentType::Shield
             }

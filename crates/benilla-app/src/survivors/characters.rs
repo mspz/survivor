@@ -24,6 +24,9 @@ struct Save {
     version: u32,
     next_id: u64,
     characters: Vec<Character>,
+    /// None identifies a legacy roster whose post-60 XP has not been pooled yet.
+    #[serde(default)]
+    paragon_xp: Option<u64>,
 }
 #[derive(Resource)]
 pub(super) struct Roster {
@@ -46,6 +49,7 @@ impl Default for Roster {
                 version: 1,
                 next_id: 1,
                 characters: Vec::new(),
+                paragon_xp: Some(0),
             },
             selected: None,
             active: None,
@@ -64,6 +68,14 @@ impl Default for Roster {
                     Ok(save) => {
                         roster.selected = save.characters.first().map(|c| c.id);
                         roster.save = save;
+                        // Recover a talent-file write that completed before the roster write.
+                        let ids: Vec<_> = roster.save.characters.iter().map(|c| c.id).collect();
+                        for id in ids {
+                            let xp = talents::Account::load_character(id).xp;
+                            if let Err(error) = roster.record_xp(id, xp) {
+                                roster.error = format!("Could not recover character XP: {error}");
+                            }
+                        }
                     }
                     Err(error) => {
                         roster.error = format!("Cannot load characters: {error}");
@@ -81,6 +93,20 @@ impl Default for Roster {
     }
 }
 impl Roster {
+    #[cfg(test)]
+    pub(in crate::survivors) fn paragon_fixture(character_xp: u64) -> Self {
+        let mut roster = Self::default();
+        roster.save = Save {
+            version: 1, next_id: 2,
+            characters: vec![Character {
+                id: 1, name: "Arthas".into(), class: 0, display: 3167, race: 1, sex: 0,
+                xp: character_xp, starter_equipment: false,
+            }],
+            paragon_xp: Some(character_xp.saturating_sub(talents::threshold(60))),
+        };
+        roster.blocked = false;
+        roster
+    }
     fn decode(text: &str) -> Result<Save, String> {
         let mut save: Save = toml::from_str(text).map_err(|e| e.to_string())?;
         if save.version != 1 || save.next_id == 0 || save.characters.len() > 10 {
@@ -107,6 +133,11 @@ impl Roster {
                 c.xp = c.xp.max(talents::threshold(60));
             }
         }
+        if save.paragon_xp.is_none() {
+            save.paragon_xp = Some(save.characters.iter().fold(0_u64, |total, c| {
+                total.saturating_add(c.xp.saturating_sub(talents::threshold(60)))
+            }));
+        }
         Ok(save)
     }
     fn persist(save: &Save) -> Result<(), String> {
@@ -120,6 +151,24 @@ impl Roster {
     pub fn current(&self) -> Option<&Character> {
         self.active
             .and_then(|id| self.save.characters.iter().find(|c| c.id == id))
+    }
+    pub(in crate::survivors) fn paragon_xp(&self) -> u64 {
+        self.save.paragon_xp.unwrap_or(0)
+    }
+    pub(in crate::survivors) fn record_xp(&mut self, id: u64, xp: u64) -> Result<(), String> {
+        if self.blocked { return Err("Character save is blocked.".into()); }
+        let Some(index) = self.save.characters.iter().position(|c| c.id == id) else { return Ok(()); };
+        let old = self.save.characters[index].xp;
+        let xp = xp.max(old);
+        if xp == old { return Ok(()); }
+        let cap = talents::threshold(60);
+        let gained = xp.saturating_sub(cap).saturating_sub(old.saturating_sub(cap));
+        let mut save = self.save.clone();
+        save.characters[index].xp = xp;
+        save.paragon_xp = Some(self.paragon_xp().saturating_add(gained));
+        Self::persist(&save)?;
+        self.save = save;
+        Ok(())
     }
     pub fn preview_level(&self) -> u32 {
         self.selected
@@ -163,6 +212,10 @@ impl Roster {
             starter_equipment: true,
         };
         let mut save = self.save.clone();
+        // The first-ever character can import the pre-roster talent save's XP once.
+        if save.next_id == 1 {
+            save.paragon_xp = Some(self.paragon_xp().saturating_add(c.xp.saturating_sub(talents::threshold(60))));
+        }
         save.next_id = save
             .next_id
             .checked_add(1)
@@ -236,6 +289,32 @@ fn valid_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paragon_pool_migrates_once_and_keeps_both_characters_contributions_after_deletion() {
+        let cap = talents::threshold(60);
+        let mut roster = roster();
+        roster.save.characters[0].xp = cap + 125;
+        roster.save.characters[1].xp = cap + 200;
+        roster.save.paragon_xp = None;
+        roster.save = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(roster.paragon_xp(), 325);
+        roster.save = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(roster.paragon_xp(), 325);
+        roster.record_xp(1, cap + 225).unwrap();
+        roster.record_xp(1, cap + 225).unwrap();
+        roster.record_xp(2, cap + 300).unwrap();
+        assert_eq!(roster.paragon_xp(), 525);
+        roster.delete(1, "Arthas").unwrap();
+        assert_eq!(roster.paragon_xp(), 525);
+        roster.name = "Thrall".into();
+        let alt = roster.create(0, (3167, 1, 0), 0).unwrap();
+        assert_eq!(talents::level(alt.xp), 1);
+        assert_eq!(roster.paragon_xp(), 525);
+        roster.record_xp(alt.id, cap + 100).unwrap();
+        assert_eq!(roster.paragon_xp(), 625);
+        let restored = Roster::decode(&toml::to_string(&roster.save).unwrap()).unwrap();
+        assert_eq!(restored.paragon_xp, Some(625));
+    }
     #[test]
     fn roster_preserves_paragon_xp_for_normal_and_test_characters_independently() {
         let mut roster = roster();
@@ -474,6 +553,33 @@ mod tests {
         assert_eq!(app.world().resource::<Roster>().save.characters[0].xp, 125);
     }
     #[test]
+    fn dungeon_browser_offers_five_modifiers_and_displays_the_combined_reward() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Phase>()
+            .insert_resource(roster())
+            .insert_resource(Selection {
+                test_character: true, map: data::DUNGEONS[0], ..default()
+            })
+            .init_resource::<talents::Account>()
+            .insert_resource(expeditions::View { open: [false, true, false], ..default() })
+            .insert_resource(hud::HudFont(Handle::default()))
+            .add_systems(Update, render);
+        app.world_mut().resource_mut::<NextState<Phase>>().set(Phase::Hub);
+        app.world_mut().resource_mut::<Roster>().expeditions = true;
+        app.update();
+        assert_eq!(app.world_mut().query::<&Click>().iter(app.world())
+            .filter(|click| matches!(click, Click::DungeonMod(_, _))).count(), 12);
+        {
+            let mut selection = app.world_mut().resource_mut::<Selection>();
+            for index in 0..5 { selection.dungeon_mods.toggle(index); }
+            selection.version += 1;
+        }
+        app.update();
+        assert!(app.world_mut().query::<&Text>().iter(app.world())
+            .any(|text| text.0.contains("Loot ilvl 77 (+12)")));
+    }
+    #[test]
     fn expedition_browser_preserves_scroll_and_keeps_training_separate_and_restricted() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
@@ -667,6 +773,9 @@ fn boot(roster: Res<Roster>, mut selection: ResMut<Selection>) {
 }
 pub(super) fn logout(mut roster: ResMut<Roster>, account: Res<talents::Account>) {
     account.save();
+    if let Some(id) = account.character {
+        if let Err(error) = roster.record_xp(id, account.xp) { roster.error = error; }
+    }
     roster.active = None;
     roster.creating = false;
     roster.expeditions = false;
@@ -714,6 +823,7 @@ pub(super) enum Click {
     JoinLobby,
     Expeditions,
     Map(usize),
+    DungeonMod(usize, bool),
     Launch,
     Runes,
     Logout,
@@ -947,6 +1057,11 @@ pub(super) fn input(
                 selection.map = i;
                 selection.version += 1;
             }
+            Click::DungeonMod(i, increase) if *phase.get() == Phase::Hub
+                && data::dungeon(selection.map) && selection.allows_map(selection.map) => {
+                selection.dungeon_mods.change(i, increase);
+                selection.version += 1;
+            }
             Click::Launch if *phase.get() == Phase::Hub => {
                 if hud::start_run(&mut run, &mut selection) {
                     roster.expeditions = false;
@@ -1001,6 +1116,10 @@ pub(super) fn activate_selected(
     selection: &mut Selection,
     account: &mut talents::Account,
 ) -> Result<(), String> {
+    if let Some(id) = account.character {
+        roster.record_xp(id, account.xp)?;
+        account.save();
+    }
     let c = roster
         .selected
         .and_then(|id| roster.save.characters.iter().find(|c| c.id == id))
@@ -1030,13 +1149,8 @@ fn update_record(mut roster: ResMut<Roster>, account: Res<talents::Account>) {
     let Some(id) = account.character else {
         return;
     };
-    if let Some(c) = roster.save.characters.iter_mut().find(|c| c.id == id) {
-        if c.xp != account.xp {
-            c.xp = account.xp;
-            if let Err(error) = Roster::persist(&roster.save) {
-                roster.error = format!("Could not save characters: {error}");
-            }
-        }
+    if let Err(error) = roster.record_xp(id, account.xp) {
+        roster.error = format!("Could not save characters: {error}");
     }
 }
 pub(super) fn arrive(

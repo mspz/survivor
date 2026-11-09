@@ -48,9 +48,8 @@ pub(super) static TREES: [[Spec; 3]; CLASSES] = [
         ),
         spec!(
             "Protection",
-            "retaliation",
             "thunder_clap",
-            "retaliation",
+            "thunder_clap",
             "demoralizing_shout"
         ),
     ],
@@ -466,10 +465,11 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
 }
 
 pub(in crate::survivors) fn earned(run: &Run) -> u64 {
-    (run.elapsed.max(0.0) as u64 / 5)
+    let base = (run.elapsed.max(0.0) as u64 / 5)
         + (u64::from(run.meta_kills) * 1000).saturating_sub(run.meta_kill_penalty) / 1000
         + u64::from(run.bosses) * 100
-        + if run.won { 500 } else { 0 }
+        + if run.won { 500 } else { 0 };
+    run.dungeon_modifiers().reward_xp(base, run.expedition_map)
 }
 
 /// Count a kill toward the character's XP, kept in full within nine levels of the monster;
@@ -520,6 +520,20 @@ fn settle(account: &mut Account, run: &mut Run, force: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dungeon_character_xp_rewards_scale_all_sources_and_modifiers_multiply_them() {
+        let mut run = Run {
+            elapsed: 100.0, kills: 20, bosses: 2, won: true,
+            expedition_map: super::super::data::CAMPAIGN[5], ..default()
+        };
+        assert_eq!(earned(&run), 740);
+        run.expedition_map = super::super::data::DUNGEONS[0];
+        assert_eq!(earned(&run), 2220);
+        run.dungeon_mods.toggle(0);
+        assert_eq!(earned(&run), 2775);
+        for index in 1..5 { run.dungeon_mods.toggle(index); }
+        assert_eq!(earned(&run), 6774);
+    }
     #[test]
     fn single_point_refunds_preserve_tier_requirements_and_other_trees() {
         let mut a = account();
@@ -750,6 +764,24 @@ mod tests {
         a.reset(0);
         assert_eq!(a.available(0), 59);
     }
+    #[test]
+    fn protection_milestones_never_grant_retaliation_or_duplicate_thunder_clap() {
+        let mut account = Account::fresh();
+        account.xp = threshold(60);
+        let mut run = Run::default();
+        run.abilities.push(Owned { def: data::ability(run.class.start), level: 1, cd: 0.5 });
+        for (node, ranks) in [(0,5),(1,5),(8,1),(3,5),(4,5),(12,1),(6,5),(9,3),(18,1)] {
+            for _ in 0..ranks { assert!(account.buy(0, 2, node)); }
+            if [8,12,18].contains(&node) {
+                account.apply(0, &mut run);
+                assert!(!run.abilities.iter().any(|a| a.def.key == "retaliation"));
+                assert_eq!(run.abilities.iter().filter(|a| a.def.key == "thunder_clap").count(), 1);
+            }
+        }
+        assert!(super::super::talent_runtime::active(&run, super::super::talent_design::Mechanic::Bulwark));
+        assert_eq!(account.tree_points(0,2), 31);
+    }
+
     #[test]
     fn every_capstone_is_an_existing_class_ability() {
         for (class, trees) in data::CLASSES.iter().zip(TREES.iter()) {

@@ -1662,7 +1662,7 @@ pub(super) fn menu_preview(
     roster: Res<super::characters::Roster>,
     mut run: ResMut<Run>,
     heroes: Query<Entity, With<Hero>>,
-    world: benilla_world::world_point::WorldPoint,
+    world: crate::survivors::geometry::Surface,
     mut shown: Local<Option<(usize, u32, usize, Option<u64>)>>,
 ) {
     if *phase.get() != Phase::Menu {
@@ -1727,6 +1727,8 @@ pub(super) fn start_run(run: &mut Run, selection: &mut Selection) -> bool {
         race,
         next_guid,
         expedition_map: selection.map,
+        dungeon_mods: selection.dungeon_mods.active(selection.map),
+        expeditions: super::expedition_config::Config::default().for_map(selection.map),
         ..Run::default()
     };
     run.abilities.push(Owned {

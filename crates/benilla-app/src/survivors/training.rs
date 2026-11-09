@@ -4,7 +4,7 @@ use super::{
     enemies::{self, Enemy},
     hero, Run, Selection,
 };
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 use bevy::prelude::*;
 
 pub(super) static DUMMY: EnemyDef = EnemyDef {
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn training_has_separate_areas_fixed_stats_and_exact_respawn_delays() {
         let mut world = World::new();
-        benilla_world::world_point::init_world_point_resources(&mut world);
+        crate::survivors::geometry::init_test_world(&mut world);
         world.init_resource::<Run>();
         world.init_resource::<Arena>();
         world.insert_resource(Selection {

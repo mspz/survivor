@@ -286,6 +286,13 @@ pub(super) fn persist(
                 account.save();
             }
         }
+        let record = world.get_resource::<game::talents::Account>()
+            .and_then(|a| a.character.map(|id| (id, a.xp)));
+        if let Some((id, xp)) = record {
+            if let Some(mut roster) = world.get_resource_mut::<game::characters::Roster>() {
+                if let Err(error) = roster.record_xp(id, xp) { roster.error = error; }
+            }
+        }
     }
     if snapshot.stats.won && !receipts.victory {
         if let Some(mut selection) = world.get_resource_mut::<Selection>() {
@@ -359,6 +366,7 @@ mod tests {
             ..default()
         };
         let snapshot = wire::Snapshot {
+            dungeon_mods: default(),
             boss_warnings: vec![],
             money_earned: 12345,
             chest: default(),
@@ -398,6 +406,7 @@ mod tests {
         assert_eq!(world.resource::<game::talents::Account>().xp, 525);
         // A later XP receipt crosses level 60 once and carries the surplus into paragon.
         let cap = game::talents::threshold(60);
+        world.insert_resource(game::characters::Roster::paragon_fixture(cap - 25));
         {
             let mut account = world.resource_mut::<game::talents::Account>();
             account.character = Some(1);
@@ -411,5 +420,6 @@ mod tests {
         assert_eq!(account.xp, cap + 175);
         assert_eq!(game::paragon::progress(account.xp).level, 1);
         assert_eq!(account.available(0), 59);
+        assert_eq!(world.resource::<game::characters::Roster>().paragon_xp(), 175);
     }
 }

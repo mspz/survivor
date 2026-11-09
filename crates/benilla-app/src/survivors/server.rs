@@ -160,6 +160,7 @@ pub(super) struct Run {
     pub(super) balance: balance::Config,
     pub(super) expeditions: expedition_config::Config,
     pub(super) expedition_map: usize,
+    pub(super) dungeon_mods: dungeon_mods::Mods,
     pub(super) expedition_players: usize,
     pub effect_meter: combat_ui::EffectMeter,
     pub meter: combat_ui::Meter,
@@ -250,6 +251,7 @@ impl Default for Run {
             balance: balance::Config::default(),
             expeditions: expedition_config::Config::default(),
             expedition_map: data::CAMPAIGN[0],
+            dungeon_mods: default(),
             expedition_players: 1,
             effect_meter: default(),
             meter: combat_ui::Meter::default(),
@@ -319,6 +321,9 @@ impl Default for Run {
 }
 
 impl Run {
+    pub(super) fn dungeon_modifiers(&self) -> dungeon_mods::Mods {
+        self.dungeon_mods.active(self.expedition_map)
+    }
     pub fn resolve_spell(&self, def: &AbilityDef, level: u8) -> spell_engine::Resolved {
         self.resolve_spell_with_weapon_roll(def, level, 0.5)
     }
@@ -390,7 +395,7 @@ impl Run {
             + self.support.power(self.elapsed, "aspect_of_the_pack")
             + self.support.power(self.elapsed, "stampeding_roar");
         self.specialty.apply_stats(&mut s);
-        s.regen += s.max_hp * passive_regeneration;
+        s.regen += s.max_hp * (passive_regeneration + self.equipment.regeneration_percent);
         s
     }
 

@@ -1,0 +1,267 @@
+# Dungeon balance. Restart the game after edits; embedded defaults are used if invalid.
+# Percentages are fractions unless specified. Dimensions and speeds use yards and seconds.
+version = 1
+duration_seconds = 900.0
+boss_wave_seconds = 135.0
+item_level = 65
+character_xp_multiplier = 3.0
+boss_size_multiplier = 2.0
+monster_attack_interval = 1.3
+boss_attack_interval = 1.0
+ring_start = 28.0
+ring_growth = 60.0
+ring_radius = 26.0
+spawn_radius_min = 34.0
+spawn_radius_max = 42.0
+boss_spawn_radius = 30.0
+replenish_divisor = 6.0
+replenish_max_per_frame = 4
+initial_attack_delay = 0.5
+
+[ranged]
+range = 20.0
+stand_off = 16.0
+interval = 3.0
+windup = 1.0
+
+# Independent of survivors-expeditions.toml. Global base stats times the [zone] multipliers.
+[combat]
+end_multiplier = 15.0 # Health and damage growth at the end of the run.
+multiplayer_health_per_extra_player = 2
+ranged_monster_chance = 0.02
+monster_armour_per_level = 50
+boss_armour_per_level = 10.0
+monster_health = 40
+monster_damage = 10
+boss_health = 1000.0
+boss_damage = 100.0
+population_start = 18
+population_end = 280
+max_monsters = 450
+[combat.monster_resistance_per_level]
+fire = 0.75
+cold = 0.75
+lightning = 0.75
+nature = 0.75
+arcane = 0.75
+holy = 0.75
+shadow = 0.75
+
+[combat.boss_resistance_per_level]
+fire = 1.25
+cold = 1.25
+lightning = 1.25
+nature = 1.25
+arcane = 1.25
+holy = 1.25
+shadow = 1.25
+
+
+[zone]
+damage_reduction = 0.9
+monster_quantity = 1.7825
+monster_health = 16.0
+monster_damage = 12.75
+boss_quantity = 1
+boss_health = 108.0
+boss_damage = 14.25
+
+# The six entries follow the order in the dungeon modifier menu. Three ranks maximum.
+[modifiers]
+item_level_per_rank = [2, 2, 3, 3, 2, 3]
+xp_per_rank = 1.25
+movement_per_rank = 0.30
+damage_per_rank = 0.25
+attack_rate_per_rank = 0.30
+bosses_per_rank = 1
+spells_per_rank = 1
+warning_multiplier_per_rank = 0.70
+
+# Slot order: main area, player-targeted circles, arena ring, crossfire, closing sector.
+# Arrays of three entries follow health phases: above 70%, 70%-35%, below 35%.
+[spells]
+cast_range = 200.0
+pulse_interval = 1.0
+phase_thresholds = [0.70, 0.35]
+windup = [8.0, 4.5, 6.0, 6.0, 6.0]
+cooldown = [12.0, 9.0, 14.0, 14.0, 14.0]
+duration = [6.0, 5.0, 7.0, 6.0, 6.0]
+damage = [0.30, 0.40, 0.30, 0.30, 0.30]
+initial_delay = 3.0
+initial_stagger = 3.0
+recovery = 2.0
+phase_pause = 2.0
+phase_stagger = 2.0
+boss_rotation = 0.43
+phase_rotation_degrees = 60.0
+target_radius = [12.0, 14.0, 16.0]
+ring_inner = [12.0, 18.0, 24.0]
+ring_outer = [42.0, 48.0, 54.0]
+cross_width = [7.0, 9.0, 11.0]
+closing_angle_degrees = [180.0, 202.5, 225.0]
+forge_lane_count = [2, 3, 4]
+arcane_lane_count = [3, 4, 5]
+lane_width = [4.5, 5.5, 6.5]
+lane_spacing = 18.0
+lane_half_length = 80.0
+stone_rings = [[12.0,28.0,42.0,58.0], [17.0,35.0,44.0,60.0], [22.0,42.0,46.0,62.0]]
+root_count = [4, 5, 6]
+root_radius = [10.0, 11.5, 13.0]
+root_orbit = 24.0
+sector_inner = [20.0, 17.0, 14.0]
+sector_outer = 90.0
+plague_angle_degrees = 225.0
+necrotic_angle_degrees = 270.0
+
+[elites]
+first_zone = 2
+chance = 0.02
+health_multiplier = 10.0
+size_multiplier = 1.5
+# Additional reduction after zone, armour and elemental defenses: 0.2 = 20%.
+damage_reduction = 0.2
+xp_multiplier = 3
+
+[sprinters]
+first_zone = 3
+chance = 0.03
+speed_multiplier = 3.0
+# Health, armour, resistances, damage, size and XP stay identical to normal monsters.
+
+[explosives]
+first_zone = 4
+chance = 0.03
+radius = 3.5 # yards; the warning matches the damage footprint.
+delay = 1.5 # seconds after death, with a filling orange ground circle.
+damage_multiplier = 2.0 # relative to this monster's scaled attack damage.
+
+[healers]
+first_zone = 5
+chance = 0.02
+radius = 10.0
+interval = 4.0 # seconds between pulses.
+heal_fraction = 0.1 # fraction of each ally's maximum HP; never heals itself or bosses.
+
+[protectors]
+first_zone = 6
+chance = 0.02
+radius = 8.0
+damage_reduction = 0.25 # additional reduction; overlapping auras never stack.
+# The aura excludes its source, bosses and training actors.
+
+[[monsters]]
+name = "Plague Ghoul"
+level = 60
+speed = 4.2
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Ghoul Ravener"
+level = 60
+speed = 4.6
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Thuzadin Shadowcaster"
+level = 60
+speed = 3.8
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Thuzadin Necromancer"
+level = 60
+speed = 3.8
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Shrieking Banshee"
+level = 60
+speed = 4.6
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Crypt Crawler"
+level = 60
+speed = 4.4
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Patchwork Horror"
+level = 60
+speed = 3.8
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[monsters]]
+name = "Venom Belcher"
+level = 60
+speed = 4.0
+scale = 1.0
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[bosses]]
+name = "Baroness Anastari"
+level = 63
+speed = 4.4
+scale = 1.5
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[bosses]]
+name = "Nerub'enkan"
+level = 63
+speed = 4.2
+scale = 1.2
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[bosses]]
+name = "Maleki the Pallid"
+level = 63
+speed = 4.2
+scale = 1.4
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[bosses]]
+name = "Ramstein the Gorger"
+level = 63
+speed = 4.2
+scale = 1.2
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0
+
+[[bosses]]
+name = "Baron Rivendare"
+level = 63
+speed = 4.6
+scale = 1.2
+health_multiplier = 1.0
+damage_multiplier = 1.0
+xp_multiplier = 1.0

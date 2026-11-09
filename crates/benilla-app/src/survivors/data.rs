@@ -2211,6 +2211,14 @@ pub(crate) struct MapDef {
     /// One every [`BOSS_EVERY_SECS`], in order; empty for The Barrens' [`BOSSES`].
     bosses: &'static [Foe],
 }
+impl MapDef {
+    pub(crate) fn creature_names(&self, boss: bool) -> impl Iterator<Item = &'static str> + '_ {
+        (if boss { self.bosses } else { self.foes }).iter().map(|f| f.name)
+    }
+    pub(crate) fn full_instance(&self) -> bool {
+        DUNGEONS.iter().any(|&index| MAPS[index].map == self.map)
+    }
+}
 
 // Goldshire crossroads, outside the inn. Height measured from the installed Azeroth ADT.
 pub(crate) static HUB: MapDef = MapDef {
@@ -2223,7 +2231,12 @@ pub(crate) static HUB: MapDef = MapDef {
     foes: &[],
     bosses: &[],
 };
-pub(crate) const TRAINING_MAP: usize = MAPS.len() - 1;
+#[path = "dungeon_data.rs"]
+mod dungeon_data;
+pub(crate) use dungeon_data::{dungeon, dungeon_cleared, DUNGEONS};
+#[cfg(test)]
+pub(crate) use dungeon_data::DUNGEON_ITEM_LEVEL;
+pub(crate) const TRAINING_MAP: usize = 16;
 pub(crate) static MAPS: &[MapDef] = &[
     MapDef {
         name: "The Barrens",
@@ -2777,6 +2790,12 @@ pub(crate) static MAPS: &[MapDef] = &[
         foes: &[],
         bosses: &[],
     },
+    dungeon_data::BRD,
+    dungeon_data::LBRS,
+    dungeon_data::DIRE_MAUL_EAST,
+    dungeon_data::DIRE_MAUL_WEST,
+    dungeon_data::SCHOLOMANCE,
+    dungeon_data::STRATHOLME,
 ];
 
 /// A battleground's horde and bosses with their numbers.
@@ -2808,6 +2827,19 @@ static ROSTERS: std::sync::LazyLock<Vec<Roster>> = std::sync::LazyLock::new(|| {
                 let count = roster.bosses.len() as u32;
                 for (i, boss) in roster.bosses.iter_mut().enumerate() {
                     boss.level = low + ((i + 1) as u32 * (high - low) / count);
+                }
+            }
+            if dungeon(index) {
+                let balance = super::dungeon_config::get(index);
+                for (boss, actors) in [(false, &mut roster.enemies), (true, &mut roster.bosses)] {
+                    for actor in actors {
+                        if let Some(tuning) = balance.actor(actor.name, boss) {
+                            actor.level = tuning.level;
+                            actor.speed = tuning.speed;
+                            actor.scale = tuning.scale;
+                            actor.xp = (actor.xp as f32 * tuning.xp_multiplier).round() as u32;
+                        }
+                    }
                 }
             }
             roster

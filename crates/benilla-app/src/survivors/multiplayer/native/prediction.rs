@@ -1,6 +1,6 @@
 //! Predict only the local body. Combat and world positions remain authoritative on the host.
 use super::*;
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 use std::collections::VecDeque;
 
 pub(super) struct Authority {
@@ -56,7 +56,7 @@ pub(super) fn receive(world: &mut World, entity: Entity, authority: Authority) {
 }
 
 impl Prediction {
-    fn reconcile(&mut self, movement: &mut MovementState, ground: impl Fn(Vec3) -> Option<f32>) {
+    fn reconcile(&mut self, movement: &mut MovementState, ground: impl Fn(Vec3) -> Option<f32>, constrain: impl Fn(Vec3, Vec3) -> Vec3) {
         let Some(authority) = self.authority.take() else {
             return;
         };
@@ -90,6 +90,7 @@ impl Prediction {
             &data::MAPS[self.map.min(data::MAPS.len() - 1)]
         };
         for frame in &self.pending {
+            let before = self.body.translation;
             hero::step_motion(
                 &mut self.body,
                 movement,
@@ -100,6 +101,7 @@ impl Prediction {
                 map,
                 &ground,
             );
+            self.body.translation = constrain(before, self.body.translation);
         }
         self.offset = if teleport || self.dead {
             Vec3::ZERO
@@ -133,7 +135,7 @@ pub(super) fn predict(
     let Ok((mut tf, mut movement, mut physics, mut prediction)) = heroes.single_mut() else {
         return;
     };
-    prediction.reconcile(&mut movement, |p| ground.terrain_height_under(p));
+    prediction.reconcile(&mut movement, |p| ground.terrain_height_under(p), |from, to| ground.constrain(from, to));
     let dt = time.delta_secs().min(0.1);
     let command = if run.dead_t.is_none()
         && matches!(*phase.get(), Phase::Hub | Phase::Playing)
@@ -149,7 +151,7 @@ pub(super) fn predict(
         physics: body_physics,
         ..
     } = &mut *prediction;
-    hero::step_motion(
+    hero::step_world_motion(
         body,
         &mut movement,
         body_physics,
@@ -157,7 +159,7 @@ pub(super) fn predict(
         dt,
         speed,
         selection.stage_def(),
-        |p| ground.terrain_height_under(p),
+        &ground,
     );
     prediction.pending.push_back(Frame {
         sequence: guest.sequence + 1,
@@ -218,7 +220,7 @@ mod tests {
             in_hub: false,
             dead: false,
         });
-        prediction.reconcile(&mut movement, |_| Some(origin.y));
+        prediction.reconcile(&mut movement, |_| Some(origin.y), |_, to| to);
         assert!((prediction.body.translation.z - (origin.z - 0.7)).abs() < 0.001);
         assert_eq!(prediction.pending.len(), 1);
         let destination = origin + Vec3::X * 20.0;
@@ -231,7 +233,7 @@ mod tests {
             in_hub: false,
             dead: false,
         });
-        prediction.reconcile(&mut movement, |_| Some(origin.y));
+        prediction.reconcile(&mut movement, |_| Some(origin.y), |_, to| to);
         assert!(prediction.pending.is_empty());
         assert_eq!(prediction.body.translation, destination);
         assert_eq!(prediction.offset, Vec3::ZERO);

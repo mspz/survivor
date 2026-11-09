@@ -6,7 +6,7 @@ use crate::survivors::{
     units::flat,
     Selection,
 };
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 pub(in crate::survivors) struct Move {
     pub cast: u64,
     pub point: Vec3,
@@ -37,7 +37,7 @@ pub(in crate::survivors) fn tick(
     let map = selection.map_def();
     let center = hero::arena(map);
     for (owner, step) in moves {
-        if flat(step.point - center).length() > map.leash {
+        if !map.full_instance() && flat(step.point - center).length() > map.leash {
             continue;
         }
         let Some(height) = world.terrain_height_under(step.point) else {
@@ -49,6 +49,7 @@ pub(in crate::survivors) fn tick(
             continue;
         };
         let pos = Vec3::new(step.point.x, height, step.point.z);
+        let pos = world.constrain(tf.translation, pos);
         tf.translation = pos;
         if let Some(player) =
             crate::survivors::multiplayer::player_run(&mut run, players.as_deref_mut(), owner)

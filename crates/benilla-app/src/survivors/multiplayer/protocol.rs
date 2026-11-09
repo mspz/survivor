@@ -182,6 +182,8 @@ pub enum Choice {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     #[serde(default)]
+    pub dungeon_mods: super::super::dungeon_mods::Mods,
+    #[serde(default)]
     pub boss_warnings: Vec<super::super::boss_spells::Warning>,
     /// Cumulative copper earned on this connection; duplicate snapshots cannot pay twice.
     pub money_earned: u64,

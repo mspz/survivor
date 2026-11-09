@@ -165,7 +165,7 @@ pub(super) fn plan(
         want = Vec3::new(a.cos(), 0.0, a.sin()) * 0.5;
         let map = selection.map_def();
         let home = flat(super::hero::arena(map) - at);
-        if home.length() > (map.leash * 0.5).min(40.0) {
+        if !map.full_instance() && home.length() > (map.leash * 0.5).min(40.0) {
             want += home.normalize();
         }
     }

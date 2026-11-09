@@ -95,9 +95,16 @@ pub(super) fn hover(
     }
 }
 
+fn duration(index: usize) -> f32 {
+    if data::dungeon(index) { super::super::dungeon_config::get(index).duration_seconds } else { data::CLEAR_SECS }
+}
 fn levels(index: usize) -> String {
     if index == data::TRAINING_MAP {
         return "Level 60 test area".into();
+    }
+    if data::dungeon(index) {
+        let level = super::super::dungeon_config::get(index).item_level;
+        return format!("Endgame 60  |  Loot ilvl {} (+{})", level, level.saturating_sub(60));
     }
     if let Some((low, high)) = data::campaign_levels(index) {
         return format!("Levels {low}-{high}");
@@ -246,7 +253,7 @@ fn detail(
                 format!(
                     "{}  |  Survive {} minutes, then clear",
                     levels(index),
-                    data::CLEAR_SECS as u32 / 60
+                    duration(index) as u32 / 60
                 )
             },
             12.0,
@@ -296,7 +303,7 @@ fn detail(
             font,
             format!(
                 "Survive {} minutes, then kill every boss and {:.0}% of the horde",
-                data::CLEAR_SECS as u32 / 60,
+                duration(index) as u32 / 60,
                 data::CLEAR_MOB_SHARE * 100.0
             ),
             19.0,
@@ -304,7 +311,13 @@ fn detail(
         ));
         ui.spawn(label(
             font,
-            "Fight growing waves of enemies and defeat the bosses along the way.",
+            if data::dungeon(index) {
+                format!("Defeat every boss wave. Health phases: {:.0}% and {:.0}%. Minimum duration: {:.1} minutes.",
+                    super::super::dungeon_config::get(index).spells.phase_thresholds[0]*100.0,
+                    super::super::dungeon_config::get(index).spells.phase_thresholds[1]*100.0, duration(index)/60.0)
+            } else {
+                "Fight growing waves of enemies and defeat the bosses along the way.".to_owned()
+            },
             14.0,
             MUTED,
         ));
@@ -326,6 +339,33 @@ fn detail(
             13.0,
             MUTED,
         ));
+    }
+}
+
+fn modifiers(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, selection: &Selection) {
+    if !data::dungeon(selection.map) { return; }
+    let mods = selection.dungeon_mods.active(selection.map);
+    ui.spawn(label(font, format!("DUNGEON MODIFIERS â€” Loot ilvl {} (+{})",
+        super::super::dungeon_config::get(selection.map).item_level + mods.bonus(), mods.bonus()), 14.0, hud::GOLD_TONE));
+    ui.spawn(label(font, format!("Character XP x{:.2} â€” each rank multiplies XP by {:.2}",
+        mods.xp_multiplier(), mods.rank_xp()), 12.0, hud::GOLD_TONE));
+    for (index, modifier) in super::super::dungeon_mods::DEFINITIONS.iter().enumerate() {
+        ui.spawn(label(font, format!("{} â€” rank {}/3 (+{} ilvl)\n{} per rank",
+            modifier.name, mods.rank(index), u32::from(mods.rank(index)) * mods.rank_bonus(index),
+            mods.description(index)), 12.0, MUTED));
+        for (increase, title) in [(false, "âˆ’"), (true, "+")] {
+        let mut button = ui.spawn((
+            BackgroundColor(Color::srgb(0.10, 0.085, 0.055)),
+            Node { width: Val::Percent(100.0), padding: UiRect::all(Val::Px(8.0)),
+                flex_shrink: 0.0, ..default() },
+        ));
+        if selection.allows_map(selection.map) {
+            button.insert((Button, Click::DungeonMod(index, increase)));
+        }
+        button.with_children(|row| {
+            row.spawn(label(font, title, 12.0, hud::GOLD_TONE));
+        });
+        }
     }
 }
 pub(super) fn draw(
@@ -452,12 +492,10 @@ pub(super) fn draw(
                                     }
                                     group(list, font, 1, "Donjons", open[1]);
                                     if open[1] {
-                                        list.spawn(label(
-                                            font,
-                                            "No dungeons available.",
-                                            13.0,
-                                            MUTED,
-                                        ));
+                                        for (rank, &index) in data::DUNGEONS.iter().enumerate() {
+                                            row(list, font, selection, index, Some(rank + 1));
+                                        }
+                                        modifiers(list, font, selection);
                                     }
                                     group(list, font, 2, "Raids", open[2]);
                                     if open[2] {
@@ -471,7 +509,7 @@ pub(super) fn draw(
                                 });
                                 left.spawn(label(
                                     font,
-                                    "Scroll to browse. Complete expeditions in order.",
+                                    "Complete all expeditions to unlock every dungeon.",
                                     11.0,
                                     MUTED,
                                 ));

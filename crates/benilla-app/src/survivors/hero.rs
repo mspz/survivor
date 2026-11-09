@@ -1,7 +1,7 @@
 //! The hero: its body, third-person movement, camera, and health.
 
 use benilla_world::view::WorldCamera;
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
@@ -25,14 +25,14 @@ pub(super) struct Hero {
 /// The body radius enemies stop at.
 pub(super) const HERO_RADIUS: f32 = 0.7;
 
-/// The hop's initial upward speed and the gravity that brings it back down — the reference
+/// The hop's initial upward speed and the gravity that brings it back down â€” the reference
 /// `CMovement` jump seed and gravity (`player/state.rs`'s `JUMP_SPEED` / `GRAVITY`).
 const JUMP_SPEED: f32 = 7.955_547;
 const GRAVITY: f32 = 19.291_105;
 
 /// Radians of orbit per raw mouse unit while right-dragging.
 pub(super) const ORBIT_RATE: f32 = 0.008;
-/// Elevation clamp (radians): ~10°..~83° above the horizon, so the camera never dives underground.
+/// Elevation clamp (radians): ~10Â°..~83Â° above the horizon, so the camera never dives underground.
 const PITCH_MIN: f32 = 0.18;
 const PITCH_MAX: f32 = 1.45;
 /// Wheel zoom range, yards from the hero's shoulders.
@@ -93,7 +93,20 @@ pub(super) fn arena(map: &data::MapDef) -> Vec3 {
 pub(super) fn follow_map(
     selection: Res<Selection>,
     current: Option<ResMut<benilla_world::world_map::CurrentMap>>,
+    mut entered: Local<Option<(usize, bool)>>,
+    mut actors: Query<(&mut Transform, Option<&mut Hero>), Or<(With<Hero>, With<super::multiplayer::RemoteOwner>)>>,
+    mut player: ResMut<crate::player::Player>,
 ) {
+    let key = (selection.stage, selection.in_hub);
+    if *entered != Some(key) {
+        let start = arena(selection.stage_def());
+        for (mut tf, physics) in &mut actors {
+            tf.translation = start;
+            if let Some(mut physics) = physics { physics.air = 0.0; physics.vy = 0.0; }
+        }
+        player.pos = start;
+        *entered = Some(key);
+    }
     let Some(mut current) = current else {
         return;
     };
@@ -248,10 +261,10 @@ pub(super) fn step_motion(
 
     let center = arena(map);
     let off = flat(pos - center);
-    if off.length() > map.leash * 2.0 {
+    if !map.full_instance() && off.length() > map.leash * 2.0 {
         // Just entered another battleground: start at its centre.
         pos = center;
-    } else if off.length() > map.leash {
+    } else if !map.full_instance() && off.length() > map.leash {
         let held = center + off.normalize() * map.leash;
         pos.x = held.x;
         pos.z = held.z;
@@ -283,6 +296,27 @@ pub(super) fn step_motion(
     tf.translation = pos;
 }
 
+pub(super) fn step_world_motion(
+    tf: &mut Transform, mv: &mut MovementState, hm: &mut Hero,
+    command: super::session::Command, dt: f32, speed: f32,
+    map: &data::MapDef, surface: &WorldPoint,
+) {
+    let before = tf.translation;
+    // The renderer may already have re-seated the feet on the floor. Subtracting the
+    // saved jump height would then start a WMO floor ray underneath that floor.
+    step_motion(tf, mv, hm, command, dt, speed, map,
+        |p| surface.terrain_height_under(p));
+    // A map-entry relocation is a teleport, rather than movement through the old map.
+    if flat(tf.translation - before).length() <= map.leash {
+        tf.translation = surface.constrain(before, tf.translation);
+        if let Some(floor) = surface.terrain_height_under(tf.translation) {
+            let air = (tf.translation.y - floor).max(0.0);
+            if air + 0.01 < hm.air { hm.vy = hm.vy.min(0.0); }
+            hm.air = air;
+        }
+    }
+}
+
 /// WASD over the terrain within the battleground's leash, and the streaming focus on the hero.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drive_hero(
@@ -301,7 +335,7 @@ pub(super) fn drive_hero(
             let dt = time.delta_secs();
             let before = tf.translation;
             let speed = run.stats().speed * run.haste_mult();
-            step_motion(
+            step_world_motion(
                 &mut tf,
                 &mut mv,
                 &mut hm,
@@ -309,7 +343,7 @@ pub(super) fn drive_hero(
                 dt,
                 speed,
                 selection.stage_def(),
-                |p| world.terrain_height_under(p),
+                &world,
             );
             let pos = tf.translation;
             super::items::legendary::events::walk(&mut run, before, pos, dt);
@@ -435,7 +469,7 @@ pub(super) fn place_camera(
         if let Some(h) = world.terrain_height_under(eye) {
             eye.y = eye.y.max(h + 0.6);
         }
-        (eye, look)
+        (world.camera_eye(look, eye), look)
     };
     let placed = Transform::from_translation(eye).looking_at(look, Vec3::Y);
     for mut cam in &mut cams {
@@ -590,11 +624,13 @@ pub(super) fn hero_vitals(
     players: Option<Res<super::multiplayer::Companions>>,
     clear: Option<Res<super::enemies::ExpeditionClear>>,
     selection: Option<Res<super::Selection>>,
+    enemies: Query<&super::enemies::Enemy>,
 ) {
     let dt = time.delta_secs();
     let stats = run.stats();
     let practice = selection.as_deref().is_some_and(super::training::active);
     let cleared = !practice
+        && !data::dungeon(run.expedition_map)
         && run.elapsed >= data::CLEAR_SECS
         && clear.as_deref().is_some_and(|clear| clear.done);
     let Ok((entity, guid, mut store, mut marks)) = hero.single_mut() else {
@@ -607,7 +643,10 @@ pub(super) fn hero_vitals(
         let others_alive = players
             .as_ref()
             .is_some_and(|players| players.0.values().any(|p| p.run.dead_t.is_none()));
-        if cleared {
+        if cleared || (!practice && data::dungeon(run.expedition_map)
+            && run.elapsed >= run.expeditions.duration() && others_alive
+            && data::dungeon_cleared(run.expedition_map, run.bosses,
+                enemies.iter().filter(|e| e.boss && !e.dead).count())) {
             run.won = true;
             next.set(Phase::GameOver);
         } else if finished && (run.owner.is_some() || !others_alive) {
@@ -710,7 +749,10 @@ pub(super) fn hero_vitals(
         units::kill_unit(&mut store);
         marks.clear();
         marks.flush(entity, guid.0, &mut store, &mut fields);
-    } else if cleared {
+    } else if cleared || (!practice && data::dungeon(run.expedition_map)
+        && run.elapsed >= run.expeditions.duration()
+        && data::dungeon_cleared(run.expedition_map, run.bosses,
+            enemies.iter().filter(|e| e.boss && !e.dead).count())) {
         run.won = true;
         // A last flourish before the results.
         fx.cast(entity, 642, &[entity], None);
@@ -723,7 +765,7 @@ pub(super) fn hero_vitals(
 /// which quarter the run falls in, so the walk, backpedal and strafe animations play.
 fn gait(look: Vec3, dir: Vec3) -> u32 {
     let ahead = look.dot(dir);
-    // Positive when `dir` is to the hero's left: WoW faces −Z with +X on the right.
+    // Positive when `dir` is to the hero's left: WoW faces âˆ’Z with +X on the right.
     let left = look.cross(dir).y;
     let quarter = std::f32::consts::FRAC_1_SQRT_2;
     if ahead >= quarter {
@@ -746,6 +788,41 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::window::{CursorLeft, WindowFocused};
+
+    #[test]
+    fn every_dungeon_allows_walking_far_beyond_the_old_arena() {
+        for &index in data::DUNGEONS {
+            let map = &data::MAPS[index];
+            let start = arena(map) + Vec3::X * 1500.0;
+            let mut tf = Transform::from_translation(start);
+            step_motion(&mut tf, &mut MovementState::default(), &mut Hero { vy: 0.0, air: 0.0 },
+                super::super::session::Command { direction: Vec3::X, active: true, ..default() },
+                1.0, 7.0, map, |_| Some(start.y));
+            assert!((tf.translation.x - start.x - 7.0).abs() < 0.001, "{}", map.name);
+        }
+        assert!(!data::HUB.full_instance());
+        for &index in data::CAMPAIGN { assert!(!data::MAPS[index].full_instance()); }
+    }
+
+    #[test]
+    fn dungeon_entry_relocates_once_and_never_resets_exploration() {
+        let mut world = World::new();
+        world.insert_resource(Selection { stage: data::DUNGEONS[0], in_hub: false, ..default() });
+        world.init_resource::<crate::player::Player>();
+        let entity = world.spawn((Transform::default(), Hero { vy: 3.0, air: 2.0 })).id();
+        let system = world.register_system(follow_map);
+        world.run_system(system).unwrap();
+        let start = arena(&data::MAPS[data::DUNGEONS[0]]);
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation, start);
+        let far = start + Vec3::X * 1500.0;
+        world.get_mut::<Transform>(entity).unwrap().translation = far;
+        world.run_system(system).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation, far);
+        world.resource_mut::<Selection>().stage = data::DUNGEONS[1];
+        world.run_system(system).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation, arena(&data::MAPS[data::DUNGEONS[1]]));
+        assert_eq!(world.get::<Hero>(entity).unwrap().air, 0.0);
+    }
 
     #[test]
     fn diagonals_and_combined_commands_never_exceed_straight_line_speed() {

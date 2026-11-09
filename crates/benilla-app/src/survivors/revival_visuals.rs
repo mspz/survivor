@@ -4,7 +4,7 @@ use super::{
     unit_frames::{PartyPlayer, Status},
     Phase, Run, Selection,
 };
-use benilla_world::world_point::WorldPoint;
+use crate::survivors::geometry::Surface as WorldPoint;
 use bevy::{
     asset::RenderAssetUsages, camera::visibility::NoFrustumCulling, mesh::PrimitiveTopology,
     prelude::*,

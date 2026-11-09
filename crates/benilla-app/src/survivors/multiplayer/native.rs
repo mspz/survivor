@@ -717,6 +717,9 @@ fn simulate(world: &mut World) {
         world.entity_mut(companion.entity).insert(companion.physics);
         let host_run = world.remove_resource::<Run>().unwrap();
         companion.run.next_guid = host_run.next_guid;
+        companion.run.expedition_map = host_run.expedition_map;
+        companion.run.dungeon_mods = host_run.dungeon_modifiers();
+        companion.run.bosses = host_run.bosses;
         world.insert_resource(companion.run);
         world.insert_resource(super::HostPlayer {
             entity: local_entity,
@@ -1069,7 +1072,7 @@ fn publish(world: &mut World) {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
                 inventory
                     .config
-                    .generate_loot(level, class, game::items::compensated_magic_find(magic_find), &mut rng)
+                    .generate_reward(level, class, game::items::compensated_magic_find(magic_find), &mut rng)
                     .ok()
             });
             if let Some(item) = item {
@@ -1266,6 +1269,7 @@ fn publish(world: &mut World) {
             chest.notice = notice.clone();
         }
         let snapshot = wire::Snapshot {
+            dungeon_mods: world.resource::<Run>().dungeon_modifiers(),
             boss_warnings: world
                 .get_resource::<game::boss_spells::Warnings>()
                 .map_or_else(Vec::new, |w| w.0.clone()),
@@ -1407,6 +1411,12 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         let mut selection = world.resource_mut::<Selection>();
         selection.stage = snapshot.map.min(data::MAPS.len() - 1);
         selection.in_hub = snapshot.in_hub;
+        selection.dungeon_mods = snapshot.dungeon_mods.active(snapshot.map);
+    }
+    {
+        let mut run = world.resource_mut::<Run>();
+        run.expedition_map = snapshot.map;
+        run.dungeon_mods = snapshot.dungeon_mods.active(snapshot.map);
     }
     let present: BTreeSet<u64> = snapshot.units.iter().map(|u| u.guid).collect();
     guest.entities.retain(|guid, entity| {
@@ -1895,7 +1905,7 @@ mod tests {
 
     fn world() -> World {
         let mut world = World::new();
-        benilla_world::world_point::init_world_point_resources(&mut world);
+        crate::survivors::geometry::init_test_world(&mut world);
         world.init_resource::<Time>();
         world.init_resource::<Time<Real>>();
         world.init_resource::<Run>();
@@ -2496,6 +2506,8 @@ mod tests {
                 mortars: vec![],
                 elapsed: 1.2,
                 circle: None,
+                windup_seconds: None,
+                zones: vec![],
             },
         ]));
         host.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {

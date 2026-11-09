@@ -21,6 +21,10 @@ pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
 pub(super) mod legendary;
 mod starter;
 mod tooltip;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_warrior;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_rogue;
 mod trade;
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::survivors) use trade::TradeAccount;
@@ -148,6 +152,9 @@ pub(super) enum Effect {
     MeleeTargets,
     FlatDamage,
     SpellDamage,
+    SpellDamagePercent,
+    AttackDamagePercent,
+    WeaponDamage,
     AttackSpeed,
     Life,
     Armour,
@@ -164,12 +171,14 @@ pub(super) enum Effect {
     LifeOnBlock,
     LifeOnBlockPercent,
     Regeneration,
+    RegenerationPercent,
     MovementSpeed,
     DamageReduction,
     HealingEffectiveness,
     BossDamage,
     FullLifeDamage,
     LowLifeDamage,
+    AilmentChance,
     BleedChance,
     IgniteChance,
     ChillChance,
@@ -199,10 +208,14 @@ impl Effect {
                 | Self::MeleeTargets
                 | Self::FlatDamage
                 | Self::SpellDamage
+                | Self::SpellDamagePercent
+                | Self::AttackDamagePercent
+                | Self::WeaponDamage
                 | Self::AttackSpeed
                 | Self::BossDamage
                 | Self::FullLifeDamage
                 | Self::LowLifeDamage
+                | Self::AilmentChance
                 | Self::BleedChance
                 | Self::IgniteChance
                 | Self::ChillChance
@@ -231,6 +244,7 @@ impl Effect {
     fn change(self, v: f32) -> Option<Change> {
         Some(match self {
             Self::Damage => Change::IncreasedDamage(v),
+            Self::SpellDamagePercent | Self::AttackDamagePercent => Change::IncreasedDamage(v),
             Self::DotDamage => Change::IncreasedDotDamage(v),
             Self::CritChance => Change::CriticalChance(v),
             Self::CritMultiplier => Change::CriticalMultiplier(v),
@@ -249,6 +263,7 @@ impl Effect {
             Self::BossDamage => Change::DamageAgainstBosses(v),
             Self::FullLifeDamage => Change::DamageAgainstFullLife(v),
             Self::LowLifeDamage => Change::DamageAgainstLowLife(v),
+            Self::AilmentChance => Change::AilmentChance(v),
             Self::BleedChance => Change::BleedChance(v),
             Self::IgniteChance => Change::IgniteChance(v),
             Self::ChillChance => Change::ChillChance(v),
@@ -298,6 +313,7 @@ impl Effect {
                 | Self::Life
                 | Self::Armour
                 | Self::LifeOnKill
+                | Self::RegenerationPercent
                 | Self::Regeneration
                 | Self::MovementSpeed
                 | Self::DamageReduction
@@ -313,7 +329,7 @@ impl Effect {
             Self::BlockChance | Self::LifeOnBlock | Self::LifeOnBlockPercent => {
                 slot == SlotKind::OffHand
             }
-            Self::FlatDamage | Self::AttackSpeed | Self::LifeLeech => slot.weapon(),
+            Self::FlatDamage | Self::AttackSpeed | Self::LifeLeech | Self::WeaponDamage => slot.weapon(),
             Self::Luck => matches!(slot, SlotKind::Ring | SlotKind::Neck),
             Self::Proc => slot == SlotKind::Trinket,
             _ => true,
@@ -387,6 +403,7 @@ pub(super) struct Bonuses {
     pub life_on_block: f32,
     pub life_on_block_percent: f32,
     pub regeneration: f32,
+    pub regeneration_percent: f32,
     pub movement: f32,
     pub reduction: f32,
     pub healing: f32,
@@ -411,6 +428,7 @@ impl Bonuses {
             Effect::LifeOnBlock => self.life_on_block += value,
             Effect::LifeOnBlockPercent => self.life_on_block_percent += value,
             Effect::Regeneration => self.regeneration += value,
+            Effect::RegenerationPercent => self.regeneration_percent += value,
             Effect::MovementSpeed => self.movement += value,
             Effect::DamageReduction => self.reduction += value,
             Effect::HealingEffectiveness => self.healing += value,
@@ -1273,10 +1291,21 @@ impl Inventory {
                     Effect::Life => hp += a.value,
                     Effect::Armour => armour += a.value,
                     _ if a.effect.change(a.value).is_some() => {
-                        let tags = a.tags.iter().fold(Tags(0), |all, tag| all | tag.tags());
+                        let required = match a.effect {
+                            Effect::SpellDamagePercent => Tags::SPELL | Tags::DAMAGE,
+                            Effect::AttackDamagePercent => Tags::ATTACK | Tags::DAMAGE,
+                            _ => Tags(0),
+                        };
+                        let tags = a.tags.iter().fold(required, |all, tag| all | tag.tags());
                         modifiers.push(Modifier {
                             source: SOURCE,
-                            filter: Filter::requiring(tags),
+                            filter: Filter {
+                                all: tags,
+                                exclude: if matches!(a.effect, Effect::SpellDamagePercent | Effect::AttackDamagePercent) {
+                                    Tags::HEAL | Tags::GUARD | Tags::UTILITY
+                                } else { Tags(0) },
+                                ..default()
+                            },
                             change: a.effect.change(a.value).unwrap(),
                         });
                     }
@@ -1433,6 +1462,13 @@ pub(in crate::survivors) fn chest_item_level(monster_level: u32, boss: bool) -> 
         monster_level.clamp(1, MAX_ITEM_LEVEL)
     }
 }
+pub(in crate::survivors) fn reward_item_level(map: usize, monster_level: u32, boss: bool) -> u32 {
+    if super::data::dungeon(map) {
+        super::dungeon_config::get(map).item_level
+    } else {
+        chest_item_level(monster_level, boss)
+    }
+}
 pub(super) fn chest_drops(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
@@ -1447,8 +1483,8 @@ pub(super) fn chest_drops(
         {
             continue;
         }
-        match inventory.config.generate_loot(
-            chest_item_level(drop.item_level, drop.boss),
+        match inventory.config.generate_reward(
+            reward_item_level(run.expedition_map, drop.item_level, drop.boss) + run.dungeon_modifiers().bonus(),
             run.class.id,
             compensated_magic_find(run.equipment.magic_find + run.specialty.magic_find),
             &mut rng,
@@ -1693,6 +1729,47 @@ mod tests {
             inventory.bag().map(|i| i.id).collect::<Vec<_>>(),
             [2, 3, 4, 5, 1]
         );
+    }
+    #[test]
+    fn global_spell_and_attack_damage_scale_their_own_hits_and_dots_and_roundtrip() {
+        let mut weapon = item(SlotKind::MainHand,
+            vec![affix(Effect::Armour, 1.0, AffixKind::Suffix, vec![])]);
+        weapon.equipment_type = EquipmentType::MeleeOneHand;
+        weapon.base_damage = Some(weapons::DamageRange { min: 10.0, max: 20.0 });
+        let spell_item = item(SlotKind::Neck,
+            vec![affix(Effect::SpellDamagePercent, 0.4, AffixKind::Prefix, vec![])]);
+        let attack_item = item(SlotKind::Ring,
+            vec![affix(Effect::AttackDamagePercent, 0.25, AffixKind::Prefix, vec![])]);
+        let mut inventory = Inventory::fixture(vec![weapon, spell_item, attack_item]);
+        inventory.class = 3;
+        let mut run = Run {
+            class: &super::super::data::CLASSES[2],
+            balance: super::super::balance::Config::parse("version=1\n[classes]\n[tags]\n").unwrap(),
+            ..default()
+        };
+        inventory.equip(1, "Main hand").unwrap();
+        inventory.apply(&mut run);
+        let skills = [
+            ("heroic_strike", 1.25), ("arcane_shot", 1.25), ("serpent_sting", 1.25),
+            ("fireball", 1.4), ("corruption", 1.4),
+            ("rejuvenation", 1.0), ("power_word_shield", 1.0),
+        ];
+        let before: Vec<_> = skills.iter().map(|(key, _)|
+            run.resolve_spell(super::super::data::ability(key), 1)).collect();
+        inventory.equip(2, "Neck").unwrap();
+        inventory.equip(3, "Ring 1").unwrap();
+        for _ in 0..2 {
+            inventory.apply(&mut run);
+            for ((key, multiplier), old) in skills.iter().zip(&before) {
+                let new = run.resolve_spell(super::super::data::ability(key), 1);
+                assert!((new.dmg - old.dmg * multiplier).abs() < 0.001, "{key}");
+                assert!((new.dot - old.dot * multiplier).abs() < 0.001, "{key}");
+            }
+            assert_eq!(inventory.item(1).unwrap().weapon_damage(), weapons::DamageRange { min: 10.0, max: 20.0 });
+        }
+        let saved = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        assert_eq!(saved.items[1].affixes[0].effect, Effect::SpellDamagePercent);
+        assert_eq!(saved.items[2].affixes[0].effect, Effect::AttackDamagePercent);
     }
     #[test]
     fn spell_damage_affix_adds_flat_spell_hits_and_shields_and_roundtrips() {

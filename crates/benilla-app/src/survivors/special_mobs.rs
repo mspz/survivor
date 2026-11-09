@@ -39,6 +39,8 @@ impl Bomb {
             mortars: vec![],
             elapsed: self.elapsed,
             circle: Some([self.radius, self.duration]),
+            windup_seconds: None,
+            zones: vec![],
         }
     }
 }
@@ -110,6 +112,8 @@ pub(super) fn tick(
                     mortars: vec![],
                     elapsed: 0.0,
                     circle: Some([config.explosives.radius, config.explosives.delay]),
+                    windup_seconds: None,
+                    zones: vec![],
                 });
             }
             continue;

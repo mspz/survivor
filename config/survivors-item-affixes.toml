@@ -8,6 +8,41 @@
 # slots controls compatible slots; tags requires ALL listed tags; group prevents duplicates.
 
 [[affixes]]
+id = "increased_spell_damage"
+name = "Sorcerous"
+kind = "prefix"
+group = "increased_spell_damage"
+effect = "spell_damage_percent"
+min = 0.05
+max = 0.15
+weight = 20
+tags = ["spell", "damage"]
+slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
+
+[[affixes]]
+id = "increased_attack_damage"
+name = "Martial"
+kind = "prefix"
+group = "increased_attack_damage"
+effect = "attack_damage_percent"
+min = 0.05
+max = 0.15
+weight = 20
+tags = ["attack", "damage"]
+slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
+
+[[affixes]]
+id = "weapon_damage"
+name = "Heavy"
+kind = "prefix"
+group = "weapon_damage"
+effect = "weapon_damage"
+min = 0.10
+max = 0.30
+weight = 24
+slots = ["main_hand", "off_hand", "ranged"]
+
+[[affixes]]
 # Flat power on damaging Spell hits and spell absorption; never attacks, healing or DoT ticks.
 # Staple offensive roll, available on every combat equipment slot.
 id = "spell_damage"
@@ -27,8 +62,8 @@ name = "of Armour"
 kind = "suffix"
 group = "armour"
 effect = "armour"
-min = 2
-max = 8
+min = 6
+max = 24
 weight = 24
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -62,8 +97,8 @@ name = "Ferocious"
 kind = "prefix"
 group = "crit_multiplier"
 effect = "crit_multiplier"
-min = 0.10
-max = 0.25
+min = 0.05
+max = 0.125
 weight = 16
 tags = ["damage"]
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
@@ -74,22 +109,10 @@ name = "Quickened"
 kind = "prefix"
 group = "recovery"
 effect = "cooldown_recovery"
-min = 0.03
-max = 0.10
+min = 0.02
+max = 0.066666667
 weight = 16
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
-
-[[affixes]]
-id = "attack_speed"
-name = "Swift"
-kind = "prefix"
-group = "attack_speed"
-effect = "attack_speed"
-min = 0.05
-max = 0.15
-weight = 20
-tags = ["attack"]
-slots = ["main_hand","off_hand","ranged"]
 
 [[affixes]]
 id = "area"
@@ -97,8 +120,8 @@ name = "Expansive"
 kind = "prefix"
 group = "area"
 effect = "area"
-min = 0.05
-max = 0.20
+min = 0.025
+max = 0.1
 weight = 16
 tags = ["area"]
 slots = ["neck","hands","ring","trinket","main_hand","off_hand","ranged"]
@@ -109,8 +132,8 @@ name = "Lasting"
 kind = "prefix"
 group = "duration"
 effect = "duration"
-min = 0.05
-max = 0.20
+min = 0.025
+max = 0.1
 weight = 16
 tags = ["duration"]
 slots = ["head","neck","ring","trinket","main_hand","off_hand","ranged"]
@@ -155,9 +178,9 @@ id = "regeneration"
 name = "of Regeneration"
 kind = "suffix"
 group = "regeneration"
-effect = "regeneration"
-min = 0.5
-max = 2.0
+effect = "regeneration_percent"
+min = 0.0020771795
+max = 0.008308718
 weight = 24
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -195,88 +218,17 @@ weight = 16
 slots = ["neck", "trinket"]
 
 [[affixes]]
-id = "boss_damage"
-name = "Giantslayer's"
+id = "ailment_chance"
+# Physical hits bleed, Fire hits ignite, Cold hits chill, Nature hits poison.
+name = "Afflicting"
 kind = "prefix"
-group = "boss_damage"
-effect = "boss_damage"
-min = 0.08
-max = 0.20
-weight = 16
-tags = ["damage"]
-slots = ["main_hand", "off_hand", "ranged", "trinket"]
-
-[[affixes]]
-id = "full_life_damage"
-name = "Ambusher's"
-kind = "prefix"
-group = "full_life_damage"
-effect = "full_life_damage"
-min = 0.08
-max = 0.25
-weight = 16
-tags = ["damage"]
-slots = ["main_hand", "off_hand", "ranged", "hands"]
-
-[[affixes]]
-id = "low_life_damage"
-name = "Executing"
-kind = "prefix"
-group = "low_life_damage"
-effect = "low_life_damage"
-min = 0.08
-max = 0.25
+group = "ailment_chance"
+effect = "ailment_chance"
+min = 0.025
+max = 0.075
 weight = 16
 tags = ["damage"]
 slots = ["main_hand", "off_hand", "ranged", "ring"]
-
-[[affixes]]
-id = "bleed_chance"
-name = "Bleeding"
-kind = "prefix"
-group = "bleed_chance"
-effect = "bleed_chance"
-min = 0.05
-max = 0.15
-weight = 16
-tags = ["attack", "physical"]
-slots = ["main_hand", "off_hand", "ranged"]
-
-[[affixes]]
-id = "ignite_chance"
-name = "Igniting"
-kind = "prefix"
-group = "ignite_chance"
-effect = "ignite_chance"
-min = 0.05
-max = 0.15
-weight = 16
-tags = ["fire"]
-slots = ["main_hand", "off_hand", "ranged", "ring"]
-
-[[affixes]]
-id = "chill_chance"
-name = "Chilling"
-kind = "prefix"
-group = "chill_chance"
-effect = "chill_chance"
-min = 0.05
-max = 0.15
-weight = 16
-tags = ["cold"]
-slots = ["main_hand", "off_hand", "ranged", "ring"]
-
-[[affixes]]
-id = "knockback_chance"
-name = "Repelling"
-kind = "prefix"
-group = "knockback_chance"
-effect = "knockback_chance"
-min = 0.04
-max = 0.12
-weight = 12
-tags = ["projectile"]
-slots = ["ranged"]
 
 [[affixes]]
 id = "armour_penetration"
@@ -284,22 +236,11 @@ name = "Piercing"
 kind = "prefix"
 group = "armour_penetration"
 effect = "armour_penetration"
-min = 0.10
-max = 0.30
+min = 0.025
+max = 0.075
 weight = 12
 tags = ["physical"]
 slots = ["main_hand", "off_hand", "ranged", "hands"]
-
-[[affixes]]
-id = "pickup_radius"
-name = "of Attraction"
-kind = "suffix"
-group = "pickup_radius"
-effect = "pickup_radius"
-min = 0.10
-max = 0.30
-weight = 16
-slots = ["waist", "ring"]
 
 [[affixes]]
 id = "experience"
@@ -380,8 +321,8 @@ name = "of Stamina"
 kind = "suffix"
 group = "stamina"
 effect = "stamina"
-min = 10
-max = 40
+min = 20
+max = 80
 weight = 24
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -391,8 +332,8 @@ name = "of Strength"
 kind = "suffix"
 group = "strength"
 effect = "strength"
-min = 5
-max = 20
+min = 15
+max = 60
 weight = 24
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -402,8 +343,8 @@ name = "of Agility"
 kind = "suffix"
 group = "agility"
 effect = "agility"
-min = 5
-max = 20
+min = 15
+max = 60
 weight = 24
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -413,8 +354,8 @@ name = "of Intelligence"
 kind = "suffix"
 group = "intelligence"
 effect = "intelligence"
-min = 5
-max = 20
+min = 15
+max = 60
 weight = 24
 slots = ["head","neck","shoulders","back","chest","shirt","tabard","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -435,8 +376,8 @@ name = "of Recovery"
 kind = "suffix"
 group = "life_on_block"
 effect = "life_on_block"
-min = 2
-max = 5
+min = 8
+max = 20
 weight = 6
 slots = ["off_hand"]
 
@@ -468,8 +409,8 @@ name = "of Fire Warding"
 kind = "suffix"
 group = "fire_resistance"
 effect = "fire_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -479,8 +420,8 @@ name = "of Cold Warding"
 kind = "suffix"
 group = "cold_resistance"
 effect = "cold_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -490,8 +431,8 @@ name = "of Lightning Warding"
 kind = "suffix"
 group = "lightning_resistance"
 effect = "lightning_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -501,8 +442,8 @@ name = "of Nature Warding"
 kind = "suffix"
 group = "nature_resistance"
 effect = "nature_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -512,8 +453,8 @@ name = "of Arcane Warding"
 kind = "suffix"
 group = "arcane_resistance"
 effect = "arcane_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -523,8 +464,8 @@ name = "of Holy Warding"
 kind = "suffix"
 group = "holy_resistance"
 effect = "holy_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 
@@ -534,8 +475,8 @@ name = "of Shadow Warding"
 kind = "suffix"
 group = "shadow_resistance"
 effect = "shadow_resistance"
-min = 2
-max = 8
+min = 3
+max = 12
 weight = 20
 slots = ["head","neck","shoulders","back","chest","wrists","hands","waist","legs","feet","ring","trinket","main_hand","off_hand","ranged"]
 

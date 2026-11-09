@@ -147,6 +147,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(grade::plugin)
         .add_plugins(characters::plugin)
         .add_plugins(hub_ground::plugin)
+        .add_plugins(dungeon_portals::plugin)
         .add_plugins(options::plugin)
         .add_plugins(card_draw::plugin)
         .add_plugins(codex::plugin)

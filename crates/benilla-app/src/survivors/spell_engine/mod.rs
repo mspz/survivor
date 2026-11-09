@@ -55,6 +55,7 @@ pub enum Change {
     DamageAgainstFullLife(f32),
     DamageAgainstLowLife(f32),
     ArmourPenetration(f32),
+    AilmentChance(f32),
     BleedChance(f32),
     IgniteChance(f32),
     ChillChance(f32),
@@ -103,6 +104,7 @@ impl Change {
             Self::DamageAgainstFullLife(v) => Self::DamageAgainstFullLife(v * r),
             Self::DamageAgainstLowLife(v) => Self::DamageAgainstLowLife(v * r),
             Self::ArmourPenetration(v) => Self::ArmourPenetration(v * r),
+            Self::AilmentChance(v) => Self::AilmentChance(v * r),
             Self::BleedChance(v) => Self::BleedChance(v * r),
             Self::IgniteChance(v) => Self::IgniteChance(v * r),
             Self::ChillChance(v) => Self::ChillChance(v * r),
@@ -155,6 +157,7 @@ impl Change {
                 format!("+{:.1}% more damage against low-life enemies", v * 100.0)
             }
             Self::ArmourPenetration(v) => format!("{:.1}% physical armour penetration", v * 100.0),
+            Self::AilmentChance(v) => format!("{:.1}% chance to apply ailment", v * 100.0),
             Self::BleedChance(v) => format!("{:.1}% chance to bleed", v * 100.0),
             Self::IgniteChance(v) => format!("{:.1}% chance to ignite", v * 100.0),
             Self::ChillChance(v) => format!("{:.1}% chance to chill", v * 100.0),

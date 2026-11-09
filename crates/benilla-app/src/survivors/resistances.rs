@@ -1,8 +1,8 @@
 //! Additive elemental percentage points, capped at 75% independently of armour.
 use super::spell_engine::Tags;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Resistances {
     pub fire: f32,

@@ -300,7 +300,7 @@ fn spawn(
     mut run: ResMut<Run>,
     npc: Query<(Entity, &Gambler, &Transform)>,
     heroes: Query<&hero::Hero>,
-    world: benilla_world::world_point::WorldPoint,
+    world: crate::survivors::geometry::Surface,
 ) {
     let training = super::training::active(&selection);
     if !selection.in_hub && !training {
@@ -1427,7 +1427,7 @@ mod tests {
     fn training_services_spawn_only_on_test_map_and_gold_is_repeatable() {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
-        benilla_world::world_point::init_world_point_resources(&mut world);
+        crate::survivors::geometry::init_test_world(&mut world);
         world.init_resource::<Run>();
         world.insert_resource(Role::Solo);
         world.insert_resource(Selection {

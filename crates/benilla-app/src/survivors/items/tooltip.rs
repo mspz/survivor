@@ -61,9 +61,12 @@ impl Affix {
             });
         } else {
             let label = match self.effect {
+                Effect::RegenerationPercent => "Maximum life regenerated per second",
                 Effect::BlockChance => "Increased chance to block",
                 Effect::LifeOnBlockPercent => "Maximum life recovered on block",
                 Effect::Damage => "Damage",
+                Effect::SpellDamagePercent => "Increased spell damage",
+                Effect::AttackDamagePercent => "Increased attack damage",
                 Effect::DotDamage => "Damage over time",
                 Effect::CritChance => "Critical strike",
                 Effect::CritMultiplier => "Critical damage",
@@ -72,6 +75,7 @@ impl Affix {
                 Effect::Duration => "Duration",
                 Effect::Repeat => "Repeat chance",
                 Effect::AttackSpeed => "Attack speed",
+                Effect::WeaponDamage => "Increased weapon damage (local)",
                 Effect::LifeLeech => "Life leech",
                 Effect::MovementSpeed => "Movement speed",
                 Effect::DamageReduction => "Damage reduction",
@@ -79,6 +83,7 @@ impl Affix {
                 Effect::BossDamage => "Boss damage",
                 Effect::FullLifeDamage => "Damage against full health",
                 Effect::LowLifeDamage => "Damage against low health",
+                Effect::AilmentChance => "Chance to apply ailment",
                 Effect::BleedChance => "Bleed chance",
                 Effect::IgniteChance => "Ignite chance",
                 Effect::ChillChance => "Chill chance",

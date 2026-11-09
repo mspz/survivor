@@ -11,6 +11,7 @@ pub struct HitModifiers {
     pub bleed: f32,
     pub ignite: f32,
     pub chill: f32,
+    pub poison: f32,
     pub knockback: f32,
 }
 pub fn modifiers(skill: &str, entries: &[Modifier]) -> HitModifiers {
@@ -29,7 +30,8 @@ pub fn modifiers_tagged(skill: &str, tags: Tags, entries: &[Modifier]) -> HitMod
     let minion_damage = tags.contains(Tags::MINION | Tags::DAMAGE);
     for m in entries.iter().filter(|m| {
         m.filter.matches_hit(skill, tags)
-            || (minion_damage && matches!(m.change, Change::LifeLeech(_))
+            || (minion_damage
+                && matches!(m.change, Change::LifeLeech(_))
                 && m.filter.matches_hit(skill, tags | Tags::ATTACK))
     }) {
         let attack = tags::weapon_hit(tags);
@@ -40,6 +42,24 @@ pub fn modifiers_tagged(skill: &str, tags: Tags, entries: &[Modifier]) -> HitMod
             Change::DamageAgainstLowLife(v) => out.low += finite(v),
             Change::ArmourPenetration(v) if tags.contains(Tags::PHYSICAL) => {
                 out.penetration += finite(v)
+            }
+            Change::AilmentChance(v)
+                if tags.contains(Tags::DAMAGE)
+                    && !tags.intersects(Tags::GUARD | Tags::HEAL | Tags::UTILITY) =>
+            {
+                let chance = finite(v);
+                if tags.contains(Tags::PHYSICAL) {
+                    out.bleed += chance;
+                }
+                if tags.contains(Tags::FIRE) {
+                    out.ignite += chance;
+                }
+                if tags.contains(Tags::COLD) {
+                    out.chill += chance;
+                }
+                if tags.contains(Tags::NATURE) {
+                    out.poison += chance;
+                }
             }
             Change::BleedChance(v)
                 if tags.contains(Tags::PHYSICAL | Tags::DAMAGE)
@@ -81,6 +101,28 @@ pub fn damage(raw: f32, hp: f32, max_hp: f32, boss: bool, armour: f32, mods: Hit
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ailment_chance_follows_damage_school_and_excludes_non_damage() {
+        let entries = [Modifier {
+            source: 1,
+            filter: Filter::default(),
+            change: Change::AilmentChance(0.15),
+        }];
+        for (school, expected) in [
+            (Tags::PHYSICAL, [0.15, 0.0, 0.0, 0.0]),
+            (Tags::FIRE, [0.0, 0.15, 0.0, 0.0]),
+            (Tags::COLD, [0.0, 0.0, 0.15, 0.0]),
+            (Tags::NATURE, [0.0, 0.0, 0.0, 0.15]),
+            (Tags::HOLY, [0.0; 4]),
+        ] {
+            let hit = modifiers_tagged("test", school | Tags::DAMAGE, &entries);
+            assert_eq!([hit.bleed, hit.ignite, hit.chill, hit.poison], expected);
+            for excluded in [Tags::HEAL, Tags::GUARD, Tags::UTILITY] {
+                let hit = modifiers_tagged("test", school | Tags::DAMAGE | excluded, &entries);
+                assert_eq!([hit.bleed, hit.ignite, hit.chill, hit.poison], [0.0; 4]);
+            }
+        }
+    }
     #[test]
     fn physical_spell_hits_can_bleed_and_leech_through_attack_proc_filters() {
         let entries = [Change::BleedChance(1.0), Change::LifeLeech(0.1)].map(|change| Modifier {

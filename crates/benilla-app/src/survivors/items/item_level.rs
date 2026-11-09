@@ -2,7 +2,15 @@
 use super::*;
 
 pub(super) fn factor(level: u32) -> f32 {
-    1.015_f32.powi(level.clamp(1, 100) as i32 - 1)
+    1.015_f32.powi(level.clamp(1, super::super::dungeon_config::MAX_REWARD_LEVEL) as i32 - 1)
+}
+
+pub(super) fn growth(effect: Effect, level: u32) -> f32 {
+    if effect == Effect::CritChance && level > 30 {
+        factor(30) + (factor(level) - factor(30)) * 0.5
+    } else {
+        factor(level)
+    }
 }
 
 pub(super) fn roll_max(effect: Effect, maximum: f32, rarity: Rarity) -> f32 {
@@ -28,7 +36,8 @@ pub(super) fn scale(effect: Effect, value: f32, level: u32) -> f32 {
     ) {
         return value;
     }
-    let scaled = value * factor(level);
+    // Preserve the level-30 value; only subsequent critical-chance growth is halved.
+    let scaled = value * growth(effect, level);
     let scaled = if effect.discrete() {
         scaled.round()
     } else {
@@ -43,6 +52,7 @@ pub(super) fn scale(effect: Effect, value: f32, level: u32) -> f32 {
             | Effect::Repeat
             | Effect::LifeLeech
             | Effect::DamageReduction
+            | Effect::AilmentChance
             | Effect::BleedChance
             | Effect::IgniteChance
             | Effect::ChillChance
@@ -72,6 +82,58 @@ pub(super) fn quality_weights(weights: [f64; 3], level: u32, magic_find: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximum_dungeon_rewards_keep_growing_beyond_one_hundred() {
+        let maximum = super::super::super::data::DUNGEON_ITEM_LEVEL
+            + super::super::super::dungeon_mods::MAX_BONUS;
+        assert_eq!(maximum, 110);
+        assert!(factor(maximum) > factor(100));
+        assert!(scale(Effect::Armour, 10.0, maximum) > scale(Effect::Armour, 10.0, 100));
+    }
+
+    #[test]
+    fn critical_affix_growth_is_halved_above_thirty_without_losing_existing_power() {
+        let at_thirty = scale(Effect::CritChance, 0.04, 30);
+        for level in [1, 30] {
+            assert!((scale(Effect::CritChance, 0.04, level) - 0.04 * factor(level)).abs() < 1e-6);
+        }
+        for level in [31, 60, 100] {
+            let actual = scale(Effect::CritChance, 0.04, level);
+            let original_growth = 0.04 * (factor(level) - factor(30));
+            assert!(actual > at_thirty);
+            assert!((actual - at_thirty - original_growth * 0.5).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn regeneration_affix_scales_to_two_percent_at_sixty_and_uses_maximum_life() {
+        let config: toml::Value = toml::from_str(include_str!(
+            "../../../../../config/survivors-item-affixes.toml"
+        ))
+        .unwrap();
+        let affix = config["affixes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"].as_str() == Some("regeneration"))
+            .unwrap();
+        assert_eq!(affix["effect"].as_str(), Some("regeneration_percent"));
+        let value = scale(
+            Effect::RegenerationPercent,
+            affix["max"].as_float().unwrap() as f32,
+            60,
+        );
+        assert!((value - 0.02).abs() < 1e-6);
+        let mut run = Run::default();
+        let before = run.stats();
+        run.equipment.regeneration_percent = value;
+        let after = run.stats();
+        assert!((after.regen - before.regen - after.max_hp * 0.02).abs() < 1e-4);
+        run.equipment_hp += 100.0;
+        let boosted = run.stats();
+        assert!((boosted.regen - after.regen - 2.0).abs() < 1e-4);
+    }
 
     #[test]
     fn rarity_increases_roll_ceilings_and_preserves_integer_stats() {

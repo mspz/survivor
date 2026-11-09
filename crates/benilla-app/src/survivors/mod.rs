@@ -20,6 +20,8 @@ mod currency;
 mod damage_colors;
 mod data;
 mod diagnostics;
+mod dungeon_mods;
+mod dungeon_config;
 mod enemies;
 mod enemy_visuals;
 mod expedition_config;
@@ -27,6 +29,8 @@ mod extra_spells;
 mod fill;
 mod forms;
 mod gambling;
+mod geometry;
+mod dungeon_portals;
 mod codex;
 mod player_auras;
 mod grade;
@@ -156,6 +160,7 @@ pub(super) struct Selection {
     pub look: Option<usize>,
     /// An index into [`data::MAPS`].
     pub map: usize,
+    pub dungeon_mods: dungeon_mods::Mods,
     /// The battleground the world is standing in: the last one entered (or the saved pick at
     /// boot). Picking another at the menu changes only `map`, so the menu hero stays put and no
     /// loading screen rises until Enter World.
@@ -169,7 +174,7 @@ impl Selection {
         if map == data::TRAINING_MAP {
             self.test_character
         } else {
-            (self.test_character && data::CAMPAIGN.contains(&map)) || self.progress.allows(map)
+            (self.test_character && (data::CAMPAIGN.contains(&map) || data::dungeon(map))) || self.progress.allows(map)
         }
     }
     pub fn class_def(&self) -> Option<&'static ClassDef> {

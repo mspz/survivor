@@ -1,10 +1,12 @@
 //! Host-owned expedition tuning. Training actors deliberately bypass these rules.
 use super::data;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 const FILE: &str = include_str!("../../../../config/survivors-expeditions.toml");
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
+    #[serde(skip)]
+    dungeon_map: Option<usize>,
     version: u32,
     #[serde(default)]
     pub elites: Elites,
@@ -36,7 +38,7 @@ pub(super) struct Config {
     pub max_monsters: usize,
     zones: [Zone; 6],
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Elites {
     /// Campaign zone number, starting at 1; the variant remains available afterwards.
@@ -59,7 +61,7 @@ impl Default for Elites {
         }
     }
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Sprinters {
     /// Campaign zone number, starting at 1; the variant remains available afterwards.
@@ -76,7 +78,7 @@ impl Default for Sprinters {
         }
     }
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Explosives {
     /// Campaign zone number, starting at 1; the variant remains available afterwards.
@@ -97,7 +99,7 @@ impl Default for Explosives {
         }
     }
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Healers {
     /// Campaign zone number, starting at 1; the variant remains available afterwards.
@@ -118,7 +120,7 @@ impl Default for Healers {
         }
     }
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Protectors {
     /// Campaign zone number, starting at 1; the variant remains available afterwards.
@@ -143,7 +145,7 @@ fn default_party_health() -> f32 {
 fn default_ranged_chance() -> f32 {
     0.02
 }
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Zone {
     damage_reduction: f32,
@@ -252,6 +254,9 @@ impl Config {
         Ok(c)
     }
     pub fn zone(&self, map: usize) -> Zone {
+        if data::dungeon(map) {
+            return super::dungeon_config::get(map).zone;
+        }
         self.zones[data::CAMPAIGN.iter().position(|&i| i == map).unwrap_or(0)]
     }
     pub fn defenses(&self, map: usize, level: u32, boss: bool, training: bool) -> (f32, f32) {
@@ -266,8 +271,18 @@ impl Config {
         (level as f32 * per_level, self.zone(map).damage_reduction)
     }
     pub fn factor(&self, elapsed: f32) -> f32 {
-        1.0 + (self.end_multiplier - 1.0) * data::progress(elapsed).clamp(0.0, 1.0)
+        1.0 + (self.end_multiplier - 1.0) * self.progress(elapsed)
     }
+    pub fn for_map(self, map: usize) -> Self {
+        if !data::dungeon(map) { return self; }
+        let mut config = super::dungeon_config::get(map).expedition().expect("validated dungeon combat");
+        config.dungeon_map = Some(map);
+        config
+    }
+    pub fn duration(&self) -> f32 {
+        self.dungeon_map.map_or(data::VICTORY_SECS, |map| super::dungeon_config::get(map).duration_seconds)
+    }
+    pub fn progress(&self, elapsed: f32) -> f32 { (elapsed / self.duration()).clamp(0.0, 1.0) }
     pub fn party_health(&self, players: usize) -> f32 {
         if players <= 1 {
             1.0
@@ -309,7 +324,7 @@ impl Config {
         }
     }
     pub fn population(&self, map: usize, elapsed: f32) -> usize {
-        let p = data::progress(elapsed).clamp(0.0, 1.0);
+        let p = self.progress(elapsed);
         (((self.population_start as f32 + p * (self.population_end - self.population_start) as f32)
             * self.zone(map).monster_quantity)
             .ceil() as usize)
@@ -337,6 +352,21 @@ impl Default for Config {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn all_dungeons_are_harder_than_the_final_expedition_at_the_same_time() {
+        let config = Config::default();
+        let campaign = data::CAMPAIGN[5];
+        for &map in data::DUNGEONS {
+            for boss in [false, true] {
+                let before = config.stats(campaign, boss);
+                let after = config.stats(map, boss);
+                assert_eq!(after.0, before.0 * if boss { 6.0 } else { 2.0 });
+                assert_eq!(after.1, before.1 * 1.5);
+            }
+            assert!(config.population(map, 0.0) > config.population(campaign, 0.0));
+            assert_eq!(config.zone(map).damage_reduction, config.zone(campaign).damage_reduction);
+        }
+    }
     #[test]
     fn variants_are_configurable_and_reject_invalid_settings() {
         let mut table: toml::Value = toml::from_str(FILE).unwrap();

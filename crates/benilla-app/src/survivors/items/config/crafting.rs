@@ -15,13 +15,14 @@ impl CraftProfile {
             Self::Intelligence => "Intelligence",
         }
     }
-    fn allows(self, affix: &AffixDef) -> bool {
+    pub(super) fn allows(self, affix: &AffixDef) -> bool {
         let primary = match self {
             Self::Strength => Effect::Strength,
             Self::Agility => Effect::Agility,
             Self::Intelligence => Effect::Intelligence,
         };
-        (!affix.effect.primary() || affix.effect == Effect::Stamina || affix.effect == primary)
+        (affix.effect != Effect::WeaponDamage || self != Self::Intelligence)
+            && (!affix.effect.primary() || affix.effect == Effect::Stamina || affix.effect == primary)
             && !affix.tags.iter().any(|tag| match tag {
                 Tag::Attack | Tag::Melee => self == Self::Intelligence,
                 Tag::Spell => self != Self::Intelligence,
@@ -33,6 +34,58 @@ impl CraftProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn global_damage_affixes_follow_profiles_and_percent_spell_damage_is_not_tripled() {
+        let config = Config::builtin();
+        let mut request = request();
+        request.rarity = Rarity::Normal;
+        for (profile, id, absent) in [
+            (CraftProfile::Strength, "increased_attack_damage", "increased_spell_damage"),
+            (CraftProfile::Agility, "increased_attack_damage", "increased_spell_damage"),
+            (CraftProfile::Intelligence, "increased_spell_damage", "increased_attack_damage"),
+        ] {
+            request.profile = profile;
+            let choices = config.craft_affixes(&request, 1, 1);
+            assert!(choices.iter().any(|a| a.id == id));
+            assert!(!choices.iter().any(|a| a.id == absent));
+        }
+        request.slot = SlotKind::MainHand;
+        request.equipment = EquipmentType::MeleeOneHand;
+        request.profile = CraftProfile::Intelligence;
+        request.affixes = Some(vec!["increased_spell_damage".into()]);
+        for seed in 1..=40 {
+            let item = config.generate_craft(&request, 1, 1, &mut Rng(seed)).unwrap();
+            assert!((0.05..=0.15).contains(&item.affixes[0].value));
+        }
+    }
+    #[test]
+    fn weapon_mods_follow_the_craft_profile_and_intelligence_spell_rolls_are_tripled() {
+        let config = Config::builtin();
+        let mut request = request();
+        request.slot = SlotKind::MainHand;
+        request.equipment = EquipmentType::MeleeOneHand;
+        request.rarity = Rarity::Normal;
+        request.affixes = Some(vec!["weapon_damage".into()]);
+        for profile in [CraftProfile::Strength, CraftProfile::Agility] {
+            request.profile = profile;
+            let item = config.generate_craft(&request, 1, 1, &mut Rng(3)).unwrap();
+            assert_eq!(item.affixes[0].effect, Effect::WeaponDamage);
+        }
+        request.profile = CraftProfile::Intelligence;
+        assert!(config.generate_craft(&request, 1, 1, &mut Rng(3)).is_err());
+        request.affixes = Some(vec!["spell_damage".into()]);
+        let choices = config.craft_affixes(&request, 1, 1);
+        let label = &choices.iter().find(|a| a.id == "spell_damage").unwrap().label;
+        assert!(label.contains("+9") && label.contains("+27"), "{label}");
+        for seed in 1..=40 {
+            let weapon = config.generate_craft(&request, 1, 1, &mut Rng(seed)).unwrap();
+            assert!((9.0..=27.0).contains(&weapon.affixes[0].value));
+        }
+        request.slot = SlotKind::Ring;
+        request.equipment = EquipmentType::Universal;
+        let ring = config.generate_craft(&request, 1, 1, &mut Rng(3)).unwrap();
+        assert!((3.0..=9.0).contains(&ring.affixes[0].value));
+    }
     fn request() -> CraftRequest {
         CraftRequest {
             slot: SlotKind::Chest,
@@ -442,7 +495,7 @@ impl Config {
         })
     }
     fn craft_affix_allowed(&self, a: &AffixDef, base: &Base, profile: CraftProfile) -> bool {
-        a.weight > 0.0 && a.compatible_base(base) && profile.allows(a)
+        a.weight > 0.0 && a.compatible_profile(base, Some(profile)) && profile.allows(a)
     }
     fn craft_roll_affix(
         &self,
@@ -514,8 +567,9 @@ impl Config {
             .iter()
             .filter(|a| self.craft_affix_allowed(a, base, request.profile))
             .map(|a| {
+                let a = a.for_weapon(base, Some(request.profile));
                 let mut rolled =
-                    self.craft_roll_affix(a, level, class, request.rarity, true, &mut rng);
+                    self.craft_roll_affix(&a, level, class, request.rarity, true, &mut rng);
                 rolled.value = item_level::scale(a.effect, a.min, level);
                 let minimum = rolled.description();
                 rolled.value = item_level::scale(
@@ -632,8 +686,9 @@ impl Config {
         let affixes: Vec<_> = chosen
             .into_iter()
             .map(|a| {
+                let a = a.for_weapon(base, Some(request.profile));
                 self.craft_roll_affix(
-                    a,
+                    &a,
                     level,
                     class,
                     request.rarity,

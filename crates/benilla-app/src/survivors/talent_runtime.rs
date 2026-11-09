@@ -50,6 +50,11 @@ pub(super) struct Taunted {
     pub owner: Option<u64>,
     pub until: f32,
 }
+impl Taunted {
+    pub(super) fn damage_multiplier(&self, now: f32) -> f32 {
+        if self.until > now { 1.25 } else { 1.0 }
+    }
+}
 #[derive(Component)]
 pub(super) struct Summon {
     family: u8,

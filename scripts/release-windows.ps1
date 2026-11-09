@@ -71,6 +71,10 @@ try {
         foreach ($file in Get-ChildItem -LiteralPath (Join-Path $repoRoot 'config') -Filter 'survivors-*.toml' -File) {
             Add-ZipFile $archive $file.FullName ($prefix + 'config/' + $file.Name) ([System.IO.Compression.CompressionLevel]::Optimal)
         }
+        foreach ($file in Get-ChildItem -LiteralPath (Join-Path $repoRoot 'config/dungeons') -Filter '*.toml' -File) {
+            Add-ZipFile $archive $file.FullName ($prefix + 'config/dungeons/' + $file.Name) ([System.IO.Compression.CompressionLevel]::Optimal)
+        }
+        Add-ZipFile $archive (Join-Path $repoRoot 'config/dungeons/README.md') ($prefix + 'config/dungeons/README.md') ([System.IO.Compression.CompressionLevel]::Optimal)
         foreach ($license in @('LICENSE-MIT', 'LICENSE-APACHE')) {
             Add-ZipFile $archive (Join-Path $repoRoot $license) ($prefix + $license) ([System.IO.Compression.CompressionLevel]::Optimal)
         }
@@ -90,6 +94,7 @@ Rust et les outils de compilation ne sont pas necessaires pour jouer.
 Les donnees WoW sont incluses dans Data/. Ne pas lancer depuis le ZIP.
 Les sauvegardes et reglages sont crees dans benilla-config/.
 Les fichiers config/survivors-*.toml permettent de regler le jeu.
+Les fichiers config/dungeons/*.toml permettent de regler chaque donjon.
 Les licences incluses concernent le code du projet, pas les donnees WoW.
 '@
         $index = 0

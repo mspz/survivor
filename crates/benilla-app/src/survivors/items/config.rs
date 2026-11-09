@@ -97,6 +97,20 @@ pub(super) struct BaseTier {
     pub base_armour: Option<f32>,
 }
 impl Base {
+    fn weapon_profile(&self, class: u8, rng: &mut Rng) -> Option<CraftProfile> {
+        if !weapons::is_weapon(self.equipment_type) { return None; }
+        let profiles: Vec<_> = [
+            (CraftProfile::Strength, Effect::Strength),
+            (CraftProfile::Agility, Effect::Agility),
+            (CraftProfile::Intelligence, Effect::Intelligence),
+        ].into_iter().filter(|(_, stat)| self.equipment_type.drop_primary_allowed(class, *stat))
+            .map(|(profile, _)| profile).collect();
+        match profiles.len() {
+            0 => None,
+            1 => Some(profiles[0]),
+            count => Some(profiles[rng.index(count)]),
+        }
+    }
     pub(super) fn tier(&self, level: u32) -> Option<&BaseTier> {
         self.tiers
             .iter()
@@ -152,6 +166,23 @@ struct AffixDef {
     proc: Option<ProcDef>,
 }
 impl AffixDef {
+    fn compatible_profile(&self, base: &Base, profile: Option<CraftProfile>) -> bool {
+        if matches!(self.effect, Effect::SpellDamage | Effect::SpellDamagePercent) && profile == Some(CraftProfile::Intelligence)
+            && weapons::is_weapon(base.equipment_type) {
+            return self.slots.contains(&base.slot) && self.effect.valid_equipment_type(base.equipment_type);
+        }
+        self.compatible_base(base)
+    }
+    // Contextual bounds are rolled into the saved value; loading never triples them again.
+    fn for_weapon(&self, base: &Base, profile: Option<CraftProfile>) -> Self {
+        let mut definition = self.clone();
+        if self.effect == Effect::SpellDamage && weapons::is_weapon(base.equipment_type)
+            && profile == Some(CraftProfile::Intelligence) {
+            definition.min *= 3.0;
+            definition.max *= 3.0;
+        }
+        definition
+    }
     fn compatible_base(&self, base: &Base) -> bool {
         !matches!(self.effect, Effect::Experience | Effect::MagicFind | Effect::Luck)
             && self.slots.contains(&base.slot)
@@ -463,6 +494,41 @@ impl Config {
         };
         self.roll_for_target(level, target, magic_find, rng)
     }
+    /// Dungeon rewards retain the level-60 base tier and scale its actual stats above the
+    /// character/crafting cap. Host chests and independently rolled party rewards use this path.
+    pub(in crate::survivors) fn generate_reward(
+        &self,
+        level: u32,
+        class_id: u8,
+        magic_find: f32,
+        rng: &mut Rng,
+    ) -> Result<Item, String> {
+        let mut item = self.generate_loot(level, class_id, magic_find, rng)?;
+        let target = level.clamp(1, super::super::dungeon_config::MAX_REWARD_LEVEL);
+        if target <= item.level {
+            return Ok(item);
+        }
+        let ratio = item_level::factor(target) / item_level::factor(item.level);
+        for affix in &mut item.affixes {
+            if matches!(
+                affix.effect,
+                Effect::Projectiles | Effect::Chain | Effect::Fork | Effect::MeleeTargets
+            ) {
+                continue;
+            }
+            let raw = affix.value / item_level::growth(affix.effect, item.level);
+            affix.value = item_level::scale(affix.effect, raw, target);
+        }
+        if let Some(damage) = &mut item.base_damage {
+            damage.min = (damage.min * ratio).round();
+            damage.max = (damage.max * ratio).round();
+        }
+        if let Some(armour) = &mut item.base_armour {
+            *armour = (*armour * ratio).round();
+        }
+        item.level = target;
+        Ok(item)
+    }
     #[cfg(test)]
     fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
         self.roll_for_target(level, class_id, 0.0, rng)
@@ -591,6 +657,7 @@ impl Config {
             &self.bases[weighted_index(&weights, rng.f32()).ok_or("No item base available")?];
         let tier = base.tier(level);
         let mut affixes: Vec<Affix> = Vec::new();
+        let profile = base.weapon_profile(class_id, rng);
         let (minimum, cap) = rarity.affix_limits();
         let available = |kind| {
             self.affixes
@@ -598,7 +665,8 @@ impl Config {
                 .filter(|a| {
                     a.weight > 0.0
                         && a.kind == kind
-                        && a.compatible_base(base)
+                        && a.compatible_profile(base, profile)
+                        && profile.is_none_or(|profile| profile.allows(a))
                         && (!a.effect.primary()
                             || base.equipment_type.drop_primary_allowed(class_id, a.effect))
                 })
@@ -633,7 +701,8 @@ impl Config {
                 .filter(|a| {
                     a.weight > 0.0
                         && a.kind == kind
-                        && a.compatible_base(base)
+                        && a.compatible_profile(base, profile)
+                        && profile.is_none_or(|profile| profile.allows(a))
                         && (!a.effect.primary()
                             || base.equipment_type.drop_primary_allowed(class_id, a.effect))
                         && !affixes.iter().any(|rolled| {
@@ -645,11 +714,13 @@ impl Config {
             let weights: Vec<_> = pool.iter().map(|a| a.weight).collect();
             let a = pool[weighted_index(&weights, rng.f32())
                 .ok_or("No compatible affix; check the item table")?];
+            let a = a.for_weapon(base, profile);
             let maximum = item_level::roll_max(a.effect, a.max, rarity);
             let value = if a.effect.discrete() {
                 a.min + (rng.next_u64() % ((maximum - a.min) as u64 + 1)) as f32
             } else {
-                ((rng.range(a.min, maximum) * 1000.0).round() / 1000.0).clamp(a.min, maximum)
+                let precision = if a.effect == Effect::RegenerationPercent { 1_000_000.0 } else { 1000.0 };
+                ((rng.range(a.min, maximum) * precision).round() / precision).clamp(a.min, maximum)
             };
             affixes.push(Affix {
                 id: a.id.clone(),
@@ -826,6 +897,74 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropped_weapon_damage_never_mixes_with_intelligence_weapon_affixes() {
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights { normal: 0.0, magic: 0.0, epic: 1.0, legendary: 0.0 };
+        config.bases.retain(|b| weapons::is_weapon(b.equipment_type));
+        let mut rng = Rng(902);
+        let (mut local, mut spell) = (0, 0);
+        for class in [1, 2, 3, 7, 8, 11] {
+            for _ in 0..100 {
+                let item = config.generate_for_target(60, class, &mut rng).unwrap();
+                let has = |effect| item.affixes.iter().any(|a| a.effect == effect);
+                if has(Effect::WeaponDamage) {
+                    local += 1;
+                    assert!(!has(Effect::Intelligence) && !has(Effect::SpellDamage));
+                    assert_ne!(item.equipment_type, EquipmentType::Wand);
+                }
+                if has(Effect::SpellDamage) {
+                    spell += 1;
+                    assert!(!has(Effect::Strength) && !has(Effect::Agility));
+                    let roll = item.affixes.iter().find(|a| a.effect == Effect::SpellDamage).unwrap();
+                    assert!(roll.value >= item_level::scale(Effect::SpellDamage, 9.0, 60));
+                }
+            }
+        }
+        assert!(local > 0 && spell > 0);
+    }
+    #[test]
+    fn fully_modified_dungeons_award_level_seventy_seven_and_preserve_it_in_saves() {
+        let config = Config::builtin();
+        let base = config.generate_reward(65, 1, 0.0, &mut Rng(876)).unwrap();
+        let upgraded = config.generate_reward(77, 1, 0.0, &mut Rng(876)).unwrap();
+        assert_eq!(upgraded.level, 77);
+        assert_eq!(upgraded.required_level(), 60);
+        assert!(upgraded.affixes.iter().zip(&base.affixes).all(|(new, old)| new.value >= old.value));
+        let inventory = Inventory::fixture(vec![upgraded]);
+        let saved = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+        assert_eq!(saved.items[0].level, 77);
+    }
+    #[test]
+    fn dungeon_rewards_raise_real_item_power_and_survive_save_and_equipment_rules() {
+        let config = Config::builtin();
+        for &map in super::super::super::data::DUNGEONS {
+            let level = super::super::reward_item_level(map, 60, false);
+            assert_eq!(level, 65);
+            assert_eq!(super::super::reward_item_level(map, 63, true), level);
+            let seed = 500 + map as u64;
+            let base = config.generate_loot(60, 1, 0.0, &mut Rng(seed)).unwrap();
+            let reward = config.generate_reward(level, 1, 0.0, &mut Rng(seed)).unwrap();
+            assert_eq!(reward.level, 65);
+            assert_eq!(reward.required_level(), 60);
+            assert_eq!(reward.base, base.base);
+            assert_eq!(reward.rarity, base.rarity);
+            for (new, old) in reward.affixes.iter().zip(&base.affixes) {
+                assert!(new.value >= old.value);
+            }
+            if let (Some(new), Some(old)) = (reward.base_damage, base.base_damage) {
+                assert!(new.max > old.max);
+            }
+            if let (Some(new), Some(old)) = (reward.base_armour, base.base_armour) {
+                assert!(new >= old);
+            }
+            let inventory = Inventory::fixture(vec![reward]);
+            let loaded = Inventory::decode(&toml::to_string(&inventory.save).unwrap()).unwrap();
+            assert_eq!(loaded.items[0].level, 65);
+            assert_eq!(loaded.items[0].required_level(), 60);
+        }
+        assert_eq!(super::super::reward_item_level(super::super::super::data::CAMPAIGN[5], 59, true), 60);
+    }
     #[test]
     fn life_on_block_affixes_are_rare_shield_only_rolls_and_persist() {
         let config = Config::builtin();
@@ -1067,8 +1206,8 @@ mod tests {
             .iter()
             .filter(|a| a.effect.resistance() && a.effect != Effect::AllResistance)
         {
-            assert_eq!(all.min * 2.0, a.min);
-            assert_eq!(all.max * 2.0, a.max);
+            assert_eq!(all.min * 3.0, a.min);
+            assert_eq!(all.max * 3.0, a.max);
             assert!(all.weight < a.weight);
         }
         for kind in [AffixKind::Prefix, AffixKind::Suffix] {
@@ -1123,7 +1262,8 @@ mod tests {
             }
         }
         assert!(
-            common * 100 > total * 40 && common * 100 < total * 70,
+            // Removing pickup radius leaves attributes/resistances a larger share of rings.
+            common * 100 > total * 40 && common * 100 < total * 75,
             "{common}/{total} suffixes were common"
         );
         let largest = counts.values().copied().max().unwrap();
@@ -1792,6 +1932,19 @@ mod tests {
     #[test]
     fn new_effects_have_configured_pools_and_jewellery_proc_restrictions_are_enforced() {
         let c = Config::builtin();
+        for id in [
+            "attack_speed",
+            "boss_damage",
+            "full_life_damage",
+            "low_life_damage",
+            "knockback_chance",
+            "pickup_radius",
+            "bleed_chance",
+            "ignite_chance",
+            "chill_chance",
+        ] {
+            assert!(!c.affixes.iter().any(|a| a.id == id), "{id}");
+        }
         for effect in [Effect::Experience, Effect::MagicFind, Effect::Luck] {
             let mut affix = c.affixes.iter().find(|a| a.effect == effect).unwrap().clone();
             assert_eq!(affix.weight, 0.0);
@@ -1805,15 +1958,8 @@ mod tests {
             "movement_speed",
             "damage_reduction",
             "healing_effectiveness",
-            "boss_damage",
-            "full_life_damage",
-            "low_life_damage",
-            "bleed_chance",
-            "ignite_chance",
-            "chill_chance",
-            "knockback_chance",
+            "ailment_chance",
             "armour_penetration",
-            "pickup_radius",
             "proc_class_spell",
         ] {
             assert!(
@@ -1861,10 +2007,13 @@ mod tests {
             for a in &item.affixes {
                 let def = config.affixes.iter().find(|d| d.id == a.id).unwrap();
                 assert!(def.slots.contains(&item.slot));
-                assert!((item_level::scale(def.effect, def.min, item.level)
+                let multiplier = if a.effect == Effect::SpellDamage && weapons::is_weapon(item.equipment_type) {
+                    3.0
+                } else { 1.0 };
+                assert!((item_level::scale(def.effect, def.min * multiplier, item.level)
                     ..=item_level::scale(
                         def.effect,
-                        item_level::roll_max(def.effect, def.max, item.rarity),
+                        item_level::roll_max(def.effect, def.max * multiplier, item.rarity),
                         item.level
                     ))
                     .contains(&a.value));
