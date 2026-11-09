@@ -188,8 +188,8 @@ impl Settings {
             KeyCode::KeyE,
             KeyCode::Space,
             KeyCode::KeyF,
+            KeyCode::KeyT,
             KeyCode::KeyN,
-            KeyCode::KeyG,
             KeyCode::Digit1,
             KeyCode::Digit2,
             KeyCode::Digit3,
@@ -197,7 +197,7 @@ impl Settings {
             KeyCode::KeyC,
             KeyCode::F6,
             KeyCode::KeyB,
-            KeyCode::KeyT,
+            KeyCode::KeyG,
             KeyCode::KeyR,
             KeyCode::KeyS,
             KeyCode::KeyB,
@@ -397,11 +397,17 @@ impl Settings {
                 out.bindings[action as usize] = defaults.bindings[action as usize];
             }
         }
-        // Migrate the old default T talent binding when adding the manual card shortcut.
-        if !text.lines().any(|line| line.starts_with("bind.17."))
-            && out.bindings[Action::Talents as usize][0] == Some(KeyCode::KeyT)
-        {
-            out.bindings[Action::Talents as usize][0] = Some(KeyCode::KeyN);
+        // Move the previous N/T defaults together before deduplicating saved keys.
+        let has_draw_binding = text.lines().any(|line| line.starts_with("bind.17."));
+        let old_pair = out.bindings[Action::Talents as usize][0] == Some(KeyCode::KeyN)
+            && out.bindings[Action::DrawCards as usize][0] == Some(KeyCode::KeyT);
+        if old_pair {
+            out.bindings[Action::Talents as usize][0] = Some(KeyCode::KeyT);
+            out.bindings[Action::DrawCards as usize][0] = Some(KeyCode::KeyG);
+        }
+        if (old_pair || !has_draw_binding)
+            && out.bindings[Action::Grade as usize][0] == Some(KeyCode::KeyG) {
+            out.bindings[Action::Grade as usize][0] = Some(KeyCode::KeyN);
         }
         // A malformed file cannot assign the same key to several actions.
         let mut seen = Vec::new();
@@ -486,20 +492,27 @@ mod tests {
     fn bindings_swap_conflicts_and_are_used_for_input() {
         let mut s = Settings::defaults();
         s.rebind(Action::Forward, 0, Some(KeyCode::KeyG));
-        assert_eq!(s.bindings[Action::Grade as usize][0], Some(KeyCode::KeyW));
+        assert_eq!(s.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyW));
         let mut keys = ButtonInput::default();
         keys.press(KeyCode::KeyG);
         assert!(s.pressed(Action::Forward, &keys));
-        assert!(!s.pressed(Action::Grade, &keys));
+        assert!(!s.pressed(Action::DrawCards, &keys));
         s.rebind(Action::Forward, 0, None);
         assert!(!s.pressed(Action::Forward, &keys));
     }
     #[test]
-    fn old_talent_shortcut_migrates_to_leave_t_for_stored_cards() {
+    fn old_shortcuts_migrate_to_t_for_talents_and_g_for_cards() {
         let settings = Settings::decode("v1\nbind.8.0 KeyT\n");
-        assert_eq!(settings.bindings[Action::Talents as usize][0], Some(KeyCode::KeyN));
-        assert_eq!(settings.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyT));
+        assert_eq!(settings.bindings[Action::Talents as usize][0], Some(KeyCode::KeyT));
+        assert_eq!(settings.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyG));
         assert!(!settings.auto_draw_cards);
+        let old = Settings::decode("v1\nbind.8.0 KeyN\nbind.9.0 KeyG\nbind.17.0 KeyT\n");
+        assert_eq!(old.bindings[Action::Talents as usize][0], Some(KeyCode::KeyT));
+        assert_eq!(old.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyG));
+        assert_eq!(old.bindings[Action::Grade as usize][0], Some(KeyCode::KeyN));
+        let custom = Settings::decode("v1\nbind.8.0 KeyK\nbind.17.0 KeyL\n");
+        assert_eq!(custom.bindings[Action::Talents as usize][0], Some(KeyCode::KeyK));
+        assert_eq!(custom.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyL));
     }
 
     #[test]

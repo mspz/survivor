@@ -227,7 +227,7 @@ mod tests {
             } else {
                 world
                     .resource_mut::<ButtonInput<KeyCode>>()
-                    .press(KeyCode::KeyT);
+                    .press(KeyCode::KeyG);
             }
             app.update();
             let world = app.world_mut();

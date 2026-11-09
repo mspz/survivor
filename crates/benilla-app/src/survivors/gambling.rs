@@ -421,9 +421,9 @@ pub(super) fn input(
         view.revision = view.revision.wrapping_add(1);
         keys.clear_just_pressed(KeyCode::Escape);
     }
-    if keys.just_pressed(KeyCode::KeyG) {
+    if keys.just_pressed(KeyCode::KeyH) {
         view.open = !view.open;
-        keys.clear_just_pressed(KeyCode::KeyG);
+        keys.clear_just_pressed(KeyCode::KeyH);
     }
     for (interaction, click) in &clicks {
         if *interaction != Interaction::Pressed {
@@ -677,7 +677,7 @@ fn render(
             ))
             .with_children(|ui| {
                 if accessible {
-                    smith_button(ui, &font.0, "Blacksmith - Craft [G]", Click::Open, 300.0);
+                    smith_button(ui, &font.0, "Blacksmith - Craft [H]", Click::Open, 300.0);
                 }
                 if gold_accessible {
                     smith_button(

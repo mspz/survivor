@@ -234,7 +234,7 @@ mod tests {
             build[1][0] = 1;
             app.world_mut()
                 .insert_resource(Account::from_shared(0, u64::MAX, build));
-            key(&mut app, KeyCode::KeyN);
+            key(&mut app, KeyCode::KeyT);
             let available = app.world().resource::<Account>().available(0);
             app.world_mut()
                 .spawn((Interaction::Hovered, Action::Buy(0, 0)));
@@ -316,8 +316,8 @@ mod tests {
     fn talents_pause_and_resume_with_keyboard_or_close_button_in_run_and_hub() {
         for hub in [false, true] {
             let mut app = pause_app(hub);
-            for close in [Some(KeyCode::KeyN), Some(KeyCode::Escape), None] {
-                key(&mut app, KeyCode::KeyN);
+            for close in [Some(KeyCode::KeyT), Some(KeyCode::Escape), None] {
+                key(&mut app, KeyCode::KeyT);
                 assert_eq!(
                     *app.world().resource::<State<Phase>>().get(),
                     Phase::CharacterSheet
@@ -352,11 +352,11 @@ mod tests {
     fn switching_between_character_bags_and_talents_keeps_the_game_paused() {
         let mut app = pause_app(false);
         for keycode in [
-            KeyCode::KeyN,
+            KeyCode::KeyT,
             KeyCode::KeyC,
-            KeyCode::KeyN,
+            KeyCode::KeyT,
             KeyCode::KeyB,
-            KeyCode::KeyN,
+            KeyCode::KeyT,
         ] {
             key(&mut app, keycode);
             assert_eq!(
