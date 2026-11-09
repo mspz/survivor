@@ -25,14 +25,14 @@ pub(super) struct Hero {
 /// The body radius enemies stop at.
 pub(super) const HERO_RADIUS: f32 = 0.7;
 
-/// The hop's initial upward speed and the gravity that brings it back down â€” the reference
+/// The hop's initial upward speed and the gravity that brings it back down — the reference
 /// `CMovement` jump seed and gravity (`player/state.rs`'s `JUMP_SPEED` / `GRAVITY`).
 const JUMP_SPEED: f32 = 7.955_547;
 const GRAVITY: f32 = 19.291_105;
 
 /// Radians of orbit per raw mouse unit while right-dragging.
 pub(super) const ORBIT_RATE: f32 = 0.008;
-/// Elevation clamp (radians): ~10Â°..~83Â° above the horizon, so the camera never dives underground.
+/// Elevation clamp (radians): ~10°..~83° above the horizon, so the camera never dives underground.
 const PITCH_MIN: f32 = 0.18;
 const PITCH_MAX: f32 = 1.45;
 /// Wheel zoom range, yards from the hero's shoulders.
@@ -627,7 +627,6 @@ pub(super) fn hero_vitals(
     enemies: Query<&super::enemies::Enemy>,
 ) {
     let dt = time.delta_secs();
-    let stats = run.stats();
     let practice = selection.as_deref().is_some_and(super::training::active);
     let cleared = !practice
         && !data::dungeon(run.expedition_map)
@@ -639,7 +638,7 @@ pub(super) fn hero_vitals(
     if let Some(t) = run.dead_t.as_mut() {
         *t += dt;
         let finished = *t > 3.0;
-        run.elapsed += dt;
+        super::support_spells::advance_time(&mut run, dt);
         let others_alive = players
             .as_ref()
             .is_some_and(|players| players.0.values().any(|p| p.run.dead_t.is_none()));
@@ -654,7 +653,8 @@ pub(super) fn hero_vitals(
         }
         return;
     }
-    run.elapsed += dt;
+    super::support_spells::advance_time(&mut run, dt);
+    let stats = run.stats();
     if run.shield_t > 0.0 && run.shield_t <= dt {
         let remaining = run.shield;
         super::items::legendary::events::shield_expired(&mut run, remaining);
@@ -765,7 +765,7 @@ pub(super) fn hero_vitals(
 /// which quarter the run falls in, so the walk, backpedal and strafe animations play.
 fn gait(look: Vec3, dir: Vec3) -> u32 {
     let ahead = look.dot(dir);
-    // Positive when `dir` is to the hero's left: WoW faces âˆ’Z with +X on the right.
+    // Positive when `dir` is to the hero's left: WoW faces −Z with +X on the right.
     let left = look.cross(dir).y;
     let quarter = std::f32::consts::FRAC_1_SQRT_2;
     if ahead >= quarter {

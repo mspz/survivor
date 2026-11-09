@@ -301,11 +301,15 @@ fn detail(
         ui.spawn(label(font, "OBJECTIVE", 11.0, MUTED));
         ui.spawn(label(
             font,
-            format!(
-                "Survive {} minutes, then kill every boss and {:.0}% of the horde",
-                duration(index) as u32 / 60,
-                data::CLEAR_MOB_SHARE * 100.0
-            ),
+            if data::dungeon(index) {
+                format!("Survive {} minutes and defeat every boss wave", duration(index) as u32 / 60)
+            } else {
+                format!(
+                    "Survive {} minutes, then kill every boss and {:.0}% of the horde",
+                    duration(index) as u32 / 60,
+                    data::CLEAR_MOB_SHARE * 100.0
+                )
+            },
             19.0,
             Color::WHITE,
         ));
@@ -345,15 +349,15 @@ fn detail(
 fn modifiers(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, selection: &Selection) {
     if !data::dungeon(selection.map) { return; }
     let mods = selection.dungeon_mods.active(selection.map);
-    ui.spawn(label(font, format!("DUNGEON MODIFIERS â€” Loot ilvl {} (+{})",
+    ui.spawn(label(font, format!("DUNGEON MODIFIERS — Loot ilvl {} (+{})",
         super::super::dungeon_config::get(selection.map).item_level + mods.bonus(), mods.bonus()), 14.0, hud::GOLD_TONE));
-    ui.spawn(label(font, format!("Character XP x{:.2} â€” each rank multiplies XP by {:.2}",
+    ui.spawn(label(font, format!("Character XP x{:.2} — each rank multiplies XP by {:.2}",
         mods.xp_multiplier(), mods.rank_xp()), 12.0, hud::GOLD_TONE));
     for (index, modifier) in super::super::dungeon_mods::DEFINITIONS.iter().enumerate() {
-        ui.spawn(label(font, format!("{} â€” rank {}/3 (+{} ilvl)\n{} per rank",
+        ui.spawn(label(font, format!("{} — rank {}/3 (+{} ilvl)\n{} per rank",
             modifier.name, mods.rank(index), u32::from(mods.rank(index)) * mods.rank_bonus(index),
             mods.description(index)), 12.0, MUTED));
-        for (increase, title) in [(false, "âˆ’"), (true, "+")] {
+        for (increase, title) in [(false, "−"), (true, "+")] {
         let mut button = ui.spawn((
             BackgroundColor(Color::srgb(0.10, 0.085, 0.055)),
             Node { width: Val::Percent(100.0), padding: UiRect::all(Val::Px(8.0)),

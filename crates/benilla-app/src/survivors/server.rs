@@ -395,6 +395,7 @@ impl Run {
             + self.support.power(self.elapsed, "aspect_of_the_pack")
             + self.support.power(self.elapsed, "stampeding_roar");
         self.specialty.apply_stats(&mut s);
+        s.max_hp *= 1.0 + self.support.power(self.elapsed, "commanding_shout");
         s.regen += s.max_hp * (passive_regeneration + self.equipment.regeneration_percent);
         s
     }

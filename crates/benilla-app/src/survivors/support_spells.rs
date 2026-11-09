@@ -15,7 +15,7 @@ pub(super) const SPELLS: &[(u8, &str, &str, &str)] = &[
     (11,"mark_of_the_wild","Mark of the Wild","Temporarily increase nearby allies' armour and all elemental resistances."),
     (11,"stampeding_roar","Stampeding Roar","Temporarily increase nearby allies' movement speed."),
     (1,"battle_shout","Battle Shout","Temporarily increase nearby allies' attack damage."),
-    (1,"commanding_shout","Commanding Shout","Give nearby allies a temporary protective reserve."),
+    (1,"commanding_shout","Commanding Shout","Temporarily increase nearby allies' maximum life, preserving their current life percentage."),
     (2,"blessing_of_might","Blessing of Might","Temporarily increase nearby allies' attack damage."),
     (2,"devotion_aura","Devotion Aura","Continuously grant armour to allies within your aura. Leaving its range removes the benefit shortly afterwards."),
     (3,"hunters_mark","Hunter's Mark","Mark the toughest enemy in range, increasing attack damage it takes from the group. Half strength against bosses."),
@@ -66,7 +66,7 @@ pub(super) fn magnitude(key: &str, level: u8) -> f32 {
         "devotion_aura" => 80.0 + 15.0 * rank,
         "mark_of_the_wild" => 40.0 + 8.0 * rank,
         "demon_armor" => 60.0 + 10.0 * rank,
-        "commanding_shout" => 25.0 + 5.0 * rank,
+        "commanding_shout" => 0.25 + 0.05 * rank,
         "frost_guardian" | "prayer_of_mending" => 20.0 + 3.0 * rank,
         "healing_stream_totem" => 6.0 + 1.5 * rank,
         _ => 0.0,
@@ -142,6 +142,7 @@ pub(super) fn grant(
     duration: f32,
     caster: Option<u64>,
 ) {
+    let old_max = run.stats().max_hp;
     run.support.buffs.retain(|b| b.until > run.elapsed);
     let old = run.support.buffs.iter().find(|b| b.key == key);
     // A weaker overlapping copy can refresh its duration without replacing its strength.
@@ -153,7 +154,7 @@ pub(super) fn grant(
         key,
         power,
         until,
-        reserve: if matches!(key, "commanding_shout" | "frost_guardian") {
+        reserve: if key == "frost_guardian" {
             power
         } else {
             0.0
@@ -161,6 +162,25 @@ pub(super) fn grant(
         caster,
         jumps: 5,
     });
+    if key == "commanding_shout" {
+        preserve_life_percentage(run, old_max);
+    }
+}
+
+fn preserve_life_percentage(run: &mut Run, old_max: f32) {
+    if run.hp > 0.0 && run.dead_t.is_none() && old_max > 0.0 {
+        run.hp = (run.hp / old_max).clamp(0.0, 1.0) * run.stats().max_hp;
+    }
+}
+
+/// Expiring maximum-life buffs must also remove their proportional current life.
+pub(super) fn advance_time(run: &mut Run, dt: f32) {
+    let old_max = run.stats().max_hp;
+    let old_power = run.support.power(run.elapsed, "commanding_shout");
+    run.elapsed += dt;
+    if old_power != run.support.power(run.elapsed, "commanding_shout") {
+        preserve_life_percentage(run, old_max);
+    }
 }
 pub(super) fn cast_ready(run: &Run, key: &str) -> bool {
     match key {
@@ -200,7 +220,7 @@ pub(super) fn absorb(run: &mut Run, mut damage: f32) -> f32 {
     }
     run.support
         .buffs
-        .retain(|b| !matches!(b.key, "commanding_shout" | "frost_guardian") || b.reserve > 0.0);
+        .retain(|b| b.key != "frost_guardian" || b.reserve > 0.0);
     damage
 }
 pub(super) fn hurt(run: &mut Run, damage: f32) {
@@ -336,6 +356,28 @@ pub(super) fn power_label(key: &str, level: u8, effect: f32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn commanding_shout_preserves_life_ratio_without_stacking_or_absorption() {
+        let mut run = super::Run::default();
+        let base = run.stats().max_hp;
+        run.hp = base * 0.4;
+        super::grant(&mut run, "commanding_shout", 0.25, 8.0, None);
+        assert!((run.stats().max_hp - base * 1.25).abs() < 0.001);
+        assert!((run.hp - base * 0.5).abs() < 0.001);
+        assert_eq!(super::absorb(&mut run, 10.0), 10.0);
+        super::grant(&mut run, "commanding_shout", 0.20, 10.0, None);
+        assert!((run.hp - base * 0.5).abs() < 0.001);
+        super::grant(&mut run, "commanding_shout", 0.5, 10.0, None);
+        assert!((run.hp - base * 0.6).abs() < 0.001);
+        super::advance_time(&mut run, 10.0);
+        assert!((run.stats().max_hp - base).abs() < 0.001);
+        assert!((run.hp - base * 0.4).abs() < 0.001);
+        run.hp = 0.0;
+        super::grant(&mut run, "commanding_shout", 0.25, 8.0, None);
+        assert_eq!(run.hp, 0.0);
+        assert_eq!(super::power_label("commanding_shout", 1, 0.0), "25%");
+    }
+
     #[test]
     fn every_support_buff_or_vulnerability_with_power_gets_stronger_at_each_rank() {
         for &(_, key, _, _) in super::SPELLS {
