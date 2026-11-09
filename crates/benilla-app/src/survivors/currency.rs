@@ -54,6 +54,7 @@ pub(super) fn plugin(app: &mut App) {
 }
 fn credit(
     mut drops: MessageReader<Loot>,
+    run: Option<Res<Run>>,
     mut inventory: Option<ResMut<Inventory>>,
     mut pending: ResMut<Pending>,
 ) {
@@ -61,6 +62,10 @@ fn credit(
         .read()
         .map(|drop| reward(drop.item_level, drop.boss))
         .fold(0u64, u64::saturating_add);
+    // Gold find from the specialty ranks.
+    let gained = run.map_or(gained, |run| {
+        (gained as f64 * f64::from(1.0 + run.specialty.gold.max(0.0))).round() as u64
+    });
     let Some(inventory) = inventory.as_deref_mut() else {
         return;
     };

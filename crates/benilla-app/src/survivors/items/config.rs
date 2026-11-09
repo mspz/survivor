@@ -193,6 +193,10 @@ pub(crate) struct Config {
     rarities: RarityWeights,
     pub(super) bases: Vec<Base>,
     affixes: Vec<AffixDef>,
+    /// The specialty trees' chance (Steady Hands) for a crafted affix to roll twice and keep
+    /// the higher value.
+    #[serde(skip)]
+    pub craft_luck: f32,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -221,6 +225,7 @@ impl Config {
             rarities: bases.rarities,
             bases: bases.bases,
             affixes: affixes.affixes,
+            craft_luck: 0.0,
         }
         .validate()
     }

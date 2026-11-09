@@ -137,6 +137,10 @@ pub(super) fn capture(world: &mut World, class: usize) -> Option<wire::ClientSav
         talents,
         inventory,
         look,
+        specialty: world
+            .get_resource::<game::specialty::Specialty>()
+            .map(|s| game::specialty::encode(s.ranks()))
+            .unwrap_or_default(),
     })
 }
 
@@ -151,6 +155,7 @@ pub(super) fn apply(
     // Imported inventories have a fresh local revision: invalidate the previous equipment cache.
     run.equipment_version = None;
     game::talents::Account::from_shared(class, save.talent_xp, save.talents).apply(class, run);
+    game::specialty::apply(&game::specialty::decode(&save.specialty), run, u64::MAX);
     inventory.apply(run);
     if let Some(look) = &save.look {
         let mut fields = look.fields.clone();
@@ -265,8 +270,9 @@ pub(super) fn persist(
     let gained = receipts.credit(snapshot.run_id, snapshot.stats.earned);
     let money = snapshot.money_earned.saturating_sub(receipts.money);
     if money > 0 {
+        let gold = game::specialty::gold(world, money);
         if let Some(mut inventory) = world.get_resource_mut::<game::items::Inventory>() {
-            match inventory.gain_money(money) {
+            match inventory.gain_money(gold) {
                 Ok(()) => receipts.money = snapshot.money_earned,
                 Err(error) => inventory.notice = format!("Co-op money could not be saved: {error}"),
             }

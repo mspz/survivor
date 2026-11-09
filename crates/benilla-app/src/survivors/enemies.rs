@@ -216,14 +216,20 @@ pub(super) fn spawn_enemy(
     hero: Vec3,
     boss: bool,
 ) -> Entity {
-    spawn_rank(
+    let e = spawn_rank(
         commands,
         run,
         def,
         pos,
         hero,
         if boss { Rank::Boss } else { Rank::Normal },
-    )
+    );
+    if boss {
+        commands
+            .entity(e)
+            .insert(super::achievements::BossArrival(run.elapsed));
+    }
+    e
 }
 pub(super) fn spawn_mob(
     commands: &mut Commands,

@@ -395,6 +395,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
                             old.inventory != save.inventory
                                 || old.talents != save.talents
                                 || old.look != save.look
+                                || old.specialty != save.specialty
                         });
                         if changed {
                             if let Some(mut companion) = world
@@ -961,6 +962,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         effect_meter: run.effect_meter.clone(),
         boss_meter: run.boss_meter.clone(),
         earned: game::talents::earned(run),
+        record: run.record.clone(),
         hp: run.hp,
         max_hp: run.stats().max_hp,
         elapsed: run.elapsed,
@@ -1054,7 +1056,10 @@ fn publish(world: &mut World) {
         let Some(player) = world.resource::<Companions>().0.get(&connection.wire_id()) else {
             continue;
         };
-        let (class, magic_find) = (player.run.class.id, player.run.equipment.magic_find);
+        let (class, magic_find) = (
+            player.run.class.id,
+            player.run.equipment.magic_find + player.run.specialty.magic_find,
+        );
         peer.money_earned = peer
             .money_earned
             .saturating_add(money)
@@ -1564,6 +1569,9 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         run.level = stats.level;
         run.meta_level = stats.character_level.max(1);
         run.draft_uses = stats.draft_uses;
+        run.record = stats.record.clone();
+        // A guest is always in a group.
+        run.expedition_players = run.expedition_players.max(2);
         run.xp = stats.xp;
         run.kills = stats.kills;
         run.won = stats.won;
@@ -2340,6 +2348,7 @@ mod tests {
                 talents: [[0; 19]; 3],
                 inventory: inventory.shared_save().unwrap(),
                 look: None,
+                specialty: String::new(),
             }
         }
         fn receive(

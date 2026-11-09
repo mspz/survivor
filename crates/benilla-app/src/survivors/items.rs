@@ -1450,7 +1450,7 @@ pub(super) fn chest_drops(
         match inventory.config.generate_loot(
             chest_item_level(drop.item_level, drop.boss),
             run.class.id,
-            compensated_magic_find(run.equipment.magic_find),
+            compensated_magic_find(run.equipment.magic_find + run.specialty.magic_find),
             &mut rng,
         ) {
             Ok(item) => {

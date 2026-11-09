@@ -193,6 +193,8 @@ pub(super) struct Account {
     pub xp: u64,
     builds: [Build; CLASSES],
     pub last_reward: u64,
+    /// Extra points from the specialty trees (Insight), on top of the level budget.
+    pub bonus_points: u32,
 }
 
 pub(super) fn level(xp: u64) -> u32 {
@@ -286,6 +288,7 @@ impl Account {
             xp: 0,
             builds: [[[0; NODES]; 3]; CLASSES],
             last_reward: 0,
+            bonus_points: 0,
         };
         let mut values = text.split_whitespace();
         let version = values.next();
@@ -325,7 +328,7 @@ impl Account {
         self.builds[class][tree][node]
     }
     pub fn available(&self, class: usize) -> u32 {
-        budget(self.xp).saturating_sub(spent(&self.builds[class]))
+        (budget(self.xp) + self.bonus_points).saturating_sub(spent(&self.builds[class]))
     }
     pub fn tree_points(&self, class: usize, tree: usize) -> u32 {
         self.builds[class][tree].iter().map(|&r| u32::from(r)).sum()
@@ -684,6 +687,7 @@ mod tests {
             xp: threshold(60),
             builds: [[[0; NODES]; 3]; CLASSES],
             last_reward: 0,
+            bonus_points: 0,
         }
     }
     #[test]

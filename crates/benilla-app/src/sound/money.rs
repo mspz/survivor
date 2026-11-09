@@ -95,7 +95,37 @@ fn play_coin_requests(
     }
 }
 
+/// A one-shot interface file (`Sound\Interface\...`), 2D on the SFX slider: game code's
+/// `PlaySoundFile`, e.g. the survivors achievement fanfare.
+#[derive(Message, Clone, Copy)]
+pub(crate) struct FileSound(pub &'static str);
+
+fn play_file_requests(
+    mut reqs: MessageReader<FileSound>,
+    kits: Option<ResMut<SoundKits>>,
+    assets: Option<Res<WorldAssets>>,
+    mut out: NonSendMut<SoundOutput>,
+    config: Res<SoundConfig>,
+) {
+    if reqs.is_empty() {
+        return;
+    }
+    let (Some(mut kits), Some(assets)) = (kits, assets) else {
+        reqs.clear();
+        return;
+    };
+    for FileSound(path) in reqs.read() {
+        if let Err(e) = kit::play_file(&mut kits, &assets, &mut out, &config, path, kit::SoundCategory::Sfx) {
+            debug!("sound(file): {path} — {e:#}");
+        }
+    }
+}
+
 pub(super) fn plugin(app: &mut App) {
     app.add_message::<CoinSound>()
-        .add_systems(Update, (play_coin_on_coinage_change, play_coin_requests));
+        .add_message::<FileSound>()
+        .add_systems(
+            Update,
+            (play_coin_on_coinage_change, play_coin_requests, play_file_requests),
+        );
 }

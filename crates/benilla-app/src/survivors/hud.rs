@@ -995,6 +995,7 @@ mod tooltip_tests;
 #[derive(Component, Clone, Copy, PartialEq)]
 pub(super) enum UiAction {
     Codex,
+    Achievements,
     Options,
     Resume,
     MainMenu,
@@ -1563,6 +1564,7 @@ pub(super) fn setup_hud(
                 for (label, action) in [
                     ("Options", UiAction::Options),
                     ("Codex", UiAction::Codex),
+                    ("Achievements", UiAction::Achievements),
                     ("Resume", UiAction::Resume),
                     ("Return to Hub", UiAction::MainMenu),
                     ("Character selection", UiAction::Logout),
@@ -1841,7 +1843,7 @@ pub(in crate::survivors) fn choices_for(
     config: &super::reward_config::Config,
 ) -> Vec<Choice> {
     let mut buckets = reward_buckets(run);
-    let weights = super::items::combat::lucky_weights(config.rarity_weights(), run.equipment.luck);
+    let weights = super::items::combat::lucky_weights(config.rarity_weights(), run.equipment.luck + run.specialty.luck);
     for (i, bucket) in buckets.iter_mut().enumerate() {
         bucket.retain(|choice| weights[i] > 0.0 && config.card_weight(*choice, run) > 0.0);
     }
@@ -1913,6 +1915,11 @@ pub(super) fn pick(
             run.banished_cards.insert(choice.card_key(run));
         }
         run.draft_uses[action] -= 1;
+        match action {
+            0 => run.record.rerolls += 1,
+            1 => run.record.banishes += 1,
+            _ => run.record.skips += 1,
+        }
         if action == 2 {
             run.next_passive = !run.next_passive;
             run.pending_levels = run.pending_levels.saturating_sub(1);
@@ -1929,6 +1936,7 @@ pub(super) fn pick(
     let Some(&choice) = offer.choices.get(i) else {
         return;
     };
+    let rarity = super::cards::rarity(choice, run);
     match choice {
         Choice::NumericPassive(p, strength) => {
             if let Some((_, total)) = run
@@ -1957,6 +1965,7 @@ pub(super) fn pick(
         Choice::UpPassive(k) => run.passives[k].1 = run.passives[k].1.saturating_add(1),
         Choice::Heal => run.hp = run.stats().max_hp,
     }
+    run.record.pick(choice, rarity);
     super::passives::sync(run);
     run.next_passive = !run.next_passive;
     run.version += 1;

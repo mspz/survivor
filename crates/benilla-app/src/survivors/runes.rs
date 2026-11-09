@@ -90,6 +90,9 @@ pub(super) struct Config {
     pub milestones: Vec<u8>,
     pub rarities: Vec<RarityDef>,
     pub stats: Vec<StatDef>,
+    /// The specialty trees' relative bonus on every upgrade chance (Runesmith).
+    #[serde(skip)]
+    pub upgrade_bonus: f32,
 }
 
 impl Config {
@@ -281,7 +284,12 @@ impl Config {
     /// the maximum level.
     pub(super) fn upgrade_chance(&self, target: &Rune, spent: u8) -> Option<f32> {
         (target.level < MAX_LEVEL)
-            .then(|| (self.upgrade_chances[target.level as usize] * self.rarity_bonus(spent)).min(1.0))
+            .then(|| {
+                (self.upgrade_chances[target.level as usize]
+                    * self.rarity_bonus(spent)
+                    * (1.0 + self.upgrade_bonus.max(0.0)))
+                .min(1.0)
+            })
     }
 
     /// Try one upgrade, spending a rune of rarity `spent`. A success adds one step to every
@@ -744,6 +752,7 @@ fn drop_on_victory(
     selection: Res<Selection>,
     mut runes: ResMut<Runes>,
     mut rng: ResMut<Rng>,
+    specialty: Option<Res<super::specialty::Specialty>>,
 ) {
     if !run.won || super::training::active(&selection) {
         return;
@@ -751,7 +760,12 @@ fn drop_on_victory(
     let Some(tier) = data::CAMPAIGN.iter().position(|&m| m == run.expedition_map) else {
         return;
     };
-    let rarity = runes.config.drop_rarity(tier as u8, &mut rng);
+    let mut rarity = runes.config.drop_rarity(tier as u8, &mut rng);
+    // Rune Lore: a chance for one rarity higher, from this player's own ranks.
+    let lore = specialty.as_deref().map_or(0.0, |s| s.applied().rune_tier);
+    if rng.f32() < lore {
+        rarity = rarity.saturating_add(1);
+    }
     let rune = runes.config.roll(rarity, &mut rng);
     let name = runes.name(&rune);
     match runes.grant(rune) {

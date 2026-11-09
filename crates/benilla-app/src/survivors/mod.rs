@@ -4,6 +4,7 @@
 //! on a battleground picked at the menu ([`data::MAPS`]), with the player controller and FrameXML
 //! off ([`crate::run_mode::CaptureMode`]).
 
+mod achievements;
 mod abilities;
 mod arcane_repeats;
 mod auto;
@@ -60,6 +61,7 @@ mod server;
 mod session;
 mod shared_chest;
 mod specialization;
+mod specialty;
 mod special_mobs;
 mod spell_engine;
 mod starter_spells;
@@ -108,7 +110,8 @@ impl Plugin for SurvivorsPlugin {
                     .chain()
                     .in_set(WorldStage::Input),
             )
-            .add_plugins((server::plugin, client::plugin, multiplayer::plugin));
+            .add_plugins((server::plugin, client::plugin, multiplayer::plugin))
+            .add_plugins((achievements::plugin, specialty::plugin));
         if let Some(auto) = auto::from_env() {
             app.insert_resource(auto)
                 .add_systems(Update, auto::drive.after(hud::keys))

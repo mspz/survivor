@@ -454,11 +454,17 @@ impl Config {
         rng: &mut Rng,
     ) -> Affix {
         let max = item_level::roll_max(a.effect, a.max, rarity);
-        let value = if a.effect.discrete() {
-            a.min + (rng.next_u64() % ((max - a.min) as u64 + 1)) as f32
-        } else {
-            ((rng.range(a.min, max) * 1000.0).round() / 1000.0).clamp(a.min, max)
+        let roll = |rng: &mut Rng| {
+            if a.effect.discrete() {
+                a.min + (rng.next_u64() % ((max - a.min) as u64 + 1)) as f32
+            } else {
+                ((rng.range(a.min, max) * 1000.0).round() / 1000.0).clamp(a.min, max)
+            }
         };
+        let mut value = roll(rng);
+        if self.craft_luck > 0.0 && rng.f32() < self.craft_luck {
+            value = value.max(roll(rng));
+        }
         let proc = a.proc.as_ref().map(|p| {
             let spell = if matches!(p.kind, ProcKind::ClassSpell) {
                 let class = crate::survivors::data::CLASSES

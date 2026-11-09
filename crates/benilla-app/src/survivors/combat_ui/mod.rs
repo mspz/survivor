@@ -464,6 +464,20 @@ fn launchers(
                     super::characters::Click::Runes,
                     100.0,
                 );
+                skin::button(
+                    ui,
+                    &font.0,
+                    "Achievements",
+                    super::specialty::ui::Click::Open(super::specialty::ui::Tab::Achievements),
+                    120.0,
+                );
+                skin::button(
+                    ui,
+                    &font.0,
+                    "Specialty",
+                    super::specialty::ui::Click::Open(super::specialty::ui::Tab::Specialty),
+                    100.0,
+                );
             }
             skin::button(
                 ui,

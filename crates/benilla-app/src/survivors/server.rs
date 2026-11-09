@@ -187,6 +187,10 @@ pub(super) struct Run {
     /// The abilities, by index, waiting for a target rather than cooling down: their short retry
     /// delay is not shown as a cooldown.
     pub(super) retrying: u64,
+    /// The run's achievement facts (cards, spell kills, bosses), replicated to its player.
+    pub(super) record: super::achievements::RunRecord,
+    /// The specialty ranks' hero effects.
+    pub(super) specialty: super::specialty::Applied,
     pub class: &'static ClassDef,
     pub race: u8,
     pub elapsed: f32,
@@ -268,6 +272,8 @@ impl Default for Run {
             meta_kill_penalty: 0,
             meta_kills: 0,
             retrying: 0,
+            record: default(),
+            specialty: default(),
             class: &data::CLASSES[0],
             race: 0,
             elapsed: 0.0,
@@ -383,6 +389,7 @@ impl Run {
         s.speed *= 1.0
             + self.support.power(self.elapsed, "aspect_of_the_pack")
             + self.support.power(self.elapsed, "stampeding_roar");
+        self.specialty.apply_stats(&mut s);
         s.regen += s.max_hp * passive_regeneration;
         s
     }

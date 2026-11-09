@@ -21,6 +21,9 @@ pub struct ClientSave {
     pub talents: [[u8; 19]; 3],
     pub inventory: String,
     pub look: Option<SavedLook>,
+    /// The guest's specialty ranks (`specialty::encode`).
+    #[serde(default)]
+    pub specialty: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -152,6 +155,8 @@ pub struct Stats {
     pub passives: Vec<(String, u64)>,
     #[serde(default)]
     pub draft_uses: [u8; 3],
+    #[serde(default)]
+    pub record: super::super::achievements::RunRecord,
     #[serde(default)]
     pub stored_cards: u32,
     pub offer_id: u64,

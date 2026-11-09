@@ -4728,6 +4728,13 @@ pub(super) fn apply_hits(
                 h.origin = Origin::Talent;
             }
         }
+        if h.crit {
+            if run.specialty.multi_unlocked {
+                let crit = run.stats().crit;
+                h.damage *= super::specialty::multi_crit(&run.specialty, crit, &mut rng);
+            }
+        }
+        run.record.biggest_hit = run.record.biggest_hit.max(h.damage);
         super::procs::parent(run, h.cast_id);
         let Ok((e, guid, mut tf, mut en, mut store, mut marks)) = enemies.get_mut(h.target) else {
             continue;
@@ -5083,6 +5090,7 @@ pub(super) fn apply_hits(
                 );
             }
             legendary_events::killed(run, e, tf.translation, h.origin, &mut rng);
+            run.record.spell_kill(h.skill);
             kill(&mut commands, run, e, tf.translation, &mut en, h.origin);
             units::kill_unit(&mut store);
             marks.clear();
@@ -5101,6 +5109,7 @@ pub(super) fn apply_hits(
         let mut periodic_numbers = std::collections::BTreeMap::<(Option<u64>, u32), f32>::new();
         let mut last_owner = None;
         let mut last_origin = Origin::Skill;
+        let mut last_skill = "";
         let mut last_parent = 0;
         let (max_hp, boss) = (en.max_hp, en.boss);
         let rooted = en.root_t > 0.0;
@@ -5258,6 +5267,7 @@ pub(super) fn apply_hits(
                 if effective > 0.0 {
                     last_owner = d.owner;
                     last_origin = d.origin;
+                    last_skill = d.skill;
                     last_parent = d.meta.parent;
                 }
             }
@@ -5280,6 +5290,7 @@ pub(super) fn apply_hits(
                 {
                     super::procs::parent(run, last_parent);
                     legendary_events::killed(run, e, tf.translation, last_origin, &mut rng);
+                    run.record.spell_kill(last_skill);
                     kill(&mut commands, run, e, tf.translation, &mut en, last_origin);
                 }
                 units::kill_unit(&mut store);
