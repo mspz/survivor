@@ -64,7 +64,7 @@ fn credit(
         .fold(0u64, u64::saturating_add);
     // Gold find from the specialty ranks.
     let gained = run.map_or(gained, |run| {
-        (gained as f64 * f64::from(1.0 + run.specialty.gold.max(0.0)) * f64::from(run.expeditions.reward_multiplier())).round() as u64
+        (gained as f64 * f64::from(1.0 + run.specialty.gold.max(0.0)) * f64::from(run.expeditions.gold_multiplier())).round() as u64
     });
     let Some(inventory) = inventory.as_deref_mut() else {
         return;
@@ -167,9 +167,10 @@ mod tests {
         let system = world.register_system(credit);
         world.write_message(Loot { item_level: 60, pos: Vec3::ZERO, xp: 1, boss: true });
         world.run_system(system).unwrap();
-        assert_eq!(world.resource::<Inventory>().money(), 80000);
+        let expected = (reward(60, true) as f64 * 2.2).round() as u64;
+        assert_eq!(world.resource::<Inventory>().money(), expected);
         world.run_system(system).unwrap();
-        assert_eq!(world.resource::<Inventory>().money(), 80000);
+        assert_eq!(world.resource::<Inventory>().money(), expected);
     }
 
     #[test]

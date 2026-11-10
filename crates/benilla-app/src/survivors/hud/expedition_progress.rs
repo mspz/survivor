@@ -194,6 +194,7 @@ pub(in crate::survivors) fn refresh(
             let value = if label.0 == "Expeditions" {
                 format!("Expeditions {completed}")
             } else {
+                let multiplier = if label.0 == "Gold" { run.expeditions.gold_multiplier() } else { multiplier };
                 format!("{} x{multiplier:.2}", label.0)
             };
             if **text != value {

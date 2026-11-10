@@ -148,6 +148,9 @@ impl Config {
     pub fn reward_multiplier(&self) -> f32 {
         self.endless.map_or(1.0, |s| super::endless::config().reward(s.index))
     }
+    pub fn gold_multiplier(&self) -> f32 {
+        self.endless.map_or(1.0, |s| super::endless::config().gold(s.index))
+    }
     pub fn movement_multiplier(&self) -> f32 {
         self.endless.map_or(1.0, |s| super::endless::config().movement(s.index))
     }

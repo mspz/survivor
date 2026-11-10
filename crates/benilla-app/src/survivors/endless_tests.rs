@@ -2,6 +2,20 @@ use super::*;
 use bevy::ecs::system::RunSystemOnce;
 
 #[test]
+fn gold_and_xp_have_separate_additive_progression_and_start_without_a_bonus() {
+    let mut run = Run::default();
+    assert_eq!(run.expeditions.gold_multiplier(), 1.0);
+    for index in 0..4 {
+        begin_at(&mut run, index);
+        assert!((run.expeditions.gold_multiplier() - (1.0 + index as f32 * 0.6)).abs() < 1e-5);
+        assert!((run.expeditions.reward_multiplier() - (1.0 + index as f32 * 0.3)).abs() < 1e-5);
+    }
+    let mut old: toml::Value = toml::from_str(FILE).unwrap();
+    old.as_table_mut().unwrap().remove("gold_per_map");
+    assert!((Config::parse(&toml::to_string(&old).unwrap()).unwrap().gold(1) - 1.6).abs() < 1e-5);
+}
+
+#[test]
 fn fourth_map_diagnostic_start_applies_all_stage_modifiers_without_fake_past_rewards() {
     let mut run = Run::default();
     begin_at(&mut run, 3);

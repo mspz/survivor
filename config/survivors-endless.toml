@@ -1,5 +1,5 @@
 # Monster variants and caster settings: survivors-monster-types.toml (shared; restart after edits).
-# Endless starts at map 0. Multipliers compound per map; rewards add 0.3 per map.
+# Endless starts at map 0. Rewards add per completed map: +60% gold, +30% XP.
 version = 1
 initial_seconds = 360.0
 shorter_per_map = 60.0
@@ -13,6 +13,7 @@ boss_cooldown_per_map = 0.8
 minimum_boss_cooldown = 1.0
 safe_time_per_map = 0.8
 reward_per_map = 0.3
+gold_per_map = 0.6
 
 [combat]
 version = 1

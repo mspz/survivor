@@ -21,6 +21,8 @@ pub(super) struct Config {
     minimum_boss_cooldown: f32,
     safe_time_per_map: f32,
     reward_per_map: f32,
+    #[serde(default = "default_gold_per_map")]
+    gold_per_map: f32,
     combat: expedition_config::Config,
 }
 
@@ -68,6 +70,8 @@ impl Config {
                 .all(|v| v.is_finite() && v > 0.0 && v <= 1.0)
             || !value.reward_per_map.is_finite()
             || value.reward_per_map < 0.0
+            || !value.gold_per_map.is_finite()
+            || value.gold_per_map < 0.0
         {
             return Err("invalid Endless progression".into());
         }
@@ -101,6 +105,9 @@ impl Config {
     pub fn reward(&self, index: u32) -> f32 {
         1.0 + index as f32 * self.reward_per_map
     }
+    pub fn gold(&self, index: u32) -> f32 {
+        1.0 + index as f32 * self.gold_per_map
+    }
     pub fn expedition(&self, stage: Stage) -> expedition_config::Config {
         let mut config = self.combat.clone();
         config.endless = Some(stage);
@@ -111,6 +118,7 @@ impl Config {
 fn default_movement_cap() -> f32 {
     5.0
 }
+fn default_gold_per_map() -> f32 { 0.6 }
 
 fn power(base: f32, index: u32) -> f32 {
     // Keep very long journeys finite, including integer-to-float protocol conversion.
@@ -357,8 +365,9 @@ fn offer(
                     panel.spawn(hud::centered_bundle(
                         &font.0,
                         format!(
-                            "Next: {:.0} min | Gold & XP +{:.0}%\nChoose your next expedition",
+                            "Next: {:.0} min | Gold +{:.0}% | XP +{:.0}%\nChoose your next expedition",
                             config().duration(next) / 60.0,
+                            (config().gold(next) - 1.0) * 100.0,
                             (config().reward(next) - 1.0) * 100.0
                         ),
                         14.0,
