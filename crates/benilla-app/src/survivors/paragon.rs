@@ -16,7 +16,6 @@ fn cost(level: u32) -> u64 {
         (6000.0_f64 * 1.1_f64.powf(f64::from(level - 59))).round() as u64
     }
 }
-#[cfg(test)]
 pub(super) fn progress(total_xp: u64) -> Progress {
     progress_shared(total_xp.saturating_sub(talents::threshold(60)))
 }
