@@ -16,6 +16,8 @@ type Key = (
 );
 #[derive(Default)]
 pub(super) struct Runtime {
+    /// Scoped to the hit currently being applied; suppresses only redundant new DoTs.
+    pub blocked_dot_target: Option<bevy::prelude::Entity>,
     pub parent: u64,
     serial: u64,
     clean_at: f32,

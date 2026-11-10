@@ -404,6 +404,8 @@ pub(super) struct CombatNumber {
 
 #[derive(SystemParam)]
 pub(super) struct Fx<'w> {
+    frame: Option<Res<'w, bevy::diagnostic::FrameCount>>,
+    impacts: Option<ResMut<'w, VisualImpacts>>,
     settings: Option<Res<'w, super::options::Settings>>,
     seq: ResMut<'w, PlaySeq>,
     casts: MessageWriter<'w, CastEvent>,
@@ -418,6 +420,41 @@ pub(super) struct Fx<'w> {
 
 /// More impacts than this per cast only cost frames.
 const MAX_VISUAL_HITS: usize = 12;
+const MAX_FRAME_IMPACTS: usize = 96;
+
+/// A dense bleed/proc application must not instantiate hundreds of identical impact models.
+/// This affects cosmetic messages only; every target still receives its hit and DoT stacks.
+#[derive(Resource, Default)]
+pub(super) struct VisualImpacts {
+    frame: Option<u32>,
+    targets: std::collections::HashMap<u32, Vec<Entity>>,
+    frame_emitted: usize,
+    pub requested: u64,
+    pub emitted: u64,
+}
+
+enum ImpactDecision { Emit, Duplicate, Full }
+
+impl VisualImpacts {
+    fn admit(&mut self, frame: u32, spell: u32, target: Entity) -> ImpactDecision {
+        if self.frame != Some(frame) {
+            self.frame = Some(frame);
+            // Reuse the small per-spell buffers rather than reallocating sets every frame.
+            for targets in self.targets.values_mut() { targets.clear(); }
+            self.frame_emitted = 0;
+        }
+        self.requested += 1;
+        let targets = self.targets.entry(spell).or_default();
+        if targets.contains(&target) { return ImpactDecision::Duplicate; }
+        if targets.len() >= MAX_VISUAL_HITS || self.frame_emitted >= MAX_FRAME_IMPACTS {
+            return ImpactDecision::Full;
+        }
+        targets.push(target);
+        self.frame_emitted += 1;
+        self.emitted += 1;
+        ImpactDecision::Emit
+    }
+}
 
 fn cast_visual_spell(spell: u32) -> u32 {
     match spell {
@@ -527,6 +564,17 @@ impl Fx<'_> {
     /// Only the spell's impact kit, on `target`: no cast animation on anyone.
     pub fn impact(&mut self, target: Entity, spell: u32) {
         let spell = cast_visual_spell(spell);
+        if let (Some(frame), Some(impacts)) = (&self.frame, self.impacts.as_mut()) {
+            match impacts.admit(frame.0, spell, target) {
+                ImpactDecision::Emit => {}
+                ImpactDecision::Duplicate => return,
+                ImpactDecision::Full => {
+                    // No impact will consume the optional echo marker on this target.
+                    if let Some(echoes) = self.echoes.as_mut() { echoes.0.remove(&(target, spell)); }
+                    return;
+                }
+            }
+        }
         let seq = self.seq.next();
         self.casts.write(CastEvent {
             entity: target,
@@ -618,6 +666,61 @@ pub(super) const COLOR_SPELL: u32 = 0xFFFF_DE00;
 pub(super) const COLOR_MELEE: u32 = 0xFFFF_FFFF;
 pub(super) const COLOR_HURT: u32 = 0xFFFF_3030;
 pub(super) const COLOR_HEAL: u32 = 0xFF30_FF30;
+
+#[cfg(test)]
+mod impact_budget_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn ordinary_impacts_are_unchanged_and_dense_multi_spell_bursts_are_bounded() {
+        let mut budget = VisualImpacts::default();
+        let mut world = World::new();
+        let targets: Vec<_> = (0..12).map(|_| world.spawn_empty().id()).collect();
+        for spell in 0..4 {
+            for &target in &targets {
+                assert!(matches!(budget.admit(0, spell, target), ImpactDecision::Emit));
+            }
+        }
+        assert_eq!(budget.emitted, 48);
+        for spell in 4..30 {
+            for &target in &targets { budget.admit(0, spell, target); }
+        }
+        assert_eq!(budget.emitted, MAX_FRAME_IMPACTS as u64);
+        assert!(matches!(budget.admit(0, 0, targets[0]), ImpactDecision::Duplicate));
+        assert!(matches!(budget.admit(1, 0, targets[0]), ImpactDecision::Emit));
+        assert_eq!(budget.frame_emitted, 1);
+    }
+    #[test]
+    fn impact_budget_limits_cosmetic_models_without_losing_damage_numbers() {
+        let mut world = World::new();
+        world.init_resource::<PlaySeq>();
+        world.init_resource::<bevy::diagnostic::FrameCount>();
+        world.init_resource::<VisualImpacts>();
+        world.init_resource::<crate::entities::dest_fx::EchoCasts>();
+        world.init_resource::<Messages<CastEvent>>();
+        world.init_resource::<Messages<SpellGoTargets>>();
+        world.init_resource::<Messages<SwingMessage>>();
+        world.init_resource::<Messages<CombatTextSpawn>>();
+        world.init_resource::<Messages<CombatNumber>>();
+        let targets: Vec<_> = (0..300).map(|_| world.spawn_empty().id()).collect();
+        let first = targets[0];
+        world.run_system_once(move |mut fx: Fx| {
+            for &target in &targets {
+                for _ in 0..2 { fx.echo(target, 1943); fx.impact(target, 1943); }
+                fx.number(None, target, 10.0, false, COLOR_MELEE);
+            }
+        }).unwrap();
+        assert_eq!(world.resource::<Messages<CastEvent>>().len(), MAX_VISUAL_HITS);
+        assert_eq!(world.resource::<Messages<CombatNumber>>().len(), 300);
+        assert_eq!(world.resource::<Messages<CombatTextSpawn>>().len(), 300);
+        assert_eq!(world.resource::<crate::entities::dest_fx::EchoCasts>().0.len(), MAX_VISUAL_HITS);
+        let budget = world.resource::<VisualImpacts>();
+        assert_eq!((budget.requested, budget.emitted), (600, 12));
+        world.resource_mut::<bevy::diagnostic::FrameCount>().0 += 1;
+        world.run_system_once(move |mut fx: Fx| fx.impact(first, 1943)).unwrap();
+        assert_eq!(world.resource::<Messages<CastEvent>>().len(), MAX_VISUAL_HITS + 1);
+    }
+}
 
 #[cfg(test)]
 mod trap_tests {

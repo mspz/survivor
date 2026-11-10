@@ -234,6 +234,7 @@ pub(in crate::survivors) fn install(
     pos: Vec3,
     mut dot: Dot,
 ) {
+    if run.proc_runtime.blocked_dot_target == Some(target) { return; }
     dot.meta.started = run.elapsed;
     if dot.meta.parent == 0 {
         dot.meta.parent = run.proc_runtime.parent;
@@ -343,6 +344,30 @@ fn neighbour(run: &Run, target: Entity, pos: Vec3) -> Option<Entity> {
         })
         .map(|f| f.0)
 }
+fn holds_tick(run: &Run, dot: &Dot, family: Family, rooted: bool, boss: bool) -> bool {
+    (run.legendary.has(24) && family == Family::Burn)
+        || (run.legendary.has(64) && !run.legendary.events.moving)
+        || (run.legendary.has(221) && family == Family::Poison && dot.meta.moving)
+        || (run.legendary.has(236) && family == Family::Bleed && rooted
+            && (!boss || dot.meta.frozen_until == 0.0 || run.elapsed < dot.meta.frozen_until))
+        || (run.legendary.has(302) && dot.skill == "moonfire")
+}
+
+/// Read-only forecast: never advances a clock, releases a reserve or queues an effect.
+pub(in crate::survivors) fn next_tick(run: &Run, dot: &Dot, rooted: bool, boss: bool) -> Option<(f32, Tags)> {
+    if dot.left <= 0.0 || dot.tick > 1.0 || dot.left < dot.tick.max(0.0) { return None; }
+    let family = family(dot);
+    if holds_tick(run, dot, family, rooted, boss)
+        || (run.legendary.has(229) && family == Family::Poison && !dot.meta.no_reserve
+            && budget(dot) <= dot.meta.held) { return None; }
+    let mut tags = dot.tags.unwrap_or_else(|| profile(run, crate::survivors::data::ability(dot.skill)).1);
+    if !dot.meta.cycle.is_empty() {
+        let school = dot.meta.cycle[dot.meta.cycle_index % dot.meta.cycle.len()];
+        tags = Tags((tags.0 & !super::SCHOOLS) | school.0);
+    }
+    Some(((dot.dps + dot.meta.held).max(0.0), tags))
+}
+
 pub(in crate::survivors) fn tick(
     run: &mut Run,
     target: Entity,
@@ -358,14 +383,7 @@ pub(in crate::survivors) fn tick(
         let tags = dot.tags.unwrap_or(Tags::SPELL | Tags::DOT | Tags::DAMAGE);
         dot.tags = Some(Tags((tags.0 & !super::SCHOOLS) | school.0));
     }
-    let hold = (run.legendary.has(24) && family == Family::Burn)
-        || (run.legendary.has(64) && !run.legendary.events.moving)
-        || (run.legendary.has(221) && family == Family::Poison && dot.meta.moving)
-        || (run.legendary.has(236)
-            && family == Family::Bleed
-            && rooted
-            && (!boss || dot.meta.frozen_until == 0.0 || run.elapsed < dot.meta.frozen_until))
-        || (run.legendary.has(302) && dot.skill == "moonfire");
+    let hold = holds_tick(run, dot, family, rooted, boss);
     if run.legendary.has(229)
         && family == Family::Poison
         && !dot.meta.no_reserve

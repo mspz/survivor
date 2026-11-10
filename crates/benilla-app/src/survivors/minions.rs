@@ -43,6 +43,7 @@ pub(super) fn on_hit(
     target: Entity,
     pos: Vec3,
 ) {
+    if run.proc_runtime.blocked_dot_target == Some(target) { return; }
     use super::items::legendary::{events::Origin, periodic};
     if !tags.contains(Tags::MINION | Tags::DAMAGE)
         || hit.damage <= 0.0

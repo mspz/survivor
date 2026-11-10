@@ -4,6 +4,7 @@ use super::*;
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(PostUpdate, forms::sync.run_if(multiplayer::authoritative));
     app.init_resource::<Run>()
+        .init_resource::<units::VisualImpacts>()
         .init_resource::<boss_spells::Warnings>()
         .init_resource::<support_spells::Debuffs>()
         .init_resource::<talents::Account>()

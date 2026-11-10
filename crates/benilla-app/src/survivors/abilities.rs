@@ -55,6 +55,34 @@ impl Hit {
 #[cfg(test)]
 mod spell_engine_integration_tests {
     #[test]
+    fn lethal_existing_dots_suppress_new_stacks_without_suppressing_direct_hits() {
+        for existing in [false, true] {
+            let (mut world, targets) = legendary_world("heroic_strike", 0, &[3.0]);
+            {
+                let mut run = world.resource_mut::<Run>();
+                run.replace_spell_modifiers(919, [engine::Change::ArmourPenetration(1.0), engine::Change::BleedChance(1.0)]
+                    .into_iter().map(|change| engine::Modifier { source: 919, filter: engine::Filter::default(), change }));
+            }
+            {
+                let mut en = world.get_mut::<Enemy>(targets[0]).unwrap();
+                en.hp = 100.0;
+                if existing {
+                    en.dots.push(enemies::Dot { owner: None, skill: "rend", meter_source: None,
+                        tags: Some(engine::Tags::PHYSICAL | engine::Tags::DOT | engine::Tags::DAMAGE),
+                        origin: Origin::Skill, item_source: None, meta: default(), dps: 10_000.0, left: 4.0, tick: 1.0 });
+                }
+            }
+            // A >90% source hit still triggers normally when no lethal existing DoT is present.
+            world.write_message(Hit::direct("heroic_strike", targets[0], 95.0, false));
+            world.run_system_once(apply_hits).unwrap();
+            let en = world.get::<Enemy>(targets[0]).unwrap();
+            assert!(!en.dead && en.hp < 10.0 && en.hp > 0.0);
+            assert_eq!(en.dots.len(), 1);
+            assert_eq!(en.dots[0].skill, if existing { "rend" } else { "proc_bleed" });
+            assert!(world.resource::<Run>().proc_runtime.blocked_dot_target.is_none());
+        }
+    }
+    #[test]
     fn boss_meter_filters_normal_targets_and_counts_direct_and_periodic_damage() {
         for (boss, rank, dummy, included) in [
             (false, None, false, false),
@@ -4517,7 +4545,10 @@ pub(super) fn tick_areas(
 /// Land every hit due: damage and its number, the over-time part, crowd control, the marks, and
 /// death with its loot.
 pub(super) fn apply_hits(
-    ranks: Query<&super::enemies::Rank>,
+    (mut splash_index, ranks, mut dot_factors): (
+        Local<super::splash_index::SplashIndex>, Query<&super::enemies::Rank>,
+        Local<super::dot_admission::FactorCache>,
+    ),
     protection: Query<&super::special_mobs::Protection>,
     taunts: Query<&super::talent_runtime::Taunted>,
     mut commands: Commands,
@@ -4551,6 +4582,8 @@ pub(super) fn apply_hits(
     >,
     mut players: Option<ResMut<super::multiplayer::Companions>>,
 ) {
+    #[cfg(feature = "system_spans")]
+    let prepare_span = bevy::log::info_span!("system", name = "survivors::hits::prepare").entered();
     let dt = time.delta_secs();
     let now = run.elapsed;
     let mut due: Vec<Hit> = incoming.read().cloned().collect();
@@ -4731,8 +4764,17 @@ pub(super) fn apply_hits(
         }
         prepared.push(h);
     }
+    #[cfg(feature = "system_spans")]
+    drop(prepare_span);
+    #[cfg(feature = "system_spans")]
+    let splash_span = bevy::log::info_span!("system", name = "survivors::hits::splash").entered();
     // Splash reaches the target's neighbours at seventy percent.
     let mut all = Vec::with_capacity(prepared.len());
+    let splash_count = prepared.iter().filter(|h| h.splash > 0.0).count();
+    if splash_count > 0 {
+        splash_index.rebuild(enemies.iter().filter(|(_, _, _, en, ..)| !en.dead)
+            .map(|(e, _, tf, ..)| (e, tf.translation)), splash_count);
+    }
     for mut h in prepared {
         // The echo keeps the original target and splash profile, rather than recording
         // separate echoes on the neighbours hit by the first explosion.
@@ -4764,8 +4806,8 @@ pub(super) fn apply_hits(
             );
             if let Ok((_, _, center, ..)) = enemies.get(h.target) {
                 let c = center.translation;
-                for (e, _, tf, en, ..) in enemies.iter() {
-                    if e != h.target && !en.dead && flat(tf.translation - c).length() <= h.splash {
+                for e in splash_index.within(c, h.splash) {
+                    if e != h.target {
                         all.push(Hit {
                             primary: false,
                             target: e,
@@ -4785,6 +4827,10 @@ pub(super) fn apply_hits(
         all.push(Hit { splash: 0.0, ..h });
     }
 
+    #[cfg(feature = "system_spans")]
+    drop(splash_span);
+    #[cfg(feature = "system_spans")]
+    let resolve_span = bevy::log::info_span!("system", name = "survivors::hits::resolve").entered();
     // Character XP is shared: every kill is credited to each player once the hits are resolved.
     let mut party_kills: Vec<u32> = Vec::new();
     let mut kill = |commands: &mut Commands,
@@ -4832,6 +4878,7 @@ pub(super) fn apply_hits(
         else {
             continue;
         };
+        run.proc_runtime.blocked_dot_target = None;
         if !h.can_proc() {
             let tags = h
                 .tags
@@ -4942,6 +4989,26 @@ pub(super) fn apply_hits(
             * elite_multiplier
             * protection_multiplier
             * taunts.get(e).map_or(1.0, |taunt| taunt.damage_multiplier(now));
+        let can_apply_dot = h.dot > 0.0 || h.direct_dot.is_some()
+            || (h.can_proc() && (mods.bleed > 0.0 || mods.ignite > 0.0 || mods.poison > 0.0
+                || super::talent_runtime::applies_dots_on_hit(run) || !run.legendary.grants.is_empty()
+                || !run.legendary.equipped.is_empty()))
+            || tags.contains(engine::Tags::MINION | engine::Tags::DAMAGE);
+        let dot_covered = can_apply_dot && super::dot_admission::covered_cached(run, &en, super::dot_admission::Target {
+            entity: e,
+            hp: (en.hp - dmg).max(0.0),
+            armour,
+            resistances: resistance,
+            multiplier: (1.0 - final_reduction) * elite_multiplier * protection_multiplier,
+            debuffs: debuffs.as_deref(),
+            taunt: taunts.get(e).ok(),
+        }, &mut item_mods, &mut dot_factors);
+        run.proc_runtime.blocked_dot_target = dot_covered.then_some(e);
+        if dot_covered {
+            mods.bleed = 0.0;
+            mods.ignite = 0.0;
+            mods.poison = 0.0;
+        }
         if dmg > 0.0 {
             let immortal = super::training::dummy(&en);
             let effective = if immortal {
@@ -5177,7 +5244,7 @@ pub(super) fn apply_hits(
             }
             _ => {}
         }
-        if h.mark != 0 {
+        if h.mark != 0 && !(dot_covered && (h.dot > 0.0 || h.direct_dot.is_some())) {
             marks.add(h.mark, h.mark_dur);
         }
         let rooted_by_skill = !was_rooted && en.root_t > 0.0;
@@ -5222,8 +5289,13 @@ pub(super) fn apply_hits(
             marks.clear();
         }
         marks.flush(e, guid.0, &mut store, &mut fields);
+        run.proc_runtime.blocked_dot_target = None;
     }
 
+    #[cfg(feature = "system_spans")]
+    drop(resolve_span);
+    #[cfg(feature = "system_spans")]
+    let _periodic_span = bevy::log::info_span!("system", name = "survivors::hits::periodic").entered();
     // The over-time ticks, once a second each.
     for (e, guid, tf, mut en, mut store, mut marks) in &mut enemies {
         if en.dead || en.dots.is_empty() {

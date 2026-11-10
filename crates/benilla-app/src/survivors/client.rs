@@ -139,6 +139,7 @@ mod tests {
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(OnEnter(Phase::Playing), auto::prepare_diagnostic_build.after(talents::prepare));
     app.add_plugins((
+        super::performance::plugin,
         boss_spells::plugin,
         super::enemy_visuals::plugin,
         super::revival_visuals::plugin,

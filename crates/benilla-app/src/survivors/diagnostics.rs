@@ -61,7 +61,7 @@ struct Hitch {
 }
 
 #[derive(Component)]
-struct FpsText;
+pub(super) struct FpsText;
 #[derive(Component)]
 struct PanelRoot;
 #[derive(Component)]
@@ -102,6 +102,9 @@ struct Counts {
     enemies: usize,
     gems: usize,
     entities: usize,
+    dot_stacks: usize,
+    impact_requests: u64,
+    impact_emitted: u64,
 }
 
 struct Second {
@@ -113,6 +116,8 @@ struct Second {
     cpu: Option<f64>,
     gpu: Option<f64>,
     counts: Counts,
+    /// Keep the hot systems for this second: cumulative tables hide late-run bottlenecks.
+    systems: Vec<(String, f64)>,
 }
 
 struct Session {
@@ -202,7 +207,8 @@ impl Session {
             let ms = per_frame(sample.nanos);
             match sample.kind {
                 Kind::Schedule => stages.push((sample.name.clone(), ms)),
-                _ => systems.push((sample.name.clone(), ms)),
+                Kind::Commands => systems.push((format!("{} (commands)", sample.name), ms)),
+                Kind::System => systems.push((sample.name.clone(), ms)),
             }
             let total = self.spans.entry((sample.kind, sample.name)).or_default();
             total.nanos += sample.nanos;
@@ -222,6 +228,7 @@ impl Session {
             .map(|(before, now)| (now - before) * 1000.0 / frames);
         self.previous_cpu = cpu_seconds;
         let mean = self.window.iter().sum::<f32>() / frames as f32;
+        systems.sort_by(|a, b| b.1.total_cmp(&a.1));
         let second = Second {
             at: self.elapsed,
             phase,
@@ -231,6 +238,7 @@ impl Session {
             cpu,
             gpu,
             counts,
+            systems: systems.iter().take(32).cloned().collect(),
         };
         self.panel = panel(&second, systems, stages);
         self.timeline.push(second);
@@ -306,6 +314,24 @@ impl Session {
             "SYSTEMS (CPU time summed across all threads)",
             &[Kind::System, Kind::Commands],
         );
+        let mut window_table = |title: &str, second: &Second| {
+            let _ = writeln!(out, "\n{title}\nt={:.1}s phase={:?} FPS={:.1} enemies={} gems={} entities={}\nms/frame  system",
+                second.at, second.phase, second.fps, second.counts.enemies,
+                second.counts.gems, second.counts.entities);
+            let _ = writeln!(out, "dot_stacks={} impact_requests_total={} impact_emitted_total={}",
+                second.counts.dot_stacks, second.counts.impact_requests, second.counts.impact_emitted);
+            for (name, ms) in &second.systems {
+                let _ = writeln!(out, "{ms:8.3}  {name}");
+            }
+        };
+        if let Some(second) = self.timeline.last() {
+            window_table("LATEST SECOND", second);
+        }
+        if let Some(second) = self.timeline.iter()
+            .filter(|s| s.phase == Phase::Playing && s.at >= 10.0 && s.counts.enemies > 0)
+            .max_by(|a, b| a.mean.total_cmp(&b.mean)) {
+            window_table("SLOWEST COMBAT SECOND (after startup)", second);
+        }
         if !self.hitches.is_empty() {
             let _ = writeln!(
                 out,
@@ -436,9 +462,10 @@ fn measure(
     phase: Res<State<Phase>>,
     mut diagnostics: ResMut<Diagnostics>,
     store: Option<Res<DiagnosticsStore>>,
-    enemies: Query<(), With<Enemy>>,
+    enemies: Query<&Enemy>,
     gems: Query<(), With<Gem>>,
     entities: Query<Entity>,
+    impacts: Option<Res<super::units::VisualImpacts>>,
 ) {
     let seconds = time.delta_secs();
     diagnostics.fps.frame(seconds);
@@ -474,6 +501,9 @@ fn measure(
                 enemies: enemies.iter().count(),
                 gems: gems.iter().count(),
                 entities: entities.iter().count(),
+                dot_stacks: enemies.iter().map(|e| e.dots.len()).sum(),
+                impact_requests: impacts.as_ref().map_or(0, |v| v.requested),
+                impact_emitted: impacts.as_ref().map_or(0, |v| v.emitted),
             },
             crate::perf::process_cpu_secs(),
             *phase.get(),
@@ -500,21 +530,6 @@ fn spawn_overlay(mut commands: Commands, font: Option<Res<HudFont>>, mut done: L
         font_size: size,
         ..default()
     };
-    commands.spawn((
-        FpsText,
-        Text::default(),
-        text(14.0),
-        TextColor(Color::WHITE),
-        TextShadow::default(),
-        GlobalZIndex(OVERLAY_Z),
-        Visibility::Hidden,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(2.0),
-            left: Val::Percent(50.0),
-            ..default()
-        },
-    ));
     commands
         .spawn((
             PanelRoot,
@@ -577,6 +592,27 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn slowest_combat_snapshot_excludes_loading_and_card_pauses() {
+        let mut session = Session::new(None);
+        for (phase, frames, dt, name) in [
+            (Phase::Hub, 100, 0.1, "loading"),
+            (Phase::Playing, 40, 0.025, "combat_hotspot"),
+            (Phase::LevelUp, 10, 0.1, "card_screen"),
+        ] {
+            for _ in 0..frames { session.frame(dt); }
+            session.close_window(vec![sample(Kind::System, name, 10)], vec![],
+                Counts { enemies: 300, ..default() }, None, phase);
+        }
+        let report = session.report();
+        let latest = report.split("LATEST SECOND").nth(1).unwrap()
+            .split("SLOWEST COMBAT SECOND").next().unwrap();
+        assert!(latest.contains("LevelUp") && latest.contains("card_screen"));
+        let combat = report.split("SLOWEST COMBAT SECOND").nth(1).unwrap()
+            .split("TIMELINE").next().unwrap();
+        assert!(combat.contains("Playing") && combat.contains("combat_hotspot"));
+        assert!(!combat.contains("loading") && !combat.contains("card_screen"));
+    }
 
     fn sample(kind: Kind, name: &str, ms: u64) -> Sample {
         Sample {
@@ -633,6 +669,7 @@ mod tests {
                     enemies: 7,
                     gems: 2,
                     entities: 100,
+                    ..default()
                 },
                 Some(f64::from(second as u32)),
                 Phase::Playing,

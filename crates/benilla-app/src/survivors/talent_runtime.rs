@@ -265,6 +265,10 @@ pub(super) fn before_hit(run: &mut Run, h: &Hit, en: &Enemy) -> f32 {
         1.0
     }
 }
+pub(super) fn applies_dots_on_hit(run: &Run) -> bool {
+    [M::Poison, M::Moonfire, M::Plague, M::ShadowPlague].into_iter().any(|m| active(run, m))
+}
+
 pub(super) fn on_hit(
     run: &mut Run,
     h: &Hit,
@@ -301,7 +305,8 @@ pub(super) fn on_hit(
     let arcane = accepts(run, h, M::Moonfire, t);
     let affliction = accepts(run, h, M::Plague, t);
     let plague = accepts(run, h, M::ShadowPlague, t) || affliction || arcane;
-    if (poison || plague)
+    if run.proc_runtime.blocked_dot_target != Some(h.target)
+        && (poison || plague)
         && en.hp > 0.0
         && procs::ready(
             run,
