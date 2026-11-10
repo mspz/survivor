@@ -464,12 +464,18 @@ pub(super) fn apply_stats(run: &Run, stats: &mut Stats) {
     }
 }
 
-pub(in crate::survivors) fn earned(run: &Run) -> u64 {
+pub(in crate::survivors) fn base_earned(run: &Run) -> u64 {
     let base = (run.elapsed.max(0.0) as u64 / 5)
         + (u64::from(run.meta_kills) * 1000).saturating_sub(run.meta_kill_penalty) / 1000
         + u64::from(run.bosses) * 100
         + if run.won { 500 } else { 0 };
     run.dungeon_modifiers().reward_xp(base, run.expedition_map)
+}
+pub(in crate::survivors) fn earned(run: &Run) -> u64 {
+    let base = base_earned(run);
+    run.endless.map_or(base, |stage| stage.xp_earned.saturating_add(
+        (base.saturating_sub(stage.xp_base) as f64 * f64::from(run.expeditions.reward_multiplier())).round() as u64
+    ))
 }
 
 /// Count a kill toward the character's XP, kept in full within nine levels of the monster;

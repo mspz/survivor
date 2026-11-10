@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 
+mod unstuck;
+mod motion;
+
 use benilla_world::rig_anim::GlobalSeqDrive;
 use crate::survivors::geometry::Surface as WorldPoint;
 use bevy::prelude::*;
@@ -149,6 +152,8 @@ pub(super) struct Dying(f32);
 pub(super) struct Spawner {
     timer: f32,
     center: usize,
+    // Reserve the entire Endless ring, but spread costly unit/model creation across frames.
+    ring: std::collections::VecDeque<(&'static EnemyDef, Vec3, Vec3)>,
 }
 impl Spawner {
     fn next_center(&mut self, centers: &[Vec3]) -> Vec3 {
@@ -308,17 +313,15 @@ fn spawn_rank(
         } else {
             1.0
         };
+    let movement = modifiers.movement() * run.expeditions.movement_multiplier()
+        * if rank == Rank::Sprinter { run.expeditions.sprinters.speed_multiplier } else { 1.0 };
+    let movement = if run.endless.is_some() { super::endless::config().cap_movement(movement) } else { movement };
     commands.entity(e).insert((
         Enemy {
             def,
             hp,
             max_hp: hp,
-            speed: def.speed * modifiers.movement()
-                * if rank == Rank::Sprinter {
-                    run.expeditions.sprinters.speed_multiplier
-                } else {
-                    1.0
-                },
+            speed: def.speed * movement,
             damage: base_damage * scale,
             radius: radius_for(def) * size_multiplier,
             xp: if elite {
@@ -371,20 +374,16 @@ pub(super) fn ground(world: &WorldPoint, mut p: Vec3, fallback: f32) -> Vec3 {
     p
 }
 
-/// The final clear, which ends the run; see [`data::CLEAR_SECS`].
+/// The final clear starts at the configured duration and requires no living enemies.
 #[derive(Resource, Default)]
 pub(super) struct ExpeditionClear {
-    /// The mobs alive when the clear began.
-    pub horde: Option<usize>,
     pub done: bool,
 }
 
 impl ExpeditionClear {
     /// Fold in this frame's living enemies once the clear has begun.
     fn update(&mut self, bosses_pending: bool, bosses_alive: usize, mobs_alive: usize) {
-        let horde = *self.horde.get_or_insert(mobs_alive);
-        let allowed = (horde as f32 * (1.0 - data::CLEAR_MOB_SHARE)).floor() as usize;
-        self.done = !bosses_pending && bosses_alive == 0 && mobs_alive <= allowed;
+        self.done = !bosses_pending && bosses_alive == 0 && mobs_alive == 0;
     }
 }
 
@@ -446,7 +445,12 @@ pub(super) fn spawn_enemies(
     remotes: Query<(&Transform, &super::multiplayer::RemoteOwner), Without<Hero>>,
 ) {
     if super::training::active(&selection) {
+        spawner.ring.clear();
         return;
+    }
+    // Spawner is a persistent resource; an abandoned run must not leak its queued ring.
+    if run.rings == 0 {
+        spawner.ring.clear();
     }
     let Ok(h) = hero.single() else { return };
     let mut centers = Vec::new();
@@ -472,23 +476,17 @@ pub(super) fn spawn_enemies(
     run.expedition_players = players.as_ref().map_or(1, |p| p.0.len().saturating_add(1));
     run.expedition_map = selection.map;
     let zone = run.expeditions.zone(selection.map);
-    let roster = data::roster(selection.map);
+    let roster = if run.endless.is_some() { super::endless::roster(selection.map) } else { data::roster(selection.map) };
     let pool = data::wave_pool(run.expeditions.progress(elapsed) * data::VICTORY_SECS, roster.enemies.len());
 
     let dungeon_balance = data::dungeon(selection.map).then(|| super::dungeon_config::get(selection.map));
-    let boss_interval = dungeon_balance.map_or(data::BOSS_EVERY_SECS, |c| c.boss_wave_seconds);
-    let clearing = !data::dungeon(selection.map) && elapsed >= data::CLEAR_SECS;
-    let due_bosses = if clearing {
-        roster.bosses.len() as u32
-    } else {
-        ((elapsed / boss_interval) as u32).min(roster.bosses.len() as u32)
-    };
-    let mut dungeon_boss_active = data::dungeon(selection.map)
-        && enemies.iter().any(|enemy| enemy.boss && !enemy.dead);
+    let boss_interval = run.expeditions.boss_interval();
+    let clearing = run.expeditions.elapsed(elapsed) >= run.expeditions.duration();
+    let due_bosses = run.expeditions.boss_waves_due(elapsed);
+    let bosses_before = run.bosses;
     while run.bosses < due_bosses {
-        if dungeon_boss_active { break; }
         let hpos = spawner.next_center(&centers);
-        let def = &roster.bosses[run.bosses as usize];
+        let def = &roster.bosses[(run.bosses - run.expeditions.boss_offset()) as usize % roster.bosses.len()];
         let a = rng.range(0.0, std::f32::consts::TAU);
         let pos = ground(
             &world,
@@ -501,39 +499,48 @@ pub(super) fn spawn_enemies(
             spawn_enemy(&mut commands, &mut run, def, position, hpos, true);
         }
         run.bosses += 1;
-        dungeon_boss_active = data::dungeon(selection.map);
         run.banner = Some((format!("{} approaches!", def.name), 4.0));
     }
 
+    let mut ring_spawned = 0;
+    for _ in 0..8 {
+        let Some((def, position, center)) = spawner.ring.pop_front() else { break };
+        let position = ground(&world, position, center.y);
+        super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, position, center);
+        ring_spawned += 1;
+    }
     if let Some(mut clear) = clear {
         if clearing {
             let alive = |boss: bool| enemies.iter().filter(|e| !e.dead && e.boss == boss).count();
-            clear.update(run.bosses < due_bosses, alive(true), alive(false));
-            return;
+            clear.update(bosses_before < due_bosses, alive(true), alive(false) + ring_spawned + spawner.ring.len());
+        } else {
+            *clear = ExpeditionClear::default();
         }
-        *clear = ExpeditionClear::default();
+    }
+    if clearing {
+        return;
     }
     // Half way between bosses, a closing ring of the moment's weakest.
-    let mut ring_spawned = 0;
-    let due_rings = ((elapsed + boss_interval / 2.0) / boss_interval) as u32;
+    let due_rings = ((run.expeditions.elapsed(elapsed) + boss_interval / 2.0) / boss_interval) as u32;
     if run.rings < due_rings {
         run.rings = due_rings;
         let def = &roster.enemies[pool[0]];
-        let alive = enemies.iter().filter(|e| !e.dead && !e.boss).count();
+        let alive = enemies.iter().filter(|e| !e.dead && !e.boss).count() + ring_spawned + spawner.ring.len();
         let n = (((dungeon_balance.map_or(28.0, |c| c.ring_start)
             + run.expeditions.progress(elapsed) * dungeon_balance.map_or(60.0, |c| c.ring_growth)) * zone.monster_quantity).ceil() as usize)
             .min(run.expeditions.max_monsters.saturating_sub(alive));
-        ring_spawned = n;
         for i in 0..n {
             let hpos = centers[i % centers.len()];
             let count = (n + centers.len() - 1 - i % centers.len()) / centers.len();
             let a = (i / centers.len()) as f32 / count as f32 * std::f32::consts::TAU;
-            let pos = ground(
-                &world,
-                hpos + Vec3::new(a.cos(), 0.0, a.sin()) * dungeon_balance.map_or(26.0, |c| c.ring_radius),
-                hpos.y,
-            );
-            super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, pos, hpos);
+            let pos = hpos + Vec3::new(a.cos(), 0.0, a.sin()) * dungeon_balance.map_or(26.0, |c| c.ring_radius);
+            if run.endless.is_some() {
+                spawner.ring.push_back((def, pos, hpos));
+            } else {
+                let pos = ground(&world, pos, hpos.y);
+                super::ranged_enemies::spawn(&mut commands, &mut run, &mut rng, def, pos, hpos);
+                ring_spawned += 1;
+            }
         }
         run.banner = Some(("They're surrounding you!".into(), 3.0));
     }
@@ -543,7 +550,7 @@ pub(super) fn spawn_enemies(
         return;
     }
     spawner.timer = 0.12;
-    let alive = enemies.iter().filter(|e| !e.dead && !e.boss).count() + ring_spawned;
+    let alive = enemies.iter().filter(|e| !e.dead && !e.boss).count() + ring_spawned + spawner.ring.len();
     let target = run.expeditions.population(selection.map, elapsed);
     if alive >= target {
         return;
@@ -588,12 +595,14 @@ pub(super) fn move_enemies(
     remotes: Query<(Entity, &Transform, &super::multiplayer::RemoteOwner), Without<Enemy>>,
     practice: Query<&super::training::Target>,
     mut missiles: Local<super::ranged_enemies::Pending>,
+    mut unstuck: Local<unstuck::Tracker>,
     spells: Option<Res<crate::ui_action::Spells>>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
+    unstuck.retain(|entity| enemies.contains(entity));
     let Ok((hero_e, htf)) = hero.single() else {
         return;
     };
@@ -645,8 +654,13 @@ pub(super) fn move_enemies(
                     }
                     let (_, other, or) = bodies[j];
                     let d = flat(pos - other);
-                    let len = d.length();
                     let min = r + or;
+                    let distance_squared = d.length_squared();
+                    // Most grid neighbours do not touch: avoid a square root for those pairs.
+                    if distance_squared >= min * min && distance_squared > 1e-8 {
+                        continue;
+                    }
+                    let len = distance_squared.sqrt();
                     if len < min && len > 1e-4 {
                         acc += d / len * (min - len);
                     } else if len <= 1e-4 {
@@ -661,6 +675,7 @@ pub(super) fn move_enemies(
     for (ent, mut tf, mut e, mut mv, taunt, mut caster, skills, rank) in &mut enemies {
         let e = &mut *e;
         if e.dead {
+            unstuck.reset(ent);
             if mv.speed != 0.0 || mv.flags != 0 {
                 mv.speed = 0.0;
                 mv.flags = 0;
@@ -684,12 +699,14 @@ pub(super) fn move_enemies(
             e.weaken = 1.0;
         }
         if let Ok(target) = practice.get(ent) {
+            unstuck.reset(ent);
             tf.translation = ground(&world, target.home, target.home.y);
             mv.speed = 0.0;
             mv.flags = 0;
             continue;
         }
         if skills.is_some_and(|s| s.busy()) {
+            unstuck.reset(ent);
             if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             continue;
         }
@@ -730,6 +747,7 @@ pub(super) fn move_enemies(
             }
         }
         let Some((owner, hero_e, hpos)) = target else {
+            unstuck.reset(ent);
             if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
             mv.speed = 0.0;
             mv.flags = 0;
@@ -782,9 +800,14 @@ pub(super) fn move_enemies(
             }
         }
         let shove = push.get(&ent).copied().unwrap_or_default();
-        let mut next = pos + step * dt + shove * (dt * 8.0).min(0.5);
+        let stand_off = caster.as_deref().map_or(
+            super::spell_engine::targeting::melee_contact_range(e.radius), |c| c.stand_off);
+        let travel = motion::travel(step, dt, dist, stand_off, e.fear_t > 0.0);
+        let mut next = pos + travel + shove * (dt * 8.0).min(0.5);
         next = ground(&world, next, pos.y);
-        next = world.constrain(pos, next);
+        let walking = step.length_squared() > 1.0e-10
+            && !cast_ready && !caster.as_deref().is_some_and(|c| c.casting());
+        next = unstuck.resolve(ent, pos, next, walking, dt, |from, to| world.constrain(from, to));
         tf.translation = next;
         if speed > 0.0 {
             mv.speed = speed;
@@ -1002,8 +1025,28 @@ fn bank_levels(run: &mut Run) {
     }
 }
 
+pub(super) fn bank_endless_xp(
+    mut commands: Commands,
+    mut run: ResMut<Run>,
+    gems: Query<(Entity, &Gem)>,
+    mut players: Option<ResMut<super::multiplayer::Companions>>,
+) {
+    if !run.won || run.endless.is_none() { return; }
+    let mut total = 0_u64;
+    for (entity, gem) in &gems {
+        if let GemKind::Xp(xp) = gem.kind {
+            total = total.saturating_add(u64::from(xp));
+            commands.entity(entity).despawn();
+        }
+    }
+    grant_pickup_xp(&mut run, total);
+    if let Some(players) = players.as_deref_mut() {
+        for player in players.0.values_mut() { grant_pickup_xp(&mut player.run, total); }
+    }
+}
+
 fn grant_pickup_xp(run: &mut Run, xp: u64) {
-    run.xp += xp as f32 * data::XP_RATE * run.stats().growth;
+    run.xp += xp as f32 * data::XP_RATE * run.stats().growth * run.expeditions.reward_multiplier();
     bank_levels(run);
 }
 
@@ -1151,6 +1194,54 @@ mod elite_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     #[test]
+    fn endless_ring_creation_is_bounded_and_pending_monsters_block_completion() {
+        let mut world = World::new();
+        crate::survivors::geometry::init_test_world(&mut world);
+        world.init_resource::<Time>();
+        world.init_resource::<Spawner>();
+        world.init_resource::<ExpeditionClear>();
+        world.insert_resource(Rng(42));
+        let map = data::CAMPAIGN[0];
+        let mut run = Run { expedition_map: map, ..default() };
+        let stage = super::super::endless::Stage::default();
+        run.endless = Some(stage);
+        run.expeditions.endless = Some(stage);
+        run.elapsed = run.expeditions.boss_interval() * 0.5;
+        world.insert_resource(run);
+        world.insert_resource(Selection { map, ..default() });
+        world.spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
+        world.run_system_once(spawn_enemies).unwrap();
+        let queued = world.resource::<Spawner>().ring.len();
+        assert!(queued > 8);
+        let before = world.query::<&Enemy>().iter(&world).filter(|e| !e.boss).count();
+        // No more replenishment at the deadline; already reserved enemies must still arrive.
+        let duration = world.resource::<Run>().expeditions.duration();
+        world.resource_mut::<Run>().elapsed = duration;
+        world.resource_mut::<Run>().bosses = data::BOSS_WAVES;
+        let mut spawned = 0;
+        while !world.resource::<Spawner>().ring.is_empty() {
+            for mut enemy in world.query::<&mut Enemy>().iter_mut(&mut world) { enemy.dead = true; }
+            world.run_system_once(spawn_enemies).unwrap();
+            let alive = world.query::<&Enemy>().iter(&world).filter(|e| !e.dead).count();
+            assert!(alive > 0 && alive <= 8);
+            spawned += alive;
+            assert!(!world.resource::<ExpeditionClear>().done);
+        }
+        assert_eq!(spawned, queued);
+        assert_eq!(world.query::<&Enemy>().iter(&world).count(), before + queued);
+        for mut enemy in world.query::<&mut Enemy>().iter_mut(&mut world) { enemy.dead = true; }
+        world.run_system_once(spawn_enemies).unwrap();
+        assert!(world.resource::<ExpeditionClear>().done);
+        // Starting a fresh run also discards a ring left behind by abandoning the old one.
+        world.resource_mut::<Spawner>().ring.push_back((
+            &data::roster(map).enemies[0], Vec3::X * 26.0, Vec3::ZERO,
+        ));
+        world.resource_mut::<Spawner>().timer = 100.0;
+        *world.resource_mut::<Run>() = Run { expedition_map: map, ..default() };
+        world.run_system_once(spawn_enemies).unwrap();
+        assert!(world.resource::<Spawner>().ring.is_empty());
+    }
+    #[test]
     fn dungeon_modifiers_apply_to_real_spawns_and_add_a_boss_per_wave() {
         let mut world = World::new();
         crate::survivors::geometry::init_test_world(&mut world);
@@ -1179,13 +1270,13 @@ mod elite_tests {
             .all(|boss| (boss.damage - expected_damage).abs() < 0.001));
         world.resource_mut::<Run>().elapsed = data::VICTORY_SECS;
         world.run_system_once(spawn_enemies).unwrap();
-        assert_eq!(world.resource::<Run>().bosses, 1, "living bosses block the next wave");
+        assert_eq!(world.resource::<Run>().bosses, data::BOSS_WAVES, "every scheduled wave arrives even with living bosses");
         for mut enemy in world.query::<&mut Enemy>().iter_mut(&mut world) {
             if enemy.boss { enemy.dead = true; }
         }
         world.run_system_once(spawn_enemies).unwrap();
-        assert_eq!(world.resource::<Run>().bosses, 2, "only one overdue wave starts at a time");
-        assert_eq!(world.query::<&Enemy>().iter(&world).filter(|e| e.boss && !e.dead).count(), 2);
+        assert_eq!(world.resource::<Run>().bosses, data::BOSS_WAVES);
+        assert_eq!(world.query::<&Enemy>().iter(&world).filter(|e| e.boss && !e.dead).count(), 0);
     }
     #[test]
     fn variants_unlock_across_the_campaign_and_accumulate_without_changing_their_chances() {
@@ -1314,17 +1405,48 @@ mod elite_tests {
         assert_eq!(roll_rank(0.15, &config, data::CAMPAIGN[5]), Rank::Normal);
     }
     #[test]
-    fn the_clear_needs_every_boss_and_nine_mobs_in_ten() {
+    fn final_wave_arrives_before_the_clear_can_finish_for_campaign_and_dungeons() {
+        for map in [data::CAMPAIGN[0], data::DUNGEONS[0]] {
+            let mut world = World::new();
+            crate::survivors::geometry::init_test_world(&mut world);
+            world.init_resource::<Time>();
+            world.init_resource::<Spawner>();
+            world.init_resource::<ExpeditionClear>();
+            world.insert_resource(Rng(42));
+            let expeditions = super::super::expedition_config::Config::default().for_map(map);
+            let duration = expeditions.duration();
+            world.insert_resource(Run {
+                expedition_map: map, expeditions, elapsed: duration,
+                bosses: data::BOSS_WAVES - 1, ..default()
+            });
+            world.insert_resource(Selection { map, ..default() });
+            world.spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
+            world.run_system_once(spawn_enemies).unwrap();
+            assert_eq!(world.resource::<Run>().bosses, data::BOSS_WAVES);
+            assert!(!world.resource::<ExpeditionClear>().done);
+            assert_eq!(world.query::<&Enemy>().iter(&world).filter(|e| !e.boss).count(), 0);
+            world.run_system_once(spawn_enemies).unwrap();
+            assert!(!world.resource::<ExpeditionClear>().done);
+            for mut enemy in world.query::<&mut Enemy>().iter_mut(&mut world) {
+                enemy.dead = true;
+            }
+            world.run_system_once(spawn_enemies).unwrap();
+            assert!(world.resource::<ExpeditionClear>().done);
+        }
+    }
+
+    #[test]
+    fn the_clear_needs_every_boss_and_every_monster() {
         let mut clear = ExpeditionClear::default();
         clear.update(false, 1, 100);
         assert!(!clear.done);
         clear.update(false, 1, 5);
         assert!(!clear.done, "a boss is alive");
-        clear.update(false, 0, 11);
+        clear.update(false, 0, 1);
         assert!(!clear.done, "too many mobs are left");
-        clear.update(true, 0, 10);
+        clear.update(true, 0, 0);
         assert!(!clear.done, "a boss has yet to arrive");
-        clear.update(false, 0, 10);
+        clear.update(false, 0, 0);
         assert!(clear.done);
     }
 
@@ -1411,6 +1533,57 @@ mod pickup_tests {
             ))
             .id()
     }
+    #[test]
+    fn endless_gems_receive_the_stage_bonus_once_including_the_last_kill() {
+        let mut world = world();
+        {
+            let mut run = world.resource_mut::<Run>();
+            super::super::endless::begin(&mut run);
+            let stage = super::super::endless::Stage { index: 2, ..default() };
+            run.endless = Some(stage);
+            run.expeditions = super::super::endless::config().expedition(stage);
+            run.level = 50;
+        }
+        gem(&mut world, GemKind::Xp(10), Vec3::Y);
+        world.run_system_once(collect_gems).unwrap();
+        let expected = 10.0 * data::XP_RATE * 1.6;
+        assert!((world.resource::<Run>().xp - expected).abs() < 0.001);
+        world.resource_mut::<Run>().won = true;
+        gem(&mut world, GemKind::Xp(5), Vec3::X * 10000.0);
+        world.run_system_once(bank_endless_xp).unwrap();
+        assert!((world.resource::<Run>().xp - expected * 1.5).abs() < 0.001);
+        world.run_system_once(bank_endless_xp).unwrap();
+        assert!((world.resource::<Run>().xp - expected * 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn endless_victory_sweeps_all_xp_including_late_drops_without_moving_or_double_credit() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Phase>();
+        let mut run = Run { won: true, level: 50, ..default() };
+        super::super::endless::begin(&mut run);
+        app.insert_resource(run)
+            .add_systems(OnEnter(Phase::GameOver), bank_endless_xp)
+            .add_systems(Update, bank_endless_xp.run_if(in_state(Phase::GameOver)));
+        let first = gem(app.world_mut(), GemKind::Xp(10), Vec3::X * 10000.0);
+        let second = gem(app.world_mut(), GemKind::Xp(20), -Vec3::X * 10000.0);
+        let meat = gem(app.world_mut(), GemKind::Heal(10.0), Vec3::Z * 10000.0);
+        app.world_mut().resource_mut::<NextState<Phase>>().set(Phase::GameOver);
+        app.update();
+        let expected = 30.0 * data::XP_RATE;
+        assert!((app.world().resource::<Run>().xp - expected).abs() < 0.001);
+        assert!(app.world().get_entity(first).is_err());
+        assert!(app.world().get_entity(second).is_err());
+        assert!(app.world().get_entity(meat).is_ok());
+        let late = gem(app.world_mut(), GemKind::Xp(5), Vec3::Z * 10000.0);
+        app.update();
+        assert!(app.world().get_entity(late).is_err());
+        assert!((app.world().resource::<Run>().xp - expected - 5.0 * data::XP_RATE).abs() < 0.001);
+        app.update();
+        assert!((app.world().resource::<Run>().xp - expected - 5.0 * data::XP_RATE).abs() < 0.001);
+    }
+
     #[test]
     fn meat_and_magnets_are_collected_without_travel_only_inside_pickup_range() {
         let mut world = world();

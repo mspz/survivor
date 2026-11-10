@@ -1,0 +1,48 @@
+# Shared by campaign expeditions, Endless and all dungeons. Restart after edits.
+version = 1
+
+[ranged]
+chance = 0.02
+range = 20.0
+stand_off = 16.0
+interval = 3.0
+windup = 1.0
+
+# Mutually exclusive variants of ordinary spawns (bosses/training excluded).
+# first_zone: campaign zone 1..6; once introduced, a variant stays present in later zones.
+# Default progression: normal only, then elites, sprinters, explosives, healers, protectors.
+[elites]
+first_zone = 2
+chance = 0.02
+health_multiplier = 10.0
+size_multiplier = 1.5
+# Additional reduction after zone, armour and elemental defenses: 0.2 = 20%.
+damage_reduction = 0.2
+xp_multiplier = 3
+
+[sprinters]
+first_zone = 3
+chance = 0.03
+speed_multiplier = 3.0
+# Health, armour, resistances, damage, size and XP stay identical to normal monsters.
+
+[explosives]
+first_zone = 4
+chance = 0.03
+radius = 3.5 # yards; the warning matches the damage footprint.
+delay = 1.5 # seconds after death, with a filling orange ground circle.
+damage_multiplier = 2.0 # relative to this monster's scaled attack damage.
+
+[healers]
+first_zone = 5
+chance = 0.02
+radius = 10.0
+interval = 4.0 # seconds between pulses.
+heal_fraction = 0.1 # fraction of each ally's maximum HP; never heals itself or bosses.
+
+[protectors]
+first_zone = 6
+chance = 0.02
+radius = 8.0
+damage_reduction = 0.25 # additional reduction; overlapping auras never stack.
+# The aura excludes its source, bosses and training actors.

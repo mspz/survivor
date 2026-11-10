@@ -1,8 +1,7 @@
 # Dungeon balance. Restart the game after edits; embedded defaults are used if invalid.
 # Percentages are fractions unless specified. Dimensions and speeds use yards and seconds.
 version = 1
-duration_seconds = 900.0
-boss_wave_seconds = 135.0
+duration_seconds = 720.0
 item_level = 65
 character_xp_multiplier = 3.0
 boss_size_multiplier = 2.0
@@ -18,17 +17,9 @@ replenish_divisor = 6.0
 replenish_max_per_frame = 4
 initial_attack_delay = 0.5
 
-[ranged]
-range = 20.0
-stand_off = 16.0
-interval = 3.0
-windup = 1.0
-
-# Independent of survivors-expeditions.toml. Global base stats times the [zone] multipliers.
 [combat]
 end_multiplier = 15.0 # Health and damage growth at the end of the run.
 multiplayer_health_per_extra_player = 2
-ranged_monster_chance = 0.02
 monster_armour_per_level = 50
 boss_armour_per_level = 10.0
 monster_health = 40
@@ -112,42 +103,6 @@ sector_inner = [20.0, 17.0, 14.0]
 sector_outer = 90.0
 plague_angle_degrees = 225.0
 necrotic_angle_degrees = 270.0
-
-[elites]
-first_zone = 2
-chance = 0.02
-health_multiplier = 10.0
-size_multiplier = 1.5
-# Additional reduction after zone, armour and elemental defenses: 0.2 = 20%.
-damage_reduction = 0.2
-xp_multiplier = 3
-
-[sprinters]
-first_zone = 3
-chance = 0.03
-speed_multiplier = 3.0
-# Health, armour, resistances, damage, size and XP stay identical to normal monsters.
-
-[explosives]
-first_zone = 4
-chance = 0.03
-radius = 3.5 # yards; the warning matches the damage footprint.
-delay = 1.5 # seconds after death, with a filling orange ground circle.
-damage_multiplier = 2.0 # relative to this monster's scaled attack damage.
-
-[healers]
-first_zone = 5
-chance = 0.02
-radius = 10.0
-interval = 4.0 # seconds between pulses.
-heal_fraction = 0.1 # fraction of each ally's maximum HP; never heals itself or bosses.
-
-[protectors]
-first_zone = 6
-chance = 0.02
-radius = 8.0
-damage_reduction = 0.25 # additional reduction; overlapping auras never stack.
-# The aura excludes its source, bosses and training actors.
 
 [[monsters]]
 name = "Scholomance Neophyte"

@@ -195,6 +195,7 @@ pub(super) struct Run {
     pub class: &'static ClassDef,
     pub race: u8,
     pub elapsed: f32,
+    pub endless: Option<super::endless::Stage>,
     pub kills: u32,
     pub level: u32,
     pub xp: f32,
@@ -224,6 +225,8 @@ pub(super) struct Run {
     pub pending_levels: u32,
     pub stored_cards: u32,
     pub auto_draw_cards: bool,
+    /// Ephemeral diagnostic presets can replace the draft with a fixed complete build.
+    pub drafts_disabled: bool,
     /// Reward categories alternate per confirmed pick, independent of queued XP levels.
     pub(super) next_passive: bool,
     pub bosses: u32,
@@ -279,6 +282,7 @@ impl Default for Run {
             class: &data::CLASSES[0],
             race: 0,
             elapsed: 0.0,
+            endless: None,
             kills: 0,
             level: 1,
             xp: 0.0,
@@ -306,6 +310,7 @@ impl Default for Run {
             pending_levels: 0,
             stored_cards: 0,
             auto_draw_cards: true,
+            drafts_disabled: false,
             next_passive: false,
             bosses: 0,
             rings: 0,
@@ -507,6 +512,7 @@ pub(super) fn reset_run(
     selection.ui_captured = false;
     selection.pointer_captured = false;
     selection.in_hub = true;
+    selection.endless = false;
     selection.talents_open = false;
     // The preview hero is respawned for the look still picked.
     selection.version += 1;

@@ -19,6 +19,37 @@ use super::{data, Phase, Rng, Run, Selection};
 const TEST_SOURCE: u64 = 0x5100_0000;
 const TOP_LEVEL: u8 = 6;
 
+fn full_rogue_build(run: &mut Run) -> bool {
+    if run.class.name != "Rogue" { return false; }
+    for key in std::iter::once(run.class.start).chain(run.class.pool.iter().copied()) {
+        if let Some(owned) = run.abilities.iter_mut().find(|owned| owned.def.key == key) {
+            owned.level = TOP_LEVEL;
+        } else {
+            run.abilities.push(super::Owned { def: data::ability(key), level: TOP_LEVEL, cd: 0.5 });
+        }
+    }
+    for owned in &mut run.abilities { owned.level = TOP_LEVEL; }
+    run.passives = data::PASSIVES.iter().map(|passive| (passive, 30)).collect();
+    super::passives::sync(run);
+    run.drafts_disabled = true;
+    run.auto_draw_cards = false;
+    run.pending_levels = 0;
+    run.stored_cards = 0;
+    run.hp = run.stats().max_hp;
+    run.version += 1;
+    true
+}
+
+pub(super) fn prepare_diagnostic_build(mut run: ResMut<Run>) {
+    if run.elapsed == 0.0 && run.level == 1
+        && crate::webenv::var("WOW_PERF_DIAG").as_deref() == Some("1")
+        && crate::webenv::var("WOW_SURVIVORS_DIAGNOSTIC_BUILD").as_deref() == Some("rogue-full")
+        && full_rogue_build(&mut run) {
+        info!("Endless diagnostic build: {} spells at rank 6, {} passives at rank 30, drafts disabled",
+            run.abilities.len(), run.passives.len());
+    }
+}
+
 /// `WOW_SURVIVORS_TEST`, for performance runs that must not end early.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct TestOptions {
@@ -292,7 +323,7 @@ pub(super) fn drive(
             if auto.wait > 1.5 {
                 auto.capture_once(&mut commands, "over".into());
             }
-            if auto.wait > 6.0 {
+            if auto.wait > 6.0 && run.endless.is_none() {
                 next.set(Phase::Menu);
                 auto.wait = 0.0;
             }
@@ -340,6 +371,21 @@ pub(super) fn drive(
 #[cfg(test)]
 mod test_options {
     use super::*;
+    #[test]
+    fn diagnostic_rogue_build_is_complete_and_never_opens_a_card_draft() {
+        let mut run = Run { class: &data::CLASSES[3], pending_levels: 4, stored_cards: 8, ..default() };
+        assert!(full_rogue_build(&mut run));
+        for key in std::iter::once(run.class.start).chain(run.class.pool.iter().copied()) {
+            assert_eq!(run.abilities.iter().filter(|owned| owned.def.key == key).count(), 1);
+            assert_eq!(run.abilities.iter().find(|owned| owned.def.key == key).unwrap().level, 6);
+        }
+        assert_eq!(run.passives.len(), data::PASSIVES.len());
+        assert!(run.passives.iter().all(|(_, rank)| *rank == 30));
+        for _ in 0..100 { super::super::card_draw::bank(&mut run); }
+        assert!(!super::super::card_draw::apply(&mut run, true, true));
+        assert_eq!((run.pending_levels, run.stored_cards), (0, 0));
+        assert_eq!(run.hp, run.stats().max_hp);
+    }
 
     #[test]
     fn test_options_read_a_comma_list_and_ignore_the_rest() {

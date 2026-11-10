@@ -102,7 +102,7 @@ impl Progress {
 }
 
 pub(super) fn finish_run(run: Res<Run>, mut selection: ResMut<Selection>) {
-    if run.won {
+    if run.won && run.endless.is_none() {
         let zone = selection.stage;
         selection.progress.complete(zone);
     }

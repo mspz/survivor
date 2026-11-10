@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 19;
+pub const VERSION: u32 = 20;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -140,6 +140,8 @@ pub struct Stats {
     pub hp: f32,
     pub max_hp: f32,
     pub elapsed: f32,
+    #[serde(default)]
+    pub endless: Option<super::super::endless::Stage>,
     pub level: u32,
     #[serde(default)]
     pub character_level: u32,

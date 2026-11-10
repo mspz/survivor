@@ -36,7 +36,6 @@ const FILES: [(&str, &str); 6] = [
 pub(super) struct Config {
     version: u32,
     pub duration_seconds: f32,
-    pub boss_wave_seconds: f32,
     pub item_level: u32,
     pub character_xp_multiplier: f64,
     pub boss_size_multiplier: f32,
@@ -51,14 +50,8 @@ pub(super) struct Config {
     pub replenish_divisor: f32,
     pub replenish_max_per_frame: usize,
     pub initial_attack_delay: f32,
-    pub ranged: Ranged,
     pub combat: Combat,
     pub zone: expedition::Zone,
-    pub elites: expedition::Elites,
-    pub sprinters: expedition::Sprinters,
-    pub explosives: expedition::Explosives,
-    pub healers: expedition::Healers,
-    pub protectors: expedition::Protectors,
     pub modifiers: Modifiers,
     pub spells: Spells,
     pub monsters: Vec<Actor>,
@@ -70,7 +63,6 @@ pub(super) struct Config {
 pub(super) struct Combat {
     end_multiplier: f32,
     multiplayer_health_per_extra_player: f32,
-    ranged_monster_chance: f32,
     monster_health: f32,
     monster_damage: f32,
     boss_health: f32,
@@ -95,15 +87,6 @@ pub(super) struct Actor {
     pub damage_multiplier: f32,
     pub xp_multiplier: f32,
 }
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Ranged {
-    pub range: f32,
-    pub stand_off: f32,
-    pub interval: f32,
-    pub windup: f32,
-}
-
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Modifiers {
@@ -189,15 +172,6 @@ impl Config {
                 6
             ]),
         );
-        for (key, value) in [
-            ("elites", toml::Value::try_from(&self.elites)),
-            ("sprinters", toml::Value::try_from(&self.sprinters)),
-            ("explosives", toml::Value::try_from(&self.explosives)),
-            ("healers", toml::Value::try_from(&self.healers)),
-            ("protectors", toml::Value::try_from(&self.protectors)),
-        ] {
-            table.insert(key.into(), value.map_err(|e| e.to_string())?);
-        }
         expedition::Config::parse(
             &toml::to_string(&toml::Value::Table(table)).map_err(|e| e.to_string())?,
         )
@@ -211,7 +185,6 @@ impl Config {
         if c.version != 1
             || ![
                 c.duration_seconds,
-                c.boss_wave_seconds,
                 c.monster_attack_interval,
                 c.boss_attack_interval,
                 c.boss_size_multiplier,
@@ -223,10 +196,6 @@ impl Config {
                 c.boss_spawn_radius,
                 c.replenish_divisor,
                 c.initial_attack_delay,
-                c.ranged.range,
-                c.ranged.stand_off,
-                c.ranged.interval,
-                c.ranged.windup,
                 s.cast_range,
                 s.pulse_interval,
                 s.initial_delay,
@@ -244,7 +213,6 @@ impl Config {
             || c.spawn_radius_min > c.spawn_radius_max
             || c.replenish_max_per_frame == 0
             || c.replenish_max_per_frame > 100
-            || c.ranged.stand_off >= c.ranged.range
             || !(1..=MAX_REWARD_LEVEL).contains(&c.item_level)
             || m.item_level_per_rank
                 .iter()
@@ -377,7 +345,7 @@ mod tests {
             let map = data::DUNGEONS[index];
             let c = Config::parse_for_map(text, map).unwrap();
             assert_eq!(c.item_level, 65);
-            assert_eq!(c.duration_seconds, 900.0);
+            assert_eq!(c.duration_seconds, 720.0);
             assert_eq!(
                 c.expedition().unwrap().for_map(map).stats(map, true),
                 (108000.0, 1425.0)
@@ -409,15 +377,14 @@ mod tests {
         }
     }
     #[test]
-    fn independent_combat_fields_and_variants_reach_the_expedition_engine() {
+    fn independent_combat_fields_keep_shared_monster_types() {
         let text = FILES[0]
             .1
-            .replace("monster_health = 40", "monster_health = 80")
-            .replace("chance = 0.02", "chance = 0.01");
+            .replace("monster_health = 40", "monster_health = 80");
         let custom = Config::parse(&text).unwrap();
         let engine = custom.expedition().unwrap();
         assert_eq!(engine.stats(0, false).0, 1280.0);
-        assert_eq!(engine.elites.chance, 0.01);
+        assert_eq!(engine.elites.chance, super::super::monster_types::get().elites.chance);
         assert_eq!(
             get(data::DUNGEONS[1])
                 .expedition()

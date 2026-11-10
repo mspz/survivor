@@ -440,6 +440,10 @@ pub(super) enum RuneAction {
 }
 
 impl Runes {
+    /// A pending drop or its action result still owns the victory screen until closed.
+    pub(super) fn reward_active(&self) -> bool {
+        self.save.pending.is_some() || !self.message.is_empty()
+    }
     fn normalise(&mut self) {
         if self.save.slots.len() < self.config.slots {
             self.save.slots.resize(self.config.slots, Slot::default());

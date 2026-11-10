@@ -17,6 +17,15 @@ impl Default for BodyShape {
     }
 }
 impl Surface<'_, '_> {
+    /// Warning vertices can lie far uphill from their caster. The walking probe deliberately
+    /// limits its reach; an outdoor visual can fall back to the actual heightfield beyond it.
+    pub(super) fn warning_height_under(&self, point: Vec3) -> Option<f32> {
+        self.terrain_height_under(point).or_else(|| {
+            (!self.terrain.indoors_at(point))
+                .then(|| self.terrain.terrain_height_under(point))
+                .flatten()
+        })
+    }
     pub(super) fn terrain_height_under(&self, feet: Vec3) -> Option<f32> {
         // Start just above the feet, never above a room's ceiling or the next storey.
         let origin = feet + Vec3::Y * 0.6;
@@ -139,6 +148,17 @@ mod tests {
         app.update();
         app.update();
         app
+    }
+
+    #[test]
+    fn warning_projection_keeps_the_current_storey_in_a_two_level_room() {
+        let mut app = room();
+        app.world_mut().run_system_once(|surface: Surface| {
+            for floor in [0.0, 5.0] {
+                let height = surface.warning_height_under(Vec3::new(0.0, floor, 0.0)).unwrap();
+                assert!((height - floor).abs() < 0.001, "{height} != {floor}");
+            }
+        }).unwrap();
     }
 
     #[test]

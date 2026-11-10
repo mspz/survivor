@@ -426,7 +426,7 @@ fn track_run(
     if run.elapsed + 0.5 < progress.folded.elapsed || run.kills < progress.folded.kills {
         progress.folded = Folded::default();
     }
-    let campaign = data::CAMPAIGN.contains(&map);
+    let campaign = data::CAMPAIGN.contains(&map) && run.endless.is_none();
     if !progress.folded.started && run.elapsed > 1.0 {
         progress.folded.started = true;
         progress.add("runs", 1);

@@ -2106,14 +2106,15 @@ pub(crate) static BOSSES: &[EnemyDef] = &[
     },
 ];
 
-/// Survive this long to win.
-pub(crate) const VICTORY_SECS: f32 = 900.0;
-/// From here mobs stop arriving: the run ends once every boss and most of the horde are dead.
-pub(crate) const CLEAR_SECS: f32 = 960.0;
-/// The share of the horde alive at [`CLEAR_SECS`] that must die.
-pub(crate) const CLEAR_MOB_SHARE: f32 = 0.9;
-/// A boss every two and a quarter minutes, the last of six at 13:30, a fight before the bell.
-pub(crate) const BOSS_EVERY_SECS: f32 = 135.0;
+/// Default wave duration; victory then requires every enemy to be dead.
+pub(crate) const VICTORY_SECS: f32 = 720.0;
+/// Default end of spawning; the run ends once every boss and monster is dead.
+pub(crate) const CLEAR_SECS: f32 = VICTORY_SECS;
+/// Boss waves occupy equal fractions of the configured duration, including its endpoint.
+pub(crate) const BOSS_WAVES: u32 = 8;
+/// Default interval; runtime scheduling uses the configured duration.
+#[cfg(test)]
+pub(crate) const BOSS_EVERY_SECS: f32 = VICTORY_SECS / BOSS_WAVES as f32;
 /// Experience per gem: every level of the curve comes at the run's pace.
 pub(crate) const XP_RATE: f32 = 2.0;
 
@@ -2208,7 +2209,7 @@ pub(crate) struct MapDef {
     pub victory: &'static str,
     /// Weakest first; empty for The Barrens, which keeps its hand-tuned [`ENEMIES`].
     foes: &'static [Foe],
-    /// One every [`BOSS_EVERY_SECS`], in order; empty for The Barrens' [`BOSSES`].
+    /// Boss types cycle in order across [`BOSS_WAVES`]; empty for The Barrens' [`BOSSES`].
     bosses: &'static [Foe],
 }
 impl MapDef {
@@ -2233,7 +2234,7 @@ pub(crate) static HUB: MapDef = MapDef {
 };
 #[path = "dungeon_data.rs"]
 mod dungeon_data;
-pub(crate) use dungeon_data::{dungeon, dungeon_cleared, DUNGEONS};
+pub(crate) use dungeon_data::{dungeon, DUNGEONS};
 #[cfg(test)]
 pub(crate) use dungeon_data::DUNGEON_ITEM_LEVEL;
 pub(crate) const TRAINING_MAP: usize = 16;

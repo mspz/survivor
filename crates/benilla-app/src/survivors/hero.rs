@@ -624,13 +624,11 @@ pub(super) fn hero_vitals(
     players: Option<Res<super::multiplayer::Companions>>,
     clear: Option<Res<super::enemies::ExpeditionClear>>,
     selection: Option<Res<super::Selection>>,
-    enemies: Query<&super::enemies::Enemy>,
 ) {
     let dt = time.delta_secs();
     let practice = selection.as_deref().is_some_and(super::training::active);
     let cleared = !practice
-        && !data::dungeon(run.expedition_map)
-        && run.elapsed >= data::CLEAR_SECS
+        && run.expeditions.elapsed(run.elapsed) >= run.expeditions.duration()
         && clear.as_deref().is_some_and(|clear| clear.done);
     let Ok((entity, guid, mut store, mut marks)) = hero.single_mut() else {
         return;
@@ -642,10 +640,7 @@ pub(super) fn hero_vitals(
         let others_alive = players
             .as_ref()
             .is_some_and(|players| players.0.values().any(|p| p.run.dead_t.is_none()));
-        if cleared || (!practice && data::dungeon(run.expedition_map)
-            && run.elapsed >= run.expeditions.duration() && others_alive
-            && data::dungeon_cleared(run.expedition_map, run.bosses,
-                enemies.iter().filter(|e| e.boss && !e.dead).count())) {
+        if cleared {
             run.won = true;
             next.set(Phase::GameOver);
         } else if finished && (run.owner.is_some() || !others_alive) {
@@ -749,10 +744,7 @@ pub(super) fn hero_vitals(
         units::kill_unit(&mut store);
         marks.clear();
         marks.flush(entity, guid.0, &mut store, &mut fields);
-    } else if cleared || (!practice && data::dungeon(run.expedition_map)
-        && run.elapsed >= run.expeditions.duration()
-        && data::dungeon_cleared(run.expedition_map, run.bosses,
-            enemies.iter().filter(|e| e.boss && !e.dead).count())) {
+    } else if cleared {
         run.won = true;
         // A last flourish before the results.
         fx.cast(entity, 642, &[entity], None);

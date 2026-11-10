@@ -718,6 +718,14 @@ fn simulate(world: &mut World) {
         let host_run = world.remove_resource::<Run>().unwrap();
         companion.run.next_guid = host_run.next_guid;
         companion.run.expedition_map = host_run.expedition_map;
+        if let Some(stage) = host_run.endless.filter(|_| companion.run.endless.is_none()) {
+            companion.run.endless = Some(game::endless::Stage {
+                xp_base: game::talents::base_earned(&companion.run),
+                xp_earned: 0, choices: None, ..stage
+            });
+        }
+        if host_run.endless.is_none() { companion.run.endless = None; }
+        companion.run.expeditions = host_run.expeditions.clone();
         companion.run.dungeon_mods = host_run.dungeon_modifiers();
         companion.run.bosses = host_run.bosses;
         world.insert_resource(companion.run);
@@ -969,6 +977,7 @@ fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
         hp: run.hp,
         max_hp: run.stats().max_hp,
         elapsed: run.elapsed,
+        endless: run.endless,
         level: run.level,
         character_level: run.meta_level,
         xp: run.xp,
@@ -1065,7 +1074,7 @@ fn publish(world: &mut World) {
         );
         peer.money_earned = peer
             .money_earned
-            .saturating_add(money)
+            .saturating_add((money as f64 * f64::from(player.run.expeditions.reward_multiplier())).round() as u64)
             .min(game::currency::MAX_BALANCE);
         for &level in &opened {
             let item = world.resource_scope(|world, mut rng: Mut<Rng>| {
@@ -1410,6 +1419,7 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
     {
         let mut selection = world.resource_mut::<Selection>();
         selection.stage = snapshot.map.min(data::MAPS.len() - 1);
+        selection.endless = snapshot.stats.endless.is_some();
         selection.in_hub = snapshot.in_hub;
         selection.dungeon_mods = snapshot.dungeon_mods.active(snapshot.map);
     }
@@ -1576,6 +1586,15 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
         }
         run.hp = stats.hp;
         run.elapsed = stats.elapsed;
+        let previous_endless = run.endless;
+        run.endless = stats.endless;
+        if let Some(stage) = stats.endless {
+            if run.expeditions.endless.map(|s| s.index) != Some(stage.index) {
+                run.expeditions = game::endless::config().expedition(stage);
+            }
+        } else if previous_endless.is_some() {
+            run.expeditions = game::expedition_config::Config::default().for_map(run.expedition_map);
+        }
         run.level = stats.level;
         run.meta_level = stats.character_level.max(1);
         run.draft_uses = stats.draft_uses;

@@ -7,22 +7,24 @@ const FILE: &str = include_str!("../../../../config/survivors-expeditions.toml")
 pub(super) struct Config {
     #[serde(skip)]
     dungeon_map: Option<usize>,
+    #[serde(skip)]
+    pub endless: Option<super::endless::Stage>,
     version: u32,
-    #[serde(default)]
-    pub elites: Elites,
-    #[serde(default)]
-    pub sprinters: Sprinters,
-    #[serde(default)]
-    pub explosives: Explosives,
-    #[serde(default)]
-    pub healers: Healers,
-    #[serde(default)]
-    pub protectors: Protectors,
+    #[serde(skip)]
+    pub elites: super::monster_types::Elites,
+    #[serde(skip)]
+    pub sprinters: super::monster_types::Sprinters,
+    #[serde(skip)]
+    pub explosives: super::monster_types::Explosives,
+    #[serde(skip)]
+    pub healers: super::monster_types::Healers,
+    #[serde(skip)]
+    pub protectors: super::monster_types::Protectors,
     pub end_multiplier: f32,
     #[serde(default = "default_party_health")]
     multiplayer_health_per_extra_player: f32,
-    #[serde(default = "default_ranged_chance")]
-    ranged_monster_chance: f32,
+    #[serde(skip)]
+    pub ranged: super::monster_types::Ranged,
     monster_health: f32,
     monster_damage: f32,
     monster_armour_per_level: f32,
@@ -38,112 +40,8 @@ pub(super) struct Config {
     pub max_monsters: usize,
     zones: [Zone; 6],
 }
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct Elites {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
-    pub health_multiplier: f32,
-    pub size_multiplier: f32,
-    pub damage_reduction: f32,
-    pub xp_multiplier: u32,
-}
-impl Default for Elites {
-    fn default() -> Self {
-        Self {
-            first_zone: 2,
-            chance: 0.02,
-            health_multiplier: 10.0,
-            size_multiplier: 1.5,
-            damage_reduction: 0.2,
-            xp_multiplier: 3,
-        }
-    }
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct Sprinters {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
-    pub speed_multiplier: f32,
-}
-impl Default for Sprinters {
-    fn default() -> Self {
-        Self {
-            first_zone: 3,
-            chance: 0.03,
-            speed_multiplier: 3.0,
-        }
-    }
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct Explosives {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
-    pub radius: f32,
-    pub delay: f32,
-    pub damage_multiplier: f32,
-}
-impl Default for Explosives {
-    fn default() -> Self {
-        Self {
-            first_zone: 4,
-            chance: 0.03,
-            radius: 3.5,
-            delay: 1.5,
-            damage_multiplier: 2.0,
-        }
-    }
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct Healers {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
-    pub radius: f32,
-    pub interval: f32,
-    pub heal_fraction: f32,
-}
-impl Default for Healers {
-    fn default() -> Self {
-        Self {
-            first_zone: 5,
-            chance: 0.02,
-            radius: 10.0,
-            interval: 4.0,
-            heal_fraction: 0.1,
-        }
-    }
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct Protectors {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
-    pub radius: f32,
-    pub damage_reduction: f32,
-}
-impl Default for Protectors {
-    fn default() -> Self {
-        Self {
-            first_zone: 6,
-            chance: 0.02,
-            radius: 8.0,
-            damage_reduction: 0.25,
-        }
-    }
-}
 fn default_party_health() -> f32 {
     2.5
-}
-fn default_ranged_chance() -> f32 {
-    0.02
 }
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -157,6 +55,14 @@ pub(super) struct Zone {
     boss_damage: f32,
 }
 impl Config {
+    pub(super) fn set_monster_types(&mut self, types: &super::monster_types::Config) {
+        self.elites = types.elites.clone();
+        self.sprinters = types.sprinters.clone();
+        self.explosives = types.explosives.clone();
+        self.healers = types.healers.clone();
+        self.protectors = types.protectors.clone();
+        self.ranged = types.ranged.clone();
+    }
     #[cfg(test)]
     pub(super) fn without_resistances(mut self) -> Self {
         self.monster_resistance_per_level = Default::default();
@@ -164,62 +70,16 @@ impl Config {
         self
     }
     pub(super) fn parse(text: &str) -> Result<Self, String> {
-        let c: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut c: Self = toml::from_str(text).map_err(|e| e.to_string())?;
+        c.set_monster_types(super::monster_types::get());
         let valid = |v: f32| v.is_finite() && v > 0.0 && v <= 1000.0;
         if c.version != 1
-            || ![
-                c.elites.first_zone,
-                c.sprinters.first_zone,
-                c.explosives.first_zone,
-                c.healers.first_zone,
-                c.protectors.first_zone,
-            ]
-            .into_iter()
-            .all(|zone| (1..=data::CAMPAIGN.len()).contains(&zone))
-            || ![
-                c.elites.chance,
-                c.sprinters.chance,
-                c.explosives.chance,
-                c.healers.chance,
-                c.protectors.chance,
-            ]
-            .into_iter()
-            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
-            || c.elites.chance
-                + c.sprinters.chance
-                + c.explosives.chance
-                + c.healers.chance
-                + c.protectors.chance
-                > 1.0
-            || ![
-                c.elites.health_multiplier,
-                c.elites.size_multiplier,
-                c.sprinters.speed_multiplier,
-                c.explosives.radius,
-                c.explosives.delay,
-                c.explosives.damage_multiplier,
-                c.healers.radius,
-                c.healers.interval,
-                c.protectors.radius,
-            ]
-            .into_iter()
-            .all(valid)
-            || !c.healers.heal_fraction.is_finite()
-            || !(0.0..=1.0).contains(&c.healers.heal_fraction)
-            || !c.protectors.damage_reduction.is_finite()
-            || !(0.0..1.0).contains(&c.protectors.damage_reduction)
-            || !c.elites.damage_reduction.is_finite()
-            || !(0.0..1.0).contains(&c.elites.damage_reduction)
-            || c.elites.xp_multiplier == 0
-            || c.elites.xp_multiplier > 1000
             || !c.monster_resistance_per_level.valid()
             || !c.boss_resistance_per_level.valid()
             || ![c.monster_armour_per_level, c.boss_armour_per_level]
                 .into_iter()
                 .all(|v| v.is_finite() && (0.0..=1000.0).contains(&v))
             || !valid(c.end_multiplier)
-            || !c.ranged_monster_chance.is_finite()
-            || !(0.0..=1.0).contains(&c.ranged_monster_chance)
             || c.end_multiplier < 1.0
             || !c.multiplayer_health_per_extra_player.is_finite()
             || !(1.0..=1000.0).contains(&c.multiplayer_health_per_extra_player)
@@ -279,10 +139,31 @@ impl Config {
         config.dungeon_map = Some(map);
         config
     }
+    pub fn elapsed(&self, elapsed: f32) -> f32 {
+        (elapsed - self.endless.map_or(0.0, |s| s.started)).max(0.0)
+    }
+    pub fn boss_offset(&self) -> u32 {
+        self.endless.map_or(0, |s| s.boss_offset)
+    }
+    pub fn reward_multiplier(&self) -> f32 {
+        self.endless.map_or(1.0, |s| super::endless::config().reward(s.index))
+    }
+    pub fn movement_multiplier(&self) -> f32 {
+        self.endless.map_or(1.0, |s| super::endless::config().movement(s.index))
+    }
     pub fn duration(&self) -> f32 {
+        if let Some(stage) = self.endless {
+            return super::endless::config().duration(stage.index);
+        }
         self.dungeon_map.map_or(data::VICTORY_SECS, |map| super::dungeon_config::get(map).duration_seconds)
     }
-    pub fn progress(&self, elapsed: f32) -> f32 { (elapsed / self.duration()).clamp(0.0, 1.0) }
+    pub fn progress(&self, elapsed: f32) -> f32 { (self.elapsed(elapsed) / self.duration()).clamp(0.0, 1.0) }
+    pub fn boss_waves_due(&self, elapsed: f32) -> u32 {
+        self.boss_offset() + boss_waves_due(self.elapsed(elapsed), self.duration())
+    }
+    pub fn boss_interval(&self) -> f32 {
+        self.duration() / data::BOSS_WAVES as f32
+    }
     pub fn party_health(&self, players: usize) -> f32 {
         if players <= 1 {
             1.0
@@ -291,7 +172,7 @@ impl Config {
         }
     }
     pub fn ranged_chance(&self) -> f32 {
-        self.ranged_monster_chance
+        self.ranged.chance
     }
     pub fn resistances(
         &self,
@@ -311,7 +192,8 @@ impl Config {
     }
     pub fn stats(&self, map: usize, boss: bool) -> (f32, f32) {
         let z = self.zone(map);
-        if boss {
+        let multiplier = self.endless.map_or(1.0, |s| super::endless::config().stats(s.index, boss));
+        let (health, damage) = if boss {
             (
                 self.boss_health * z.boss_health,
                 self.boss_damage * z.boss_damage,
@@ -321,7 +203,8 @@ impl Config {
                 self.monster_health * z.monster_health,
                 self.monster_damage * z.monster_damage,
             )
-        }
+        };
+        (health * multiplier, damage * multiplier)
     }
     pub fn population(&self, map: usize, elapsed: f32) -> usize {
         let p = self.progress(elapsed);
@@ -366,95 +249,6 @@ mod tests {
             assert!(config.population(map, 0.0) > config.population(campaign, 0.0));
             assert_eq!(config.zone(map).damage_reduction, config.zone(campaign).damage_reduction);
         }
-    }
-    #[test]
-    fn variants_are_configurable_and_reject_invalid_settings() {
-        let mut table: toml::Value = toml::from_str(FILE).unwrap();
-        table["elites"]["chance"] = toml::Value::Float(0.1);
-        table["elites"]["health_multiplier"] = toml::Value::Float(15.0);
-        table["sprinters"]["chance"] = toml::Value::Float(0.2);
-        table["sprinters"]["speed_multiplier"] = toml::Value::Float(4.0);
-        let c = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(c.elites.chance, 0.1);
-        assert_eq!(c.elites.health_multiplier, 15.0);
-        assert_eq!(c.sprinters.chance, 0.2);
-        assert_eq!(c.sprinters.speed_multiplier, 4.0);
-        for (group, key, value) in [
-            ("elites", "chance", -0.1),
-            ("sprinters", "chance", 1.0),
-            ("elites", "damage_reduction", 1.0),
-            ("elites", "health_multiplier", 0.0),
-            ("sprinters", "speed_multiplier", 0.0),
-        ] {
-            let mut invalid = table.clone();
-            invalid[group][key] = toml::Value::Float(value);
-            assert!(Config::parse(&toml::to_string(&invalid).unwrap()).is_err());
-        }
-        table.as_table_mut().unwrap().remove("elites");
-        table.as_table_mut().unwrap().remove("sprinters");
-        assert!(Config::parse(&toml::to_string(&table).unwrap()).is_ok());
-    }
-    #[test]
-    fn support_and_explosive_settings_validate_ranges_and_legacy_defaults() {
-        let mut table: toml::Value = toml::from_str(FILE).unwrap();
-        for (group, key, value) in [
-            ("explosives", "delay", 0.0),
-            ("explosives", "radius", -1.0),
-            ("explosives", "damage_multiplier", -1.0),
-            ("healers", "interval", 0.0),
-            ("healers", "heal_fraction", 1.1),
-            ("protectors", "damage_reduction", 1.0),
-            ("protectors", "chance", 1.0),
-        ] {
-            let mut invalid = table.clone();
-            invalid[group][key] = toml::Value::Float(value);
-            assert!(Config::parse(&toml::to_string(&invalid).unwrap()).is_err());
-        }
-        table["healers"]["radius"] = toml::Value::Float(15.0);
-        table["protectors"]["damage_reduction"] = toml::Value::Float(0.3);
-        let config = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(config.healers.radius, 15.0);
-        assert_eq!(config.protectors.damage_reduction, 0.3);
-        for group in ["explosives", "healers", "protectors"] {
-            table.as_table_mut().unwrap().remove(group);
-        }
-        assert!(Config::parse(&toml::to_string(&table).unwrap()).is_ok());
-    }
-    #[test]
-    fn variant_introductions_are_configurable_and_validate_campaign_zone_numbers() {
-        let mut table: toml::Value = toml::from_str(FILE).unwrap();
-        for (group, expected) in [
-            ("elites", 2),
-            ("sprinters", 3),
-            ("explosives", 4),
-            ("healers", 5),
-            ("protectors", 6),
-        ] {
-            assert_eq!(table[group]["first_zone"].as_integer(), Some(expected));
-            for invalid in [0, 7] {
-                let mut config = table.clone();
-                config[group]["first_zone"] = toml::Value::Integer(invalid);
-                assert!(Config::parse(&toml::to_string(&config).unwrap()).is_err());
-            }
-            table[group].as_table_mut().unwrap().remove("first_zone");
-        }
-        let legacy = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(
-            [
-                legacy.elites.first_zone,
-                legacy.sprinters.first_zone,
-                legacy.explosives.first_zone,
-                legacy.healers.first_zone,
-                legacy.protectors.first_zone
-            ],
-            [2, 3, 4, 5, 6]
-        );
-        table["protectors"]
-            .as_table_mut()
-            .unwrap()
-            .insert("first_zone".into(), toml::Value::Integer(3));
-        let custom = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(custom.protectors.first_zone, 3);
     }
     fn fixed_scaling_config() -> String {
         let mut table: toml::Value = toml::from_str(super::FILE).unwrap();
@@ -503,8 +297,8 @@ mod tests {
         let file = fixed_scaling_config();
         let c = Config::parse(&file).unwrap();
         assert_eq!(c.factor(0.0), 1.0);
-        assert_eq!(c.factor(450.0), 2.0);
-        assert_eq!(c.factor(900.0), 3.0);
+        assert_eq!(c.factor(c.duration() / 2.0), 2.0);
+        assert_eq!(c.factor(c.duration()), 3.0);
         assert_eq!(c.factor(9000.0), 3.0);
         for pair in data::CAMPAIGN.windows(2) {
             for boss in [false, true] {
@@ -730,6 +524,38 @@ mod tests {
                 );
                 world.despawn(entity);
             }
+        }
+    }
+}
+
+fn boss_waves_due(elapsed: f32, duration: f32) -> u32 {
+    ((elapsed / duration).clamp(0.0, 1.0) * data::BOSS_WAVES as f32).floor() as u32
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn eight_boss_waves_scale_with_duration_and_stop_at_the_endpoint() {
+        for duration in [360.0_f32, 720.0, 1440.0] {
+            // The normalized schedule is shared by campaign and dungeon configurations.
+            for wave in 1..=data::BOSS_WAVES {
+                let at = duration * wave as f32 / data::BOSS_WAVES as f32;
+                let due = |elapsed: f32| boss_waves_due(elapsed, duration);
+                assert_eq!(due(at - 0.01), wave - 1);
+                assert_eq!(due(at), wave);
+                assert_eq!(due(duration * 2.0), data::BOSS_WAVES);
+            }
+        }
+        for map in [data::CAMPAIGN[0], data::DUNGEONS[0]] {
+            let config = Config::default().for_map(map);
+            assert_eq!(config.duration(), 720.0);
+            assert_eq!(config.boss_interval(), 90.0);
+            for wave in 0..=data::BOSS_WAVES {
+                assert_eq!(config.boss_waves_due(wave as f32 * 90.0), wave);
+            }
+            assert_eq!(config.boss_waves_due(1440.0), data::BOSS_WAVES);
         }
     }
 }

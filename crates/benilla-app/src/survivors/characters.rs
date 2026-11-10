@@ -824,6 +824,7 @@ pub(super) enum Click {
     Expeditions,
     Map(usize),
     DungeonMod(usize, bool),
+    Endless,
     Launch,
     Runes,
     Logout,
@@ -1055,11 +1056,16 @@ pub(super) fn input(
             Click::Back => roster.expeditions = false,
             Click::Map(i) if *phase.get() == Phase::Hub && selection.allows_map(i) => {
                 selection.map = i;
+                selection.endless = false;
                 selection.version += 1;
             }
             Click::DungeonMod(i, increase) if *phase.get() == Phase::Hub
                 && data::dungeon(selection.map) && selection.allows_map(selection.map) => {
                 selection.dungeon_mods.change(i, increase);
+                selection.version += 1;
+            }
+            Click::Endless if *phase.get() == Phase::Hub && talents::level(account.xp) >= 60 => {
+                selection.endless = true;
                 selection.version += 1;
             }
             Click::Launch if *phase.get() == Phase::Hub => {
@@ -1308,5 +1314,6 @@ pub(super) fn render(
         expeditions
             .as_ref()
             .map_or([true, false, false], |v| v.open),
+        talents::level(account.xp) >= 60,
     );
 }

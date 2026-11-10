@@ -24,6 +24,7 @@ fn sync(
     mut commands: Commands,
     phase: Res<State<Phase>>,
     selection: Res<Selection>,
+    run: Option<Res<Run>>,
     font: Option<Res<hud::HudFont>>,
     units: Query<(Entity, &Rank, &Status)>,
     roots: Query<Entity, With<Root>>,
@@ -53,8 +54,8 @@ fn sync(
                 GlobalZIndex(450),
                 Node {
                     position_type: PositionType::Absolute,
-                    // Below the existing clock, centred across the screen.
-                    top: Val::Px(82.0),
+                    // Leave room below the zone progression panel.
+                    top: Val::Px(if run.as_deref().is_some_and(|run| run.endless.is_some()) { 144.0 } else { 120.0 }),
                     left: Val::Px(0.0),
                     right: Val::Px(0.0),
                     flex_direction: FlexDirection::Column,

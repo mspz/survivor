@@ -64,7 +64,7 @@ fn credit(
         .fold(0u64, u64::saturating_add);
     // Gold find from the specialty ranks.
     let gained = run.map_or(gained, |run| {
-        (gained as f64 * f64::from(1.0 + run.specialty.gold.max(0.0))).round() as u64
+        (gained as f64 * f64::from(1.0 + run.specialty.gold.max(0.0)) * f64::from(run.expeditions.reward_multiplier())).round() as u64
     });
     let Some(inventory) = inventory.as_deref_mut() else {
         return;
@@ -152,6 +152,26 @@ mod tests {
         world.insert_resource(State::new(Phase::GameOver));
         assert!(!unsaved(&mut world, system));
     }
+    #[test]
+    fn endless_gold_uses_additive_stage_bonuses_and_credits_each_drop_once() {
+        let mut world = World::new();
+        world.init_resource::<Messages<Loot>>();
+        world.init_resource::<Pending>();
+        world.insert_resource(Inventory::fixture(vec![]));
+        let mut run = Run::default();
+        super::super::endless::begin(&mut run);
+        let stage = super::super::endless::Stage { index: 2, ..default() };
+        run.endless = Some(stage);
+        run.expeditions = super::super::endless::config().expedition(stage);
+        world.insert_resource(run);
+        let system = world.register_system(credit);
+        world.write_message(Loot { item_level: 60, pos: Vec3::ZERO, xp: 1, boss: true });
+        world.run_system(system).unwrap();
+        assert_eq!(world.resource::<Inventory>().money(), 80000);
+        world.run_system(system).unwrap();
+        assert_eq!(world.resource::<Inventory>().money(), 80000);
+    }
+
     #[test]
     fn loot_starts_with_a_few_copper_and_bosses_cap_at_five_gold() {
         assert_eq!(reward(1, false), 1);

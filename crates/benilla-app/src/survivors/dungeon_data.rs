@@ -9,6 +9,7 @@ pub(crate) const DUNGEON_ITEM_LEVEL: u32 = 65;
 pub(crate) fn dungeon(map: usize) -> bool {
     DUNGEONS.contains(&map)
 }
+#[cfg(test)]
 pub(crate) fn dungeon_cleared(map: usize, spawned: u32, living_bosses: usize) -> bool {
     !dungeon(map) || (spawned as usize >= super::roster(map).bosses.len() && living_bosses == 0)
 }

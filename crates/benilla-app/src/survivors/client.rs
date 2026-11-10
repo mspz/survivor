@@ -137,6 +137,7 @@ mod tests {
 }
 
 pub(super) fn plugin(app: &mut App) {
+    app.add_systems(OnEnter(Phase::Playing), auto::prepare_diagnostic_build.after(talents::prepare));
     app.add_plugins((
         boss_spells::plugin,
         super::enemy_visuals::plugin,
@@ -190,6 +191,10 @@ pub(super) fn plugin(app: &mut App) {
                 .in_set(session::Stage::Input),
         )
         .add_systems(Update, hero::place_camera.in_set(session::Stage::Present))
+        .add_systems(
+            Update,
+            hud::expedition_progress::refresh.after(hud::refresh_hud),
+        )
         .add_systems(
             Update,
             (

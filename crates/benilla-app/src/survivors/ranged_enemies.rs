@@ -62,15 +62,15 @@ pub(super) fn profile(map: usize) -> Option<Caster> {
         _ => return None,
         },
     };
-    let tuning = data::dungeon(map).then(|| &super::dungeon_config::get(map).ranged);
+    let tuning = &super::monster_types::get().ranged;
     Some(Caster {
         name,
         spell,
         tags: school | Tags::SPELL | Tags::PROJECTILE | Tags::DAMAGE,
-        range: tuning.map_or(20.0, |c| c.range),
-        stand_off: tuning.map_or(16.0, |c| c.stand_off),
-        interval: tuning.map_or(3.0, |c| c.interval),
-        windup: tuning.map_or(1.0, |c| c.windup),
+        range: tuning.range,
+        stand_off: tuning.stand_off,
+        interval: tuning.interval,
+        windup: tuning.windup,
         cast: None,
     })
 }

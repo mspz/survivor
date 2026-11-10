@@ -123,7 +123,7 @@ fn row(
 ) {
     let map = &data::MAPS[index];
     let available = selection.allows_map(index);
-    let selected = available && selection.map == index;
+    let selected = !selection.endless && available && selection.map == index;
     let mut entity = ui.spawn((
         Destination { selected },
         BorderColor::all(if selected { hud::GOLD_TONE } else { EDGE }),
@@ -221,6 +221,13 @@ fn detail(
     selection: &Selection,
     compact: bool,
 ) {
+    if selection.endless {
+        ui.spawn(label(font, "Endless Expeditions", 24.0, hud::GOLD_TONE));
+        ui.spawn(label(font, "Level 60 | Random campaign maps", 14.0, Color::WHITE));
+        ui.spawn(label(font, "Start at 6 minutes. Each cleared map offers two different destinations. Duration decreases by 1 minute per map, down to 2 minutes. Defeat every boss and monster to continue.", 14.0, MUTED));
+        ui.spawn(label(font, "Per map change: monsters move 20% faster and gain 20% health/damage; bosses gain 40% health/damage. Boss cooldowns and warning times shrink by 20%. Gold and XP gain +30% per map (additive).", 13.0, MUTED));
+        return;
+    }
     let index = selection.map;
     let Some(map) = data::MAPS
         .get(index)
@@ -301,15 +308,7 @@ fn detail(
         ui.spawn(label(font, "OBJECTIVE", 11.0, MUTED));
         ui.spawn(label(
             font,
-            if data::dungeon(index) {
-                format!("Survive {} minutes and defeat every boss wave", duration(index) as u32 / 60)
-            } else {
-                format!(
-                    "Survive {} minutes, then kill every boss and {:.0}% of the horde",
-                    duration(index) as u32 / 60,
-                    data::CLEAR_MOB_SHARE * 100.0
-                )
-            },
+            format!("Survive {} minutes, then kill every boss and monster", duration(index) as u32 / 60),
             19.0,
             Color::WHITE,
         ));
@@ -379,6 +378,7 @@ pub(super) fn draw(
     viewport: Vec2,
     scroll: f32,
     open: [bool; 3],
+    endless_available: bool,
 ) {
     let width = (viewport.x - 32.0).clamp(240.0, 980.0);
     let height = (viewport.y - 32.0).clamp(300.0, 650.0);
@@ -494,6 +494,16 @@ pub(super) fn draw(
                                             row(list, font, selection, index, Some(rank + 1));
                                         }
                                     }
+                                    let mut endless = list.spawn((
+                                        BackgroundColor(if selection.endless { Color::srgb(0.19, 0.14, 0.065) } else { Color::srgb(0.065, 0.06, 0.045) }),
+                                        BorderColor::all(if selection.endless { hud::GOLD_TONE } else { EDGE }),
+                                        Node { width: Val::Percent(100.0), padding: UiRect::all(Val::Px(12.0)), border: UiRect::all(Val::Px(1.0)), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: Val::Px(4.0), ..default() },
+                                    ));
+                                    if endless_available { endless.insert((Button, Click::Endless)); }
+                                    endless.with_children(|row| {
+                                        row.spawn(label(font, "Endless Expeditions", 16.0, if endless_available { hud::GOLD_TONE } else { MUTED }));
+                                        row.spawn(label(font, if endless_available { "Level 60 | 6 min start | Endless progression" } else { "Requires character level 60" }, 12.0, MUTED));
+                                    });
                                     group(list, font, 1, "Donjons", open[1]);
                                     if open[1] {
                                         for (rank, &index) in data::DUNGEONS.iter().enumerate() {
@@ -564,7 +574,7 @@ pub(super) fn draw(
                                 14.0,
                                 false,
                             );
-                            if selection.allows_map(selection.map) {
+                            if selection.endless || selection.allows_map(selection.map) {
                                 skin::button_sized(
                                     footer,
                                     font,

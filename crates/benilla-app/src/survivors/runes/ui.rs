@@ -5,6 +5,9 @@ use crate::survivors::{combat_ui::skin, hud, Phase, Rng, Selection};
 use bevy::prelude::*;
 
 const EDGE: Color = Color::srgb(0.55, 0.45, 0.25);
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::survivors) struct RunePanel;
+
 const EQUIPPED: Color = Color::srgb(0.25, 0.9, 0.35);
 
 #[derive(Component)]
@@ -31,7 +34,7 @@ fn spawn_panel(mut commands: Commands) {
 
 fn visible(runes: &Runes, phase: Phase, training: bool) -> bool {
     match phase {
-        Phase::GameOver => runes.save.pending.is_some() || !runes.message.is_empty(),
+        Phase::GameOver => runes.reward_active(),
         Phase::Hub => runes.open,
         // The training ground is the rune test bench.
         Phase::Playing => training && runes.open,
@@ -503,5 +506,5 @@ pub(super) fn plugin(app: &mut App) {
     app.add_systems(Startup, spawn_panel)
         .add_systems(OnEnter(Phase::Hub), open_for_pending)
         .add_systems(OnExit(Phase::Hub), close_on_leave)
-        .add_systems(Update, (hub_keys, clicks, refresh, tooltip).chain());
+        .add_systems(Update, (hub_keys, clicks, refresh, tooltip).chain().in_set(RunePanel));
 }

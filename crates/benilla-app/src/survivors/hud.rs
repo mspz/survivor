@@ -42,7 +42,9 @@ pub(super) struct XpText;
 #[derive(Component)]
 pub(super) struct LevelText;
 #[derive(Component)]
-pub(super) struct TimerText;
+pub(super) struct ExpeditionObjective;
+
+pub(super) mod expedition_progress;
 #[derive(Component)]
 pub(super) struct KillText;
 #[derive(Component)]
@@ -1161,10 +1163,12 @@ pub(super) fn setup_hud(
                 Interaction::default(),
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Percent(50.0),
+                    // Reserve the minimap's footprint while keeping XP centred.
+                    left: Val::Px(200.0),
+                    right: Val::Px(200.0),
                     top: Val::Px(0.0),
-                    margin: UiRect::left(Val::Px(-512.0)),
-                    width: Val::Px(1024.0),
+                    margin: UiRect::horizontal(Val::Auto),
+                    max_width: Val::Px(800.0),
                     height: Val::Px(13.0),
                     ..default()
                 },
@@ -1187,7 +1191,7 @@ pub(super) fn setup_hud(
                         Color::srgb(0.58, 0.0, 0.55),
                     ),
                 ));
-                // `MainMenuXPBarTexture0`..`3`: the segment rules, 256×10 on the bar's top.
+                // `MainMenuXPBarTexture0`..`3`: four equal segments on the bar's top.
                 for (i, top) in [0.792_968_75, 0.542_968_75, 0.292_968_75, 0.042_968_75]
                     .into_iter()
                     .enumerate()
@@ -1195,9 +1199,9 @@ pub(super) fn setup_hud(
                     bar.spawn((
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(256.0 * i as f32),
+                            left: Val::Percent(25.0 * i as f32),
                             top: Val::Px(0.0),
-                            width: Val::Px(256.0),
+                            width: Val::Percent(25.0),
                             height: Val::Px(10.0),
                             ..default()
                         },
@@ -1348,7 +1352,7 @@ pub(super) fn setup_hud(
                         },
                     ));
                 });
-                // The clock, with the level and the kill count on one line under it.
+                // Expedition progress includes level, objective and kill count in its header.
                 row.spawn(Node {
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
@@ -1356,15 +1360,7 @@ pub(super) fn setup_hud(
                     ..default()
                 })
                 .with_children(|col| {
-                    col.spawn((TimerText, centered(f, "00:00", 34.0, Color::WHITE)));
-                    col.spawn(Node {
-                        column_gap: Val::Px(14.0),
-                        ..default()
-                    })
-                    .with_children(|line| {
-                        line.spawn((LevelText, text(f, "Level 1", 14.0, GOLD)));
-                        line.spawn((KillText, text(f, "Kills 0", 14.0, Color::WHITE)));
-                    });
+                    expedition_progress::spawn(col, f);
                 });
                 // The minimap cluster's column.
                 row.spawn(Node {
@@ -1709,7 +1705,10 @@ pub(super) fn start_run(run: &mut Run, selection: &mut Selection) -> bool {
     if selection.talents_open {
         return false;
     }
-    if !selection.allows_map(selection.map) {
+    if selection.endless {
+        if run.meta_level < 60 && !selection.test_character { return false; }
+        selection.map = data::CAMPAIGN[Rng::default().index(data::CAMPAIGN.len())];
+    } else if !selection.allows_map(selection.map) {
         return false;
     }
     let (Some(class), Some(&(_, race, _))) = (
@@ -1736,6 +1735,7 @@ pub(super) fn start_run(run: &mut Run, selection: &mut Selection) -> bool {
         level: 1,
         cd: 0.5,
     });
+    if selection.endless { super::endless::begin(run); }
     run.hp = run.stats().max_hp;
     run.version += 1;
     true
@@ -2032,6 +2032,7 @@ pub(super) fn keys(
     settings: Res<super::options::Settings>,
     panel: Res<super::options::Panel>,
     codex: Option<Res<super::codex::Panel>>,
+    run: Option<Res<Run>>,
     mut selection: ResMut<Selection>,
     mut next: ResMut<NextState<Phase>>,
 ) {
@@ -2071,7 +2072,7 @@ pub(super) fn keys(
         }
         Phase::LevelUp | Phase::CharacterSheet => {}
         Phase::GameOver => {
-            if keys.just_pressed(KeyCode::Enter) {
+            if keys.just_pressed(KeyCode::Enter) && !run.as_deref().is_some_and(|r| r.won && r.endless.is_some()) {
                 next.set(Phase::Hub);
             }
         }
@@ -2267,7 +2268,7 @@ pub(super) fn refresh_hud(
     font: Res<HudFont>,
     mut texts: ParamSet<(
         Query<&mut Text, With<LevelText>>,
-        Query<&mut Text, With<TimerText>>,
+        Query<&mut Text, With<ExpeditionObjective>>,
         Query<&mut Text, With<KillText>>,
         Query<&mut Text, With<BannerText>>,
         Query<&mut Text, With<OverTitle>>,
@@ -2292,9 +2293,11 @@ pub(super) fn refresh_hud(
     if let Ok(mut t) = texts.p0().single_mut() {
         **t = format!("Level {}", run.level);
     }
-    let secs = run.elapsed as u32;
     if let Ok(mut t) = texts.p1().single_mut() {
-        **t = format!("{:02}:{:02}", secs / 60, secs % 60);
+        let objective = expedition_progress::objective(run.expeditions.progress(run.elapsed));
+        if **t != objective {
+            **t = objective;
+        }
     }
     let kills = run.kills;
     if let Ok(mut t) = texts.p2().single_mut() {
@@ -3490,6 +3493,7 @@ pub(super) fn icon_tooltip(
 pub(super) fn show_panels(
     phase: Res<State<Phase>>,
     roster: Res<super::characters::Roster>,
+    run: Option<Res<Run>>,
     mut roots: ParamSet<(
         Query<(&mut Visibility, &mut Node), With<MenuRoot>>,
         Query<(&mut Visibility, &mut Node), With<HudRoot>>,
@@ -3530,7 +3534,7 @@ pub(super) fn show_panels(
         set(root, p == Phase::Paused);
     }
     for root in &mut roots.p4() {
-        set(root, p == Phase::GameOver);
+        set(root, p == Phase::GameOver && !run.as_deref().is_some_and(|r| r.won && r.endless.is_some()));
     }
 }
 

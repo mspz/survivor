@@ -23,6 +23,8 @@ mod diagnostics;
 mod dungeon_mods;
 mod dungeon_config;
 mod enemies;
+mod monster_types;
+mod endless;
 mod enemy_visuals;
 mod expedition_config;
 mod extra_spells;
@@ -115,7 +117,7 @@ impl Plugin for SurvivorsPlugin {
                     .in_set(WorldStage::Input),
             )
             .add_plugins((server::plugin, client::plugin, multiplayer::plugin))
-            .add_plugins((achievements::plugin, specialty::plugin));
+            .add_plugins((achievements::plugin, specialty::plugin, endless::plugin));
         if let Some(auto) = auto::from_env() {
             app.insert_resource(auto)
                 .add_systems(Update, auto::drive.after(hud::keys))
@@ -146,6 +148,7 @@ pub(super) struct RunEntity;
 #[derive(Resource, Default)]
 pub(super) struct Selection {
     pub test_character: bool,
+    pub endless: bool,
     pub sheet_open: bool,
     pub bags_open: bool,
     pub ui_captured: bool,

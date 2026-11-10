@@ -10,6 +10,7 @@ struct DrawButton;
 struct DrawLabel;
 
 pub(super) fn bank(run: &mut Run) {
+    if run.drafts_disabled { return; }
     if run.auto_draw_cards {
         run.pending_levels = run.pending_levels.saturating_add(1);
     } else {
@@ -19,6 +20,12 @@ pub(super) fn bank(run: &mut Run) {
 
 /// Both local play and remote requests use the same authoritative transition.
 pub(super) fn apply(run: &mut Run, automatic: bool, open: bool) -> bool {
+    if run.drafts_disabled {
+        run.auto_draw_cards = false;
+        run.pending_levels = 0;
+        run.stored_cards = 0;
+        return false;
+    }
     run.auto_draw_cards = automatic;
     if automatic {
         run.pending_levels = run.pending_levels.saturating_add(run.stored_cards);
@@ -76,7 +83,7 @@ fn display(
     mut buttons: Query<&mut Visibility, With<DrawButton>>,
     mut labels: Query<&mut Text, With<DrawLabel>>,
 ) {
-    let visible = *phase.get() == Phase::Playing
+    let visible = !run.drafts_disabled && *phase.get() == Phase::Playing
         && !selection.in_hub
         && !selection.bags_open
         && !selection.sheet_open

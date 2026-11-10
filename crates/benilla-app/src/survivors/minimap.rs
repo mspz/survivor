@@ -239,6 +239,17 @@ pub(super) fn spawn_cluster(root: &mut ChildSpawnerCommands, font: &Handle<Font>
                     at(96.0, 119.0, 32.0, 32.0),
                     ImageNode::default(),
                 ));
+                // The stock clock position, directly below the circular minimap.
+                body.spawn((
+                    super::diagnostics::FpsText,
+                    Text::default(),
+                    TextFont { font: font.clone(), font_size: 12.0, ..default() },
+                    TextColor(Color::WHITE),
+                    TextShadow { offset: Vec2::new(1.0, 1.0), color: Color::BLACK },
+                    TextLayout::new(Justify::Center, LineBreak::NoWrap),
+                    Visibility::Hidden,
+                    at(-10.0, 152.0, 160.0, 20.0),
+                ));
             });
         // `GameTimeFrame`, 50² at the cluster's top right, offset (4, -19).
         let tod = if (DAWN..DUSK).contains(&super::hero::MINUTE_OF_DAY) {

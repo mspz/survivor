@@ -294,7 +294,7 @@ pub(super) fn persist(
             }
         }
     }
-    if snapshot.stats.won && !receipts.victory {
+    if snapshot.stats.won && snapshot.stats.endless.is_none() && !receipts.victory {
         if let Some(mut selection) = world.get_resource_mut::<Selection>() {
             selection.progress.complete_coop(snapshot.map);
         }

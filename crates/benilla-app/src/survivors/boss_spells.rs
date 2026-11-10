@@ -302,21 +302,27 @@ pub(super) fn tick(
         .collect();
     let modifiers = run.dungeon_modifiers();
     let dungeon_run = super::data::dungeon(run.expedition_map);
+    let endless = run.endless;
+    let serial_casts = dungeon_run || endless.is_some();
+    let cooldown = |base| endless.map_or(base, |s| super::endless::config().cooldown(base, s.index));
+    let safe_time = |base| endless.map_or(base, |s| super::endless::config().safe_time(base, s.index));
     // Extra bosses alternate their large hazards; their safe areas cannot cancel each other.
     let mut dungeon_busy = bosses.iter_mut().any(|(_, enemy, _, _, skills)| {
         !enemy.dead && skills.as_ref().is_some_and(|s| s.cast.as_ref()
-            .is_some_and(|cast| matches!(cast.warning.spell, Spell::Dungeon(_))))
+            .is_some_and(|cast| endless.is_some() || matches!(cast.warning.spell, Spell::Dungeon(_))))
     });
     for (entity, enemy, mut tf, mut movement, skills) in &mut bosses {
         if !enemy.boss {
             continue;
         }
         let Some(mut skills) = skills else {
-            commands
-                .entity(entity)
-                .insert(if dungeon_run {
-                    dungeons::loadout(run.expedition_map, enemy.def.name, modifiers.extra_spells())
-                } else { Skills::roll(run.elapsed, modifiers.extra_spells(), &mut rng) });
+            let mut loadout = if dungeon_run {
+                dungeons::loadout(run.expedition_map, enemy.def.name, modifiers.extra_spells())
+            } else { Skills::roll(if endless.is_some() { 600.0 } else { run.elapsed }, modifiers.extra_spells(), &mut rng) };
+            if endless.is_some() {
+                for slot in &mut loadout.slots { slot.left = cooldown(slot.left); }
+            }
+            commands.entity(entity).insert(loadout);
             continue;
         };
         if dungeon_run && skills.slots.iter().any(|s| !matches!(s.spell, Spell::Dungeon(_))) {
@@ -327,7 +333,7 @@ pub(super) fn tick(
             if phase != skills.dungeon_phase {
                 skills.dungeon_phase = phase;
                 skills.cast = None;
-                skills.recovery = if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 };
+                skills.recovery = safe_time(if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 });
                 for (index, slot) in skills.slots.iter_mut().enumerate() { slot.left = super::dungeon_config::get(run.expedition_map).spells.phase_pause + index as f32 * super::dungeon_config::get(run.expedition_map).spells.phase_stagger; }
                 run.banner = Some((format!("{} — Phase {}", enemy.def.name, phase + 1), 4.0));
             }
@@ -339,7 +345,7 @@ pub(super) fn tick(
             || enemy.fear_t > 0.0
         {
             if skills.cast.take().is_some() {
-                skills.recovery = if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 };
+                skills.recovery = safe_time(if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 });
             }
             continue;
         }
@@ -347,7 +353,7 @@ pub(super) fn tick(
             slot.left = (slot.left - dt * modifiers.attack_rate()).max(0.0);
         }
         skills.recovery = (skills.recovery - dt * modifiers.attack_rate()).max(0.0);
-        if skills.cast.is_none() && skills.recovery <= 0.0 && (!dungeon_run || !dungeon_busy) {
+        if skills.cast.is_none() && skills.recovery <= 0.0 && (!serial_casts || !dungeon_busy) {
             let distance = targets
                 .iter()
                 .map(|p| flat(p.pos - tf.translation).length())
@@ -365,10 +371,11 @@ pub(super) fn tick(
                     }
                     _ => Warning::new(slot.spell, tf.translation, &targets, &mut rng),
                 };
-                if matches!(slot.spell, Spell::Dungeon(_)) {
-                    warning.windup_seconds = Some(slot.spell.windup() * modifiers.boss_warning_multiplier());
+                if matches!(slot.spell, Spell::Dungeon(_)) || endless.is_some() {
+                    warning.windup_seconds = Some(safe_time(slot.spell.windup() * modifiers.boss_warning_multiplier()));
                 }
-                slot.left = slot.spell.cooldown() + warning.windup()
+                if serial_casts { dungeon_busy = true; }
+                slot.left = cooldown(slot.spell.cooldown()) + warning.windup()
                     + if let Spell::Dungeon(ability) = slot.spell { ability.duration() } else { 0.0 };
                 tf.rotation =
                     Quat::from_rotation_y(yaw_toward(Vec3::from_array(warning.direction)));
@@ -437,7 +444,7 @@ pub(super) fn tick(
         warnings.0.push(w.clone());
         if w.elapsed >= end {
             skills.cast = None;
-            skills.recovery = if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 };
+            skills.recovery = safe_time(if dungeon_run { super::dungeon_config::get(run.expedition_map).spells.recovery } else { 2.0 });
             movement.speed = 0.0;
             movement.flags = 0;
         }
@@ -672,6 +679,41 @@ mod tests {
         world.resource_mut::<Run>().elapsed += dt;
         world.run_system_once(tick).unwrap();
     }
+    #[test]
+    fn endless_bosses_shorten_warnings_and_never_cast_simultaneously() {
+        let (mut world, _, first) = arena(Spell::Cone);
+        {
+            let mut run = world.resource_mut::<Run>();
+            super::super::endless::begin(&mut run);
+            let stage = super::super::endless::Stage { index: 2, ..default() };
+            run.endless = Some(stage);
+            run.expeditions = super::super::endless::config().expedition(stage);
+            run.immune_t = 1000.0;
+        }
+        let second = world.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+            enemies::spawn_enemy(&mut commands, &mut run,
+                &super::super::endless::roster(super::super::data::CAMPAIGN[0]).bosses[0],
+                Vec3::ZERO, Vec3::X, true)
+        }).unwrap();
+        world.entity_mut(second).insert(Skills {
+            slots: vec![Slot { spell: Spell::Cone, left: 0.0 }],
+            cast: None, recovery: 0.0, dungeon_phase: 0,
+        });
+        advance(&mut world, 0.01);
+        let casts: Vec<_> = world.query::<&Skills>().iter(&world).filter_map(|s| s.cast.as_ref()).collect();
+        assert_eq!(casts.len(), 1);
+        assert!((casts[0].warning.windup() - Spell::Cone.windup() * 0.64).abs() < 0.0001);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..400 {
+            advance(&mut world, 0.05);
+            let active: Vec<_> = [first, second].into_iter()
+                .filter(|&e| world.get::<Skills>(e).unwrap().busy()).collect();
+            assert!(active.len() <= 1);
+            seen.extend(active);
+        }
+        assert_eq!(seen.len(), 2, "both bosses eventually get a turn");
+    }
+
     #[test]
     fn loadouts_switch_at_ten_minutes_and_always_have_distinct_random_skills() {
         let mut seen = vec![];
