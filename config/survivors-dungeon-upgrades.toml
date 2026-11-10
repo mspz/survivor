@@ -1,0 +1,7 @@
+# End-of-dungeon smith. Costs are in gold; attempts are paid even when the roll fails.
+version = 1
+base_cost_gold = 5000
+cost_growth_per_ilvl = 1.05
+cost_reference_ilvl = 60
+ilvl_gap_per_gain = 4
+maximum_gain = 5

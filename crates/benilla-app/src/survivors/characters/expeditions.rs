@@ -1,5 +1,6 @@
 //! Destination browser: aligned campaign rows, a selection summary and a fixed action footer.
 use super::*;
+use bevy::ui::FocusPolicy;
 const MUTED: Color = Color::srgb(0.62, 0.61, 0.57);
 const EDGE: Color = Color::srgb(0.29, 0.25, 0.17);
 #[derive(Resource)]
@@ -66,6 +67,71 @@ fn group(
 #[derive(Component)]
 pub(super) struct Destination {
     selected: bool,
+}
+#[derive(Component)]
+pub(super) struct ModifierHint(usize);
+#[derive(Component)]
+pub(super) struct ModifierTooltip;
+#[derive(Component)]
+pub(super) struct ModifierPanel;
+
+pub(super) fn modifier_tooltip(
+    mut commands: Commands,
+    phase: Res<State<Phase>>,
+    roster: Res<Roster>,
+    selection: Res<Selection>,
+    font: Option<Res<hud::HudFont>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    scale: Option<Res<UiScale>>,
+    hints: Query<(&Interaction, &ModifierHint)>,
+    roots: Query<Entity, With<ModifierTooltip>>,
+) {
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
+    if *phase.get() != Phase::Hub || !roster.expeditions || selection.endless || !data::dungeon(selection.map) {
+        return;
+    }
+    let Some((_, hint)) = hints.iter().find(|(interaction, _)| **interaction != Interaction::None) else {
+        return;
+    };
+    let Some(font) = font else { return; };
+    let mods = selection.dungeon_mods.active(selection.map);
+    let modifier = &super::super::dungeon_mods::DEFINITIONS[hint.0];
+    let (viewport, cursor) = windows.single().map_or(
+        (Vec2::new(1365.0, 768.0), Vec2::new(960.0, 300.0)),
+        |window| {
+            let scale = scale.as_deref().map_or(1.0, |s| s.0).max(0.01);
+            (Vec2::new(window.width(), window.height()) / scale,
+             window.cursor_position().unwrap_or(Vec2::ZERO) / scale)
+        },
+    );
+    let width = 300.0_f32.min((viewport.x - 16.0).max(1.0));
+    let x = if cursor.x > viewport.x * 0.5 { cursor.x - width - 16.0 } else { cursor.x + 16.0 };
+    commands.spawn((
+        ModifierTooltip,
+        GlobalZIndex(800),
+        FocusPolicy::Pass,
+        BackgroundColor(Color::srgb(0.035, 0.03, 0.02)),
+        BorderColor::all(hud::GOLD_TONE),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(x.clamp(8.0, (viewport.x - width - 8.0).max(8.0))),
+            top: Val::Px((cursor.y + 14.0).clamp(8.0, (viewport.y - 116.0).max(8.0))),
+            width: Val::Px(width),
+            padding: UiRect::all(Val::Px(12.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(5.0),
+            ..default()
+        },
+    )).with_children(|tip| {
+        tip.spawn(label(&font.0, modifier.name, 16.0, hud::GOLD_TONE));
+        tip.spawn(label(&font.0, format!("{} per rank", mods.description(hint.0)), 13.0, Color::WHITE));
+        tip.spawn(label(&font.0, format!("Rank {}/{} · +{} ilvl per rank · XP x{:.2} per rank",
+            mods.rank(hint.0), super::super::dungeon_mods::MAX_RANK,
+            mods.rank_bonus(hint.0), mods.rank_xp()), 12.0, MUTED));
+    });
 }
 pub(super) fn hover(
     mut rows: Query<
@@ -266,6 +332,12 @@ fn detail(
             12.0,
             MUTED,
         ));
+        if data::dungeon(index) {
+            let mods = selection.dungeon_mods.active(index);
+            ui.spawn(label(font, format!("Loot ilvl {} (+{})  |  Character XP x{:.2}",
+                super::super::dungeon_config::get(index).item_level + mods.bonus(),
+                mods.bonus(), mods.xp_multiplier()), 12.0, hud::GOLD_TONE));
+        }
         return;
     }
     ui.spawn((
@@ -279,6 +351,12 @@ fn detail(
         },
     ));
     ui.spawn(label(font, levels(index), 15.0, Color::WHITE));
+    if data::dungeon(index) {
+        let mods = selection.dungeon_mods.active(index);
+        ui.spawn(label(font, format!("Loot ilvl {} (+{})  |  Character XP x{:.2}",
+            super::super::dungeon_config::get(index).item_level + mods.bonus(),
+            mods.bonus(), mods.xp_multiplier()), 13.0, hud::GOLD_TONE));
+    }
     if index == data::TRAINING_MAP {
         ui.spawn(label(font, "60 yd triangle. No time limit.", 15.0, MUTED));
         for (heading, body) in [
@@ -346,30 +424,43 @@ fn detail(
 }
 
 fn modifiers(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, selection: &Selection) {
-    if !data::dungeon(selection.map) { return; }
     let mods = selection.dungeon_mods.active(selection.map);
-    ui.spawn(label(font, format!("DUNGEON MODIFIERS — Loot ilvl {} (+{})",
-        super::super::dungeon_config::get(selection.map).item_level + mods.bonus(), mods.bonus()), 14.0, hud::GOLD_TONE));
-    ui.spawn(label(font, format!("Character XP x{:.2} — each rank multiplies XP by {:.2}",
-        mods.xp_multiplier(), mods.rank_xp()), 12.0, hud::GOLD_TONE));
+    let unlocked = selection.allows_map(selection.map);
     for (index, modifier) in super::super::dungeon_mods::DEFINITIONS.iter().enumerate() {
-        ui.spawn(label(font, format!("{} — rank {}/3 (+{} ilvl)\n{} per rank",
-            modifier.name, mods.rank(index), u32::from(mods.rank(index)) * mods.rank_bonus(index),
-            mods.description(index)), 12.0, MUTED));
-        for (increase, title) in [(false, "−"), (true, "+")] {
-        let mut button = ui.spawn((
-            BackgroundColor(Color::srgb(0.10, 0.085, 0.055)),
-            Node { width: Val::Percent(100.0), padding: UiRect::all(Val::Px(8.0)),
-                flex_shrink: 0.0, ..default() },
-        ));
-        if selection.allows_map(selection.map) {
-            button.insert((Button, Click::DungeonMod(index, increase)));
-        }
-        button.with_children(|row| {
-            row.spawn(label(font, title, 12.0, hud::GOLD_TONE));
+        ui.spawn((
+            BackgroundColor(Color::srgb(0.08, 0.065, 0.045)),
+            Node { width: Val::Percent(100.0), min_height: Val::Px(36.0), flex_shrink: 0.0,
+                align_items: AlignItems::Center, column_gap: Val::Px(5.0),
+                padding: UiRect::horizontal(Val::Px(7.0)), ..default() },
+        )).with_children(|row| {
+            row.spawn((
+                ModifierHint(index), Interaction::default(),
+                Node { flex_grow: 1.0, min_width: Val::Px(0.0), height: Val::Px(36.0),
+                    align_items: AlignItems::Center, ..default() },
+            )).with_children(|name| {
+                name.spawn(label(font, modifier.name, 12.0, Color::WHITE));
+            });
+            modifier_button(row, font, index, false, "−", unlocked && mods.rank(index) > 0);
+            row.spawn((label(font, mods.rank(index).to_string(), 13.0, hud::GOLD_TONE),
+                Node { width: Val::Px(15.0), justify_content: JustifyContent::Center, ..default() }));
+            modifier_button(row, font, index, true, "+",
+                unlocked && mods.rank(index) < super::super::dungeon_mods::MAX_RANK);
         });
-        }
     }
+}
+
+fn modifier_button(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, index: usize,
+    increase: bool, title: &str, enabled: bool) {
+    let mut button = ui.spawn((
+        BackgroundColor(Color::srgb(0.16, 0.12, 0.06)),
+        BorderColor::all(EDGE),
+        Node { width: Val::Px(28.0), height: Val::Px(28.0), border: UiRect::all(Val::Px(1.0)),
+            align_items: AlignItems::Center, justify_content: JustifyContent::Center, ..default() },
+    ));
+    if enabled { button.insert((Button, Click::DungeonMod(index, increase))); }
+    button.with_children(|button| {
+        button.spawn(label(font, title, 16.0, if enabled { hud::GOLD_TONE } else { MUTED }));
+    });
 }
 pub(super) fn draw(
     commands: &mut Commands,
@@ -380,8 +471,14 @@ pub(super) fn draw(
     open: [bool; 3],
     endless_available: bool,
 ) {
-    let width = (viewport.x - 32.0).clamp(240.0, 980.0);
-    let height = (viewport.y - 32.0).clamp(300.0, 650.0);
+    let show_modifiers = !selection.endless && data::dungeon(selection.map);
+    let beside = show_modifiers && viewport.x >= 720.0;
+    let side_width = 280.0;
+    let side_height = 326.0;
+    let width = (viewport.x - 32.0 - if beside { side_width + 12.0 } else { 0.0 })
+        .clamp(240.0, 980.0);
+    let height = (viewport.y - 32.0 - if show_modifiers && !beside { side_height + 12.0 } else { 0.0 })
+        .clamp(320.0, 650.0);
     let compact = width < 720.0;
     commands
         .spawn((
@@ -400,6 +497,14 @@ pub(super) fn draw(
         ))
         .with_children(|overlay| {
             overlay
+                .spawn(Node {
+                    flex_direction: if beside { FlexDirection::Row } else { FlexDirection::Column },
+                    align_items: AlignItems::FlexStart,
+                    column_gap: Val::Px(12.0), row_gap: Val::Px(12.0),
+                    ..default()
+                })
+                .with_children(|windows| {
+            windows
                 .spawn((
                     Node {
                         width: Val::Px(width),
@@ -493,23 +598,22 @@ pub(super) fn draw(
                                         {
                                             row(list, font, selection, index, Some(rank + 1));
                                         }
+                                        let mut endless = list.spawn((
+                                            BackgroundColor(if selection.endless { Color::srgb(0.19, 0.14, 0.065) } else { Color::srgb(0.065, 0.06, 0.045) }),
+                                            BorderColor::all(if selection.endless { hud::GOLD_TONE } else { EDGE }),
+                                            Node { width: Val::Percent(100.0), padding: UiRect::all(Val::Px(12.0)), border: UiRect::all(Val::Px(1.0)), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: Val::Px(4.0), ..default() },
+                                        ));
+                                        if endless_available { endless.insert((Button, Click::Endless)); }
+                                        endless.with_children(|row| {
+                                            row.spawn(label(font, "Endless Expeditions", 16.0, if endless_available { hud::GOLD_TONE } else { MUTED }));
+                                            row.spawn(label(font, if endless_available { "Level 60 | 6 min start | Endless progression" } else { "Requires character level 60" }, 12.0, MUTED));
+                                        });
                                     }
-                                    let mut endless = list.spawn((
-                                        BackgroundColor(if selection.endless { Color::srgb(0.19, 0.14, 0.065) } else { Color::srgb(0.065, 0.06, 0.045) }),
-                                        BorderColor::all(if selection.endless { hud::GOLD_TONE } else { EDGE }),
-                                        Node { width: Val::Percent(100.0), padding: UiRect::all(Val::Px(12.0)), border: UiRect::all(Val::Px(1.0)), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: Val::Px(4.0), ..default() },
-                                    ));
-                                    if endless_available { endless.insert((Button, Click::Endless)); }
-                                    endless.with_children(|row| {
-                                        row.spawn(label(font, "Endless Expeditions", 16.0, if endless_available { hud::GOLD_TONE } else { MUTED }));
-                                        row.spawn(label(font, if endless_available { "Level 60 | 6 min start | Endless progression" } else { "Requires character level 60" }, 12.0, MUTED));
-                                    });
                                     group(list, font, 1, "Donjons", open[1]);
                                     if open[1] {
                                         for (rank, &index) in data::DUNGEONS.iter().enumerate() {
                                             row(list, font, selection, index, Some(rank + 1));
                                         }
-                                        modifiers(list, font, selection);
                                     }
                                     group(list, font, 2, "Raids", open[2]);
                                     if open[2] {
@@ -598,6 +702,20 @@ pub(super) fn draw(
                                 ));
                             }
                         });
+                });
+            if show_modifiers {
+                windows.spawn((
+                    ModifierPanel,
+                    BackgroundColor(Color::srgb(0.035, 0.03, 0.02)),
+                    Node { width: Val::Px(if beside { side_width } else { width }),
+                        height: Val::Px(side_height), padding: UiRect::all(Val::Px(16.0)),
+                        flex_direction: FlexDirection::Column, row_gap: Val::Px(7.0), ..default() },
+                )).with_children(|side| {
+                    skin::backdrop(side);
+                    side.spawn(label(font, "Dungeon modifiers", 17.0, hud::GOLD_TONE));
+                    modifiers(side, font, selection);
+                });
+            }
                 });
         });
 }

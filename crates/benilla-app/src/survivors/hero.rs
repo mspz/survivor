@@ -399,8 +399,12 @@ pub(super) fn place_camera(
     world: WorldPoint,
     hero: Query<&Transform, (With<Hero>, Without<WorldCamera>)>,
     mut cams: Query<&mut Transform, With<WorldCamera>>,
+    run: Res<Run>,
+    smith: Option<Res<super::dungeon_smith::View>>,
 ) {
-    let interactive = matches!(*phase.get(), Phase::Playing | Phase::Hub)
+    let interactive = (matches!(*phase.get(), Phase::Playing | Phase::Hub)
+        || (*phase.get() == Phase::GameOver && super::dungeon_smith::available(&run)))
+        && !smith.as_deref().is_some_and(|v| v.blocks_input())
         && !selection.talents_open
         && !selection.sheet_open
         && !selection.bags_open

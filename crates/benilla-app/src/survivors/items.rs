@@ -17,6 +17,7 @@ mod config;
 pub(in crate::survivors) use config::crafting::{CraftAffix, CraftProfile, CraftRequest, LegendaryChoice};
 mod equipment;
 mod item_level;
+mod upgrade;
 pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
 pub(super) mod legendary;
 mod starter;
@@ -456,6 +457,8 @@ pub(super) struct Affix {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Item {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_basis: Option<Box<upgrade::Basis>>,
     /// 0: legacy allocation; 1: natural loot; 2: forged, allowing partial custom affixes.
     #[serde(default)]
     pub affix_rules: u8,
@@ -1613,6 +1616,7 @@ mod tests {
     }
     pub(super) fn item(slot: SlotKind, affixes: Vec<Affix>) -> Item {
         Item {
+            upgrade_basis: None,
             affix_rules: 0,
             legendary: None,
             base_damage: None,

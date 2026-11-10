@@ -38,6 +38,7 @@ pub(super) fn plugin(app: &mut App) {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn input(
     mut state: ResMut<DragState>,
+    mut smith: Option<ResMut<crate::survivors::dungeon_smith::View>>,
     chest: Option<Res<crate::survivors::shared_chest::View>>,
     bank: Option<Res<crate::survivors::bank::View>>,
     auto_salvage: Option<Res<super::auto_salvage::Editor>>,
@@ -106,6 +107,12 @@ pub(super) fn input(
     if mouse.just_pressed(MouseButton::Right) {
         if state.press.take().is_none() {
             if let Some(id) = hovered {
+                if let Some(smith) = smith.as_mut().filter(|v| v.is_open()) {
+                    smith.select_item(id, inventory);
+                    state.suppress_click = true;
+                    selection.ui_captured = true;
+                    return;
+                }
                 let selling = vendor.as_ref().is_some_and(|v| v.open);
                 let result = if selling {
                     inventory.delete(id)
@@ -156,16 +163,24 @@ pub(super) fn input(
                 **interaction != Interaction::None && position.cursor_over()
             })
             .min_by_key(|(_, target, _)| match target {
+                DropTarget::DungeonUpgrade => 0,
                 DropTarget::Equipment(_) => 0,
                 DropTarget::Bag(_) => 1,
                 DropTarget::BagBackground => 2,
             })
             .map(|(_, target, _)| *target);
+        if matches!(target, Some(DropTarget::DungeonUpgrade)) {
+            if let Some(smith) = smith.as_mut() {
+                smith.select_item(press.id, inventory);
+            }
+            state.suppress_click = true;
+            return;
+        }
         let result = match target {
             Some(DropTarget::Equipment(slot)) => inventory.drop_on_equipment(press.id, slot),
             Some(DropTarget::Bag(cell)) => inventory.drop_in_bag(press.id, cell),
             Some(DropTarget::BagBackground) => inventory.stash(press.id),
-            None => return,
+            Some(DropTarget::DungeonUpgrade) | None => return,
         };
         inventory.notice = result.err().unwrap_or_default();
         inventory.apply(&mut run);
@@ -230,6 +245,7 @@ mod tests {
     use super::*;
     fn app() -> (App, Entity, Entity, Entity) {
         let item = Item {
+            upgrade_basis: None,
             affix_rules: 0,
             legendary: None,
             base_damage: None,
@@ -311,6 +327,48 @@ mod tests {
             app.world_mut().query::<&Ghost>().iter(app.world()).count(),
             1
         );
+    }
+    #[test]
+    fn smith_right_click_and_drop_reference_items_without_equipping_them() {
+        for dragging in [false, true] {
+            let (mut app, window, source, target) = app();
+            let mut smith = crate::survivors::dungeon_smith::View::default();
+            smith.prepare(app.world().resource::<Inventory>());
+            smith.speak();
+            app.insert_resource(smith);
+            let before = app.world().resource::<Inventory>().item(1).unwrap().clone();
+            if dragging {
+                start(&mut app, window);
+                *app.world_mut().get_mut::<Interaction>(source).unwrap() = Interaction::None;
+                app.world_mut()
+                    .get_mut::<RelativeCursorPosition>(source)
+                    .unwrap()
+                    .cursor_over = false;
+                app.world_mut().entity_mut(target).insert((
+                    Interaction::Hovered,
+                    DropTarget::DungeonUpgrade,
+                    RelativeCursorPosition {
+                        cursor_over: true,
+                        normalized: Some(Vec2::ZERO),
+                    },
+                ));
+                app.world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .release(MouseButton::Left);
+            } else {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .press(MouseButton::Right);
+            }
+            app.update();
+            let inventory = app.world().resource::<Inventory>();
+            assert_eq!(serde_json::to_value(inventory.item(1).unwrap()).unwrap(), serde_json::to_value(&before).unwrap());
+            assert!(inventory.equipped("Ring 1").is_none());
+            assert!(inventory.equipped("Ring 2").is_none());
+            assert!(app.world().resource::<DragState>().consumed_click());
+            assert_eq!(app.world().resource::<crate::survivors::dungeon_smith::View>().selected_item(), Some(1));
+            assert_eq!(inventory.money(), 0);
+        }
     }
     #[test]
     fn right_click_sells_only_while_gambling_vendor_is_open() {
@@ -413,11 +471,12 @@ mod tests {
                 .id,
             1
         );
-        assert!(app
-            .world()
-            .resource::<Inventory>()
-            .equipped("Ring 1")
-            .is_none());
+        assert!(
+            app.world()
+                .resource::<Inventory>()
+                .equipped("Ring 1")
+                .is_none()
+        );
         assert!(!app.world().resource::<DragState>().dragging());
         assert_eq!(
             app.world_mut().query::<&Ghost>().iter(app.world()).count(),
@@ -439,11 +498,12 @@ mod tests {
                 .id,
             1
         );
-        assert!(app
-            .world()
-            .resource::<Inventory>()
-            .equipped("Ring 2")
-            .is_none());
+        assert!(
+            app.world()
+                .resource::<Inventory>()
+                .equipped("Ring 2")
+                .is_none()
+        );
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
             .reset_all();

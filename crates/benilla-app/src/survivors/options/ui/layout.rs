@@ -190,7 +190,7 @@ fn contents(
         Tab::Controls => {
             for (title,note,actions) in [
                 ("Movement & combat","Primary key on the left; secondary key on the right.", &[Action::Forward,Action::Back,Action::TurnLeft,Action::TurnRight,Action::StrafeLeft,Action::StrafeRight,Action::Jump,Action::Mobility][..]),
-                ("Cards & rewards","Choose a binding to change it. The draft keys may share a key with movement and windows, which are idle during a draw.", &[Action::DrawCards,Action::Card1,Action::Card2,Action::Card3,Action::Reroll,Action::Skip,Action::Banish][..]),
+                ("Cards & rewards","Choose a binding to change it. The draft keys may share a key with movement and windows, which are idle during a draw.", &[Action::DrawCards,Action::Card1,Action::Card2,Action::Card3,Action::AutoPick,Action::Reroll,Action::Skip,Action::Banish][..]),
                 ("Menus & overlays","Conflicting keys swap bindings. Esc cancels capture; Backspace clears a key. Keys use physical positions.", &[Action::Talents,Action::Character,Action::Inventory,Action::DamageMeter,Action::Grade,Action::Pause][..]),
             ] {
                 section(body,f,title,note,|card| {
@@ -225,7 +225,7 @@ fn contents(
             });
         }
         Tab::Display => {
-            section(body,f,"Cards & progression","Turn automatic draws off to store cards. Use your draw key or the bottom-right button to open the reserve in a chain.",|card| flags(card,f,&[(9,"Automatically draw level-up cards",settings.auto_draw_cards)]));
+            section(body,f,"Cards & progression","Full Auto opens level-up draws and picks the highest-priority offered card from your active build. Without an active build, your normal draw setting applies.",|card| flags(card,f,&[(9,"Automatically draw level-up cards",settings.auto_draw_cards),(12,"Full Auto: use active build priorities",settings.full_auto_build)]));
             section(body,f,"Floating combat text","Filters apply to new floating numbers and keep combat calculations unchanged.",|card| flags(card,f,&[(0,"Damage dealt",settings.damage),(1,"Healing received and done",settings.healing),(2,"Damage taken",settings.incoming),(3,"Show only outgoing critical hits",settings.critical_only)]));
             section(body,f,"Appearance","Character and Combat meter windows can be moved using their title bars.",|card| flags(card,f,&[(4,"Color grading and sharpening",settings.grade),(10,"Ally health bars",settings.ally_plates),(11,"Enemy health bars",settings.enemy_plates)]));
             section(body,f,"Performance & diagnostics","Diagnostics write reports to benilla-config/Diagnostics and turn off on the next launch. Per-system details require warcraft-survivors-perf.exe.",|card| flags(card,f,&[(7,"FPS counter",settings.show_fps),(8,"Performance diagnostics",settings.perf_diag)]));

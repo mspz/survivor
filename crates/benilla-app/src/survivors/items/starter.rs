@@ -51,6 +51,7 @@ impl Inventory {
             let id = save.next_id;
             save.next_id = id.checked_add(1).ok_or("Item identity exhausted")?;
             save.items.push(Item {
+                upgrade_basis: None,
                 affix_rules: 0,
                 legendary: None,
                 base_damage: weapons::is_weapon(base.equipment_type)
@@ -76,6 +77,7 @@ impl Inventory {
                 let id = save.next_id;
                 save.next_id = id.checked_add(1).ok_or("Item identity exhausted")?;
                 save.items.push(Item {
+                    upgrade_basis: None,
                     affix_rules: 0,
                     legendary: None,
                     base_damage: None,

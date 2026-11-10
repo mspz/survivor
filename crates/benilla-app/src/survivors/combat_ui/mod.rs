@@ -192,9 +192,19 @@ pub(super) fn input(
     windows: Query<&Window, With<PrimaryWindow>>,
     clicks: Query<(&Interaction, &Click), Changed<Interaction>>,
     titles: Query<(&Interaction, &DragTitle)>,
+    smith: Option<Res<super::dungeon_smith::View>>,
+    builds: Option<Res<super::builds::ui::Panel>>,
 ) {
     selection.ui_captured = false;
     selection.pointer_captured = false;
+    if builds.as_ref().is_some_and(|b| b.open) {
+        selection.ui_captured = true;
+        selection.pointer_captured = true;
+        selection.sheet_open = false;
+        selection.bags_open = false;
+        view.drag = None;
+        return;
+    }
     if *phase.get() == Phase::Menu {
         selection.sheet_open = false;
         selection.bags_open = false;
@@ -202,7 +212,8 @@ pub(super) fn input(
         view.meter_selected = None;
         return;
     }
-    let active = in_world(*phase.get());
+    let upgrading = smith.as_ref().is_some_and(|v| v.is_open());
+    let active = in_world(*phase.get()) || (*phase.get() == Phase::GameOver && upgrading);
     if !active {
         selection.sheet_open = false;
         selection.bags_open = false;
@@ -231,6 +242,7 @@ pub(super) fn input(
     if active && toggle {
         selection.sheet_open = !selection.sheet_open;
         if selection.sheet_open {
+            if upgrading { selection.bags_open = false; }
             selection.talents_open = false;
             roster.expeditions = false;
         }
@@ -241,6 +253,7 @@ pub(super) fn input(
             .any(|(i, c)| *i == Interaction::Pressed && matches!(c, Click::Bags));
     if active && bags {
         selection.bags_open = !selection.bags_open;
+        if upgrading && selection.bags_open { selection.sheet_open = false; }
         roster.expeditions = false;
     }
     if settings.just_pressed(Action::DamageMeter, &keys) {
@@ -376,6 +389,7 @@ fn button(
 }
 fn position(
     view: Res<View>,
+    smith: Option<Res<super::dungeon_smith::View>>,
     mut roots: Query<
         (&mut Node, Option<&MeterRoot>, Option<&sheet::Root>),
         Or<(With<MeterRoot>, With<sheet::Root>)>,
@@ -385,7 +399,7 @@ fn position(
         let point = if meter.is_some() {
             view.position
         } else if sheet.is_some() {
-            view.sheet
+            if smith.as_ref().is_some_and(|v| v.is_open()) { Vec2::new(18.0, 30.0) } else { view.sheet }
         } else {
             continue;
         };
@@ -450,6 +464,7 @@ fn launchers(
                 115.0,
             );
             if selection.in_hub {
+                skin::button(ui, &font.0, "Builds", super::builds::ui::Click::Open, 85.0);
                 skin::button(
                     ui,
                     &font.0,
@@ -620,6 +635,37 @@ mod tests {
                 .y,
             46.0
         );
+    }
+    #[test]
+    fn upgrading_switches_source_panels_without_leaving_victory() {
+        let mut app = App::new();
+        let mut smith = super::super::dungeon_smith::View::default();
+        smith.speak();
+        app.insert_resource(smith)
+            .insert_resource(State::new(Phase::GameOver))
+            .init_resource::<NextState<Phase>>()
+            .init_resource::<Settings>()
+            .init_resource::<super::super::options::Panel>()
+            .init_resource::<Selection>()
+            .init_resource::<super::super::characters::Roster>()
+            .init_resource::<View>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(Update, input);
+        for (key, sheet, bags) in [
+            (KeyCode::KeyC, true, false),
+            (KeyCode::KeyB, false, true),
+            (KeyCode::KeyC, true, false),
+            (KeyCode::KeyC, false, false),
+        ] {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            app.update();
+            let selection = app.world().resource::<Selection>();
+            assert_eq!((selection.sheet_open, selection.bags_open), (sheet, bags));
+            assert_eq!(*app.world().resource::<State<Phase>>().get(), Phase::GameOver);
+            assert!(matches!(app.world().resource::<NextState<Phase>>(), NextState::Unchanged));
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+        }
     }
     #[test]
     fn bags_and_character_open_and_close_independently_and_resume_only_after_both_close() {

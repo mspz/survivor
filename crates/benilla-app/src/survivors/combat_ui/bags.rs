@@ -11,6 +11,7 @@ pub(in crate::survivors) enum DropTarget {
     /// A bag cell, by its index across all pages.
     Bag(usize),
     BagBackground,
+    DungeonUpgrade,
 }
 #[derive(Component, Clone, Copy)]
 enum Action {
@@ -23,6 +24,9 @@ enum Action {
 }
 #[derive(Component)]
 pub(in crate::survivors) struct ItemTip(pub u64);
+/// Hover-only item reference for the dungeon upgrade slot; it is not a bag gesture source.
+#[derive(Component)]
+pub(in crate::survivors) struct ItemHoverTip(pub u64);
 /// A detached display object: deliberately has no inventory identity or drag/drop target.
 #[derive(Component)]
 pub(in crate::survivors) struct ReadOnlyItemTip {
@@ -172,6 +176,7 @@ pub(super) fn panel(
 fn render(
     mut commands: Commands,
     phase: Res<State<Phase>>,
+    smith: Option<Res<super::super::dungeon_smith::View>>,
     selection: Res<Selection>,
     view: Res<View>,
     inventory: Option<Res<Inventory>>,
@@ -184,7 +189,8 @@ fn render(
         .as_ref()
         .and_then(|r| r.current())
         .map_or("Adventurer", |c| c.name.as_str());
-    let show = selection.bags_open && in_world(*phase.get());
+    let upgrading = smith.as_ref().is_some_and(|v| v.is_open());
+    let show = selection.bags_open && (in_world(*phase.get()) || (*phase.get() == Phase::GameOver && upgrading));
     let stamp = format!(
         "{show} {owner} {} {:?} {:?} {:?}",
         view.bag_page,
@@ -242,16 +248,18 @@ fn render(
 }
 fn tooltip(
     vendor: Option<Res<super::super::gambling::View>>,
+    smith: Option<Res<super::super::dungeon_smith::View>>,
     mut commands: Commands,
     inventory: Option<Res<Inventory>>,
     selection: Res<Selection>,
     font: Option<Res<hud::HudFont>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     scale: Option<Res<UiScale>>,
-    items: Query<(&Interaction, &ItemTip)>,
+    items: Query<(Entity, &Interaction, &ItemTip)>,
+    upgrade_items: Query<(Entity, &Interaction, &ItemHoverTip)>,
     previews: Query<(Entity, &Interaction, &ReadOnlyItemTip)>,
     roots: Query<Entity, With<Tooltip>>,
-    mut cache: Local<Option<(u64, u64, bool, bool)>>,
+    mut cache: Local<Option<(u64, u64, u64, bool, bool)>>,
     gesture: Res<gestures::DragState>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
 ) {
@@ -263,11 +271,14 @@ fn tooltip(
     } else {
         None
     };
-    let id = if (selection.sheet_open || selection.bags_open) && !gesture.dragging() {
-        items
-            .iter()
-            .find(|(i, _)| **i == Interaction::Hovered)
-            .map(|(_, tip)| tip.0)
+    let hovered = if !gesture.dragging() {
+        let bag_item = (selection.sheet_open || selection.bags_open).then(||
+            items.iter().find(|(_, i, _)| **i == Interaction::Hovered)
+                .map(|(entity, _, tip)| (entity, tip.0, false))).flatten();
+        bag_item.or_else(|| smith.as_ref().filter(|smith| smith.is_open()).and_then(|_| {
+            upgrade_items.iter().find(|(_, i, _)| **i == Interaction::Hovered)
+                .map(|(entity, _, tip)| (entity, tip.0, true))
+        }))
     } else {
         None
     };
@@ -275,10 +286,11 @@ fn tooltip(
         .as_ref()
         .is_some_and(|keys| keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]));
     let key = preview
-        .map(|(entity, _)| entity.to_bits())
-        .or(id)
-        .map(|id| {
+        .map(|(entity, _)| (entity.to_bits(), 0))
+        .or_else(|| hovered.map(|(entity, id, _)| (entity.to_bits(), id)))
+        .map(|(entity, id)| {
             (
+                entity,
                 id,
                 inventory.as_ref().map_or(0, |i| i.revision),
                 compare,
@@ -296,7 +308,7 @@ fn tooltip(
         preview.map(|(_, tip)| &tip.item).or_else(|| {
             inventory
                 .as_ref()
-                .and_then(|i| id.and_then(|id| i.item(id)))
+                .and_then(|i| hovered.and_then(|(_, id, _)| i.item(id)))
         }),
         font,
     ) else {
@@ -328,6 +340,8 @@ fn tooltip(
     }
     if preview.is_some() {
         lines.push(("Preview only - cannot be collected".into(), GREY));
+    } else if hovered.is_some_and(|(_, _, upgrade_slot)| upgrade_slot) {
+        lines.push(("Selected for dungeon upgrade".into(), GREY));
     } else {
         lines.push((
             if vendor.as_ref().is_some_and(|v| v.open) {
@@ -407,6 +421,28 @@ mod tests {
     use super::*;
     #[derive(Component)]
     struct TestRoot;
+    #[test]
+    fn dungeon_upgrade_slot_uses_the_bag_tooltip_without_bag_sale_gestures() {
+        use bevy::ecs::system::RunSystemOnce;
+        let item = super::super::super::shared_chest::fixture_item();
+        let name = item.name.clone();
+        let mut smith = super::super::super::dungeon_smith::View::default();
+        smith.speak();
+        let mut world = World::new();
+        world.insert_resource(Inventory::fixture(vec![item.clone()]));
+        let item_id = world.resource::<Inventory>().all()[0].id;
+        world.insert_resource(smith);
+        world.init_resource::<Selection>();
+        world.init_resource::<gestures::DragState>();
+        world.insert_resource(hud::HudFont(Handle::default()));
+        let slot = world.spawn((Interaction::Hovered, ItemHoverTip(item_id))).id();
+        world.run_system_once(tooltip).unwrap();
+        let texts: Vec<_> = world.query::<&Text>().iter(&world).map(|text| text.0.as_str()).collect();
+        assert!(texts.contains(&name.as_str()));
+        assert!(texts.contains(&"Selected for dungeon upgrade"));
+        assert!(!texts.iter().any(|text| text.contains("sell")));
+        assert!(world.get::<ItemTip>(slot).is_none());
+    }
     #[test]
     fn detached_preview_uses_real_item_tooltip_and_has_no_inventory_or_drag_identity() {
         use super::super::super::items::{

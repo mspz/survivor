@@ -72,7 +72,9 @@ pub(super) fn input(
     buttons: Query<(&Interaction, &Action), Changed<Interaction>>,
     hovered: Query<(&Interaction, &Action)>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
+    builds: Option<Res<super::builds::ui::Panel>>,
 ) {
+    if builds.as_ref().is_some_and(|b| b.open) { selection.talents_open = false; return; }
     if !matches!(
         *phase.get(),
         Phase::Hub | Phase::Playing | Phase::CharacterSheet

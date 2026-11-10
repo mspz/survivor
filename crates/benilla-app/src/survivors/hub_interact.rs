@@ -12,11 +12,13 @@ enum Service {
     Gambling,
     TrainingSmith,
     TrainingGold,
+    DungeonSmith,
 }
 
 fn service(position: Vec3, net: &NetEntity, store: Option<&ObjectStore>) -> Option<Service> {
     if net.kind == EntityKind::Unit {
         match store.and_then(|s| s.0.object_entry()) {
+            Some(super::dungeon_smith::NPC_ENTRY) => return Some(Service::DungeonSmith),
             Some(gambling::TEST_SMITH_ENTRY) => return Some(Service::TrainingSmith),
             Some(gambling::TEST_GOLD_ENTRY) => return Some(Service::TrainingGold),
             _ => {}
@@ -45,6 +47,7 @@ fn accessible(service: Service, player: Vec3) -> bool {
         Service::Gambling => gambling::near(player),
         Service::TrainingSmith => gambling::near_training(player, false),
         Service::TrainingGold => gambling::near_training(player, true),
+        Service::DungeonSmith => true, // Range is checked against this dungeon's spawned NPC.
     }
 }
 
@@ -65,6 +68,8 @@ fn nearest(
         if !accessible(service, player) {
             continue;
         }
+        if service == Service::DungeonSmith
+            && super::units::flat(player - transform.translation).length_squared() > 4.5 * 4.5 { continue; }
         let mut has_mesh = false;
         let mut hit = f32::INFINITY;
         for part in std::iter::once(entity).chain(children.iter_descendants(entity)) {
@@ -122,7 +127,7 @@ fn open(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn click(
     mouse: Res<ButtonInput<MouseButton>>,
-    phase: Res<State<Phase>>,
+    (phase, run): (Res<State<Phase>>, Option<Res<super::Run>>),
     mut selection: ResMut<Selection>,
     roster: Res<super::characters::Roster>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -135,13 +140,14 @@ pub(super) fn click(
     mut bank: ResMut<bank::View>,
     mut shared: ResMut<shared_chest::View>,
     mut gambling: ResMut<gambling::View>,
-    mut inventory: ResMut<super::items::Inventory>,
+    (mut inventory, mut smith): (ResMut<super::items::Inventory>, Option<ResMut<super::dungeon_smith::View>>),
     mut press: Local<Option<Vec2>>,
 ) {
     let training = super::training::active(&selection);
-    if !(selection.in_hub || training)
+    let dungeon_end = *phase.get() == Phase::GameOver && run.as_deref().is_some_and(super::dungeon_smith::available);
+    if !(selection.in_hub || training || dungeon_end)
         || !(matches!(*phase.get(), Phase::Hub | Phase::CharacterSheet)
-            || (training && *phase.get() == Phase::Playing))
+            || (training && *phase.get() == Phase::Playing) || dungeon_end)
         || selection.talents_open
         || selection.pointer_captured
         || roster.expeditions
@@ -173,6 +179,20 @@ pub(super) fn click(
         return;
     };
     if let Some(service) = nearest(ray, player.translation, &units, &children, &meshes) {
+        if service == Service::DungeonSmith {
+            if dungeon_end {
+                if let Some(smith) = smith.as_deref_mut() {
+                    smith.speak();
+                    selection.bags_open = false;
+                    selection.sheet_open = false;
+                    selection.talents_open = false;
+                    selection.ui_captured = true;
+                    selection.pointer_captured = true;
+                }
+            }
+            return;
+        }
+        if dungeon_end { return; }
         if service == Service::TrainingGold {
             if let Err(error) = gambling::give_training_gold(&selection, &mut inventory) {
                 inventory.notice = error;
@@ -238,6 +258,7 @@ mod tests {
     #[test]
     fn replicated_services_are_pickable_without_host_only_components_and_require_proximity() {
         for (expected, position, kind, display, entry) in [
+            (Service::DungeonSmith, Vec3::new(10.0, 0.0, 12.0), EntityKind::Unit, 49, super::super::dungeon_smith::NPC_ENTRY),
             (
                 Service::Bank,
                 bank::position(),

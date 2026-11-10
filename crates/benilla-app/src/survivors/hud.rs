@@ -1157,17 +1157,21 @@ pub(super) fn setup_hud(
             Visibility::Hidden,
         ))
         .with_children(|root| {
-            // Run XP sits above the run information, clear of the bottom menu.
-            root.spawn((
+            // Keep the XP bar centred within the screen while leaving room for the minimap.
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: Val::ZERO,
+                right: Val::ZERO,
+                top: Val::ZERO,
+                height: Val::Px(13.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            }).with_children(|xp| {
+            xp.spawn((
                 XpBar,
                 Interaction::default(),
                 Node {
-                    position_type: PositionType::Absolute,
-                    // Reserve the minimap's footprint while keeping XP centred.
-                    left: Val::Px(200.0),
-                    right: Val::Px(200.0),
-                    top: Val::Px(0.0),
-                    margin: UiRect::horizontal(Val::Auto),
+                    width: Val::Percent(55.0),
                     max_width: Val::Px(800.0),
                     height: Val::Px(13.0),
                     ..default()
@@ -1243,6 +1247,7 @@ pub(super) fn setup_hud(
                         Visibility::Hidden,
                     ));
                 });
+            });
             });
             minimap::spawn_cluster(root, f, &map);
             // The mobility button: a 36-unit action slot in `UI-Quickslot2`, its key over it.
@@ -1485,6 +1490,25 @@ pub(super) fn setup_hud(
                 ..default()
             })
             .with_children(|bar| {
+                bar.spawn((
+                    Button,
+                    super::builds::AutoButton,
+                    Node {
+                        padding: UiRect::all(Val::Px(8.0)),
+                        column_gap: Val::Px(8.0),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.15, 0.12, 0.08)),
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        ImageNode::new(super::draft_icons::image(super::draft_icons::Pictogram::Auto, &mut images)),
+                        bevy::ui::FocusPolicy::Pass,
+                        Node { width: Val::Px(28.0), height: Val::Px(28.0), ..default() },
+                    ));
+                    button.spawn(text_bundle(f, "[A] Auto", 18.0, GOLD));
+                });
                 for (index, label, icon) in [
                     (3, "Reroll", super::draft_icons::Pictogram::Die),
                     (4, "Skip", super::draft_icons::Pictogram::Arrow),
@@ -2005,9 +2029,16 @@ pub(super) fn buttons(
     phase: Res<State<Phase>>,
     mut panel: ResMut<super::options::Panel>,
     selection: Res<Selection>,
+    run: Option<Res<Run>>,
+    mut smith: Option<ResMut<super::dungeon_smith::View>>,
 ) {
     for (interaction, action) in &presses {
         if *interaction == Interaction::Pressed {
+            if *phase.get() == Phase::GameOver && run.as_deref().is_some_and(super::dungeon_smith::available)
+                && matches!(action, UiAction::MainMenu | UiAction::Logout) {
+                if smith.as_deref_mut().is_some_and(|v| v.request_leave()) { next.set(Phase::Hub); }
+                continue;
+            }
             match (*action, *phase.get()) {
                 (UiAction::Options, Phase::Paused) => panel.open = true,
                 (UiAction::Resume, Phase::Paused) => next.set(if selection.in_hub {
@@ -2032,11 +2063,12 @@ pub(super) fn keys(
     settings: Res<super::options::Settings>,
     panel: Res<super::options::Panel>,
     codex: Option<Res<super::codex::Panel>>,
+    builds: Option<Res<super::builds::ui::Panel>>,
     run: Option<Res<Run>>,
     mut selection: ResMut<Selection>,
     mut next: ResMut<NextState<Phase>>,
 ) {
-    if panel.open || codex.as_ref().is_some_and(|c| c.open) {
+    if panel.open || codex.as_ref().is_some_and(|c| c.open) || builds.as_ref().is_some_and(|b| b.open) {
         return;
     }
     match phase.get() {
@@ -2072,7 +2104,7 @@ pub(super) fn keys(
         }
         Phase::LevelUp | Phase::CharacterSheet => {}
         Phase::GameOver => {
-            if keys.just_pressed(KeyCode::Enter) && !run.as_deref().is_some_and(|r| r.won && r.endless.is_some()) {
+            if keys.just_pressed(KeyCode::Enter) && !run.as_deref().is_some_and(|r| (r.won && r.endless.is_some()) || super::dungeon_smith::available(r)) {
                 next.set(Phase::Hub);
             }
         }
@@ -3534,7 +3566,7 @@ pub(super) fn show_panels(
         set(root, p == Phase::Paused);
     }
     for root in &mut roots.p4() {
-        set(root, p == Phase::GameOver && !run.as_deref().is_some_and(|r| r.won && r.endless.is_some()));
+        set(root, p == Phase::GameOver && !run.as_deref().is_some_and(|r| (r.won && r.endless.is_some()) || super::dungeon_smith::available(r)));
     }
 }
 

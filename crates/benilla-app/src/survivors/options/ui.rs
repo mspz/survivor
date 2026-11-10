@@ -151,6 +151,7 @@ pub(super) fn input(
                     7 => settings.show_fps = !settings.show_fps,
                     8 => settings.perf_diag = !settings.perf_diag,
                     9 => settings.auto_draw_cards = !settings.auto_draw_cards,
+                    12 => settings.full_auto_build = !settings.full_auto_build,
                     10 => settings.ally_plates = !settings.ally_plates,
                     11 => settings.enemy_plates = !settings.enemy_plates,
                     _ => settings.grade = !settings.grade,
@@ -191,6 +192,7 @@ pub(super) fn input(
                     }
                     Tab::Display => {
                         settings.auto_draw_cards = false;
+                        settings.full_auto_build = false;
                         settings.damage = true;
                         settings.healing = true;
                         settings.incoming = true;

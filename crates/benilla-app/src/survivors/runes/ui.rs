@@ -334,6 +334,7 @@ fn refresh(
     phase: Res<State<Phase>>,
     selection: Res<Selection>,
     font: Option<Res<hud::HudFont>>,
+    run: Option<Res<crate::survivors::Run>>,
     mut root: Query<(Entity, &mut Visibility), With<PanelRoot>>,
     mut shown: Local<Option<(u64, String, bool)>>,
 ) {
@@ -342,7 +343,10 @@ fn refresh(
     };
     let Some(font) = font else { return };
     let training = crate::survivors::training::active(&selection);
-    let show = visible(&runes, *phase.get(), training);
+    // An earlier unclaimed campaign rune must not block the dungeon's upgrade service.
+    let dungeon_end = *phase.get() == Phase::GameOver && run.as_deref()
+        .is_some_and(|r| crate::survivors::data::dungeon(r.expedition_map));
+    let show = !dungeon_end && visible(&runes, *phase.get(), training);
     let key = (runes.revision, runes.message.clone(), show);
     if shown.as_ref() == Some(&key) {
         return;
@@ -507,4 +511,30 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(OnEnter(Phase::Hub), open_for_pending)
         .add_systems(OnExit(Phase::Hub), close_on_leave)
         .add_systems(Update, (hub_keys, clicks, refresh, tooltip).chain().in_set(RunePanel));
+}
+
+#[cfg(test)]
+mod dungeon_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    #[test]
+    fn dungeon_results_never_show_an_old_pending_campaign_rune() {
+        let mut world = World::new();
+        let mut runes = Runes::default();
+        runes.save.pending = Some(Rune { rarity: 0, level: 0, stats: vec![] });
+        runes.message = "Unclaimed campaign reward".into();
+        let old = runes.save.clone();
+        world.insert_resource(runes);
+        world.insert_resource(State::new(Phase::GameOver));
+        world.insert_resource(Selection::default());
+        world.insert_resource(hud::HudFont(Handle::default()));
+        let panel = world.spawn((PanelRoot, Visibility::Visible)).id();
+        for &map in crate::survivors::data::DUNGEONS {
+            world.insert_resource(crate::survivors::Run { won: true, expedition_map: map, ..default() });
+            world.entity_mut(panel).insert(Visibility::Visible);
+            world.run_system_once(refresh).unwrap();
+            assert_eq!(*world.get::<Visibility>(panel).unwrap(), Visibility::Hidden);
+            assert_eq!(world.resource::<Runes>().save, old, "do not delete an earlier campaign reward");
+        }
+    }
 }

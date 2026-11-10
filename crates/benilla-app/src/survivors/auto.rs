@@ -323,7 +323,7 @@ pub(super) fn drive(
             if auto.wait > 1.5 {
                 auto.capture_once(&mut commands, "over".into());
             }
-            if auto.wait > 6.0 && run.endless.is_none() {
+            if auto.wait > 6.0 && run.endless.is_none() && !data::dungeon(run.expedition_map) {
                 next.set(Phase::Menu);
                 auto.wait = 0.0;
             }

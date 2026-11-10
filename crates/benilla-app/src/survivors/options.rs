@@ -27,9 +27,10 @@ pub(super) enum Action {
     Reroll,
     Skip,
     Banish,
+    AutoPick,
 }
 impl Action {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Forward,
         Self::Back,
         Self::TurnLeft,
@@ -51,13 +52,14 @@ impl Action {
         Self::Reroll,
         Self::Skip,
         Self::Banish,
+        Self::AutoPick,
     ];
     /// The card screen's keys: movement and windows do not listen while it is open, so these may
     /// share a key with them, but not with each other.
     pub fn on_card_screen(self) -> bool {
         matches!(
             self,
-            Self::Card1 | Self::Card2 | Self::Card3 | Self::Reroll | Self::Skip | Self::Banish
+            Self::Card1 | Self::Card2 | Self::Card3 | Self::AutoPick | Self::Reroll | Self::Skip | Self::Banish
         )
     }
     pub fn name(self) -> &'static str {
@@ -83,6 +85,7 @@ impl Action {
             Self::Reroll => "Reroll cards",
             Self::Skip => "Skip cards",
             Self::Banish => "Banish a card",
+            Self::AutoPick => "Choose card using build priorities",
         }
     }
 }
@@ -163,6 +166,7 @@ const KEY_CODES: &[KeyCode] = &[
 pub(super) struct Settings {
     pub bindings: [[Option<KeyCode>; 2]; Action::ALL.len()],
     pub auto_draw_cards: bool,
+    pub full_auto_build: bool,
     pub damage: bool,
     pub healing: bool,
     pub incoming: bool,
@@ -201,6 +205,7 @@ impl Settings {
             KeyCode::KeyR,
             KeyCode::KeyS,
             KeyCode::KeyB,
+            KeyCode::KeyA,
         ];
         let mut bindings = primary.map(|key| [Some(key), None]);
         for (action, key) in [
@@ -214,6 +219,7 @@ impl Settings {
         Self {
             bindings,
             auto_draw_cards: false,
+            full_auto_build: false,
             damage: true,
             healing: true,
             incoming: true,
@@ -279,6 +285,7 @@ impl Settings {
             self.damage, self.healing, self.incoming, self.critical_only, self.grade
         );
         out.push_str(&format!("auto_draw_cards {}\n", self.auto_draw_cards));
+        out.push_str(&format!("full_auto_build {}\n", self.full_auto_build));
         for (i, row) in self.bindings.iter().enumerate() {
             for (slot, key) in row.iter().enumerate() {
                 out.push_str(&format!(
@@ -310,6 +317,7 @@ impl Settings {
             let flag = value.parse::<bool>().ok();
             match name {
                 "auto_draw_cards" => { if let Some(v) = flag { out.auto_draw_cards = v; } }
+                "full_auto_build" => { if let Some(v) = flag { out.full_auto_build = v; } }
                 "invert_x" => {
                     if let Some(v) = flag {
                         out.invert_x = v;
@@ -391,7 +399,8 @@ impl Settings {
             }
         }
         // Files from the builds that put the draft keys at 17 and a level-up key at 20.
-        if text.lines().any(|line| line.starts_with("bind.20.")) {
+        if text.lines().any(|line| line.starts_with("bind.20."))
+            && !text.lines().any(|line| line.starts_with("bind.21.")) {
             let defaults = Self::defaults();
             for action in [Action::DrawCards, Action::Reroll, Action::Skip, Action::Banish] {
                 out.bindings[action as usize] = defaults.bindings[action as usize];
@@ -489,6 +498,17 @@ pub(super) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     #[test]
+    fn auto_pick_uses_a_separate_card_screen_binding_and_roundtrips() {
+        let mut settings = Settings::defaults();
+        assert_eq!(settings.bindings[Action::AutoPick as usize][0], Some(KeyCode::KeyA));
+        assert_eq!(settings.bindings[Action::TurnLeft as usize][0], Some(KeyCode::KeyA));
+        settings.rebind(Action::AutoPick, 0, Some(KeyCode::Digit1));
+        assert_eq!(settings.bindings[Action::Card1 as usize][0], Some(KeyCode::KeyA));
+        assert_eq!(settings.bindings[Action::TurnLeft as usize][0], Some(KeyCode::KeyA));
+        settings.rebind(Action::Reroll, 0, Some(KeyCode::KeyY));
+        assert_eq!(Settings::decode(&settings.encode()), settings);
+    }
+    #[test]
     fn bindings_swap_conflicts_and_are_used_for_input() {
         let mut s = Settings::defaults();
         s.rebind(Action::Forward, 0, Some(KeyCode::KeyG));
@@ -506,6 +526,7 @@ mod tests {
         assert_eq!(settings.bindings[Action::Talents as usize][0], Some(KeyCode::KeyT));
         assert_eq!(settings.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyG));
         assert!(!settings.auto_draw_cards);
+        assert!(!settings.full_auto_build);
         let old = Settings::decode("v1\nbind.8.0 KeyN\nbind.9.0 KeyG\nbind.17.0 KeyT\n");
         assert_eq!(old.bindings[Action::Talents as usize][0], Some(KeyCode::KeyT));
         assert_eq!(old.bindings[Action::DrawCards as usize][0], Some(KeyCode::KeyG));
@@ -521,6 +542,7 @@ mod tests {
         s.rebind(Action::Forward, 0, Some(KeyCode::KeyZ));
         s.rebind(Action::Back, 1, None);
         s.auto_draw_cards = false;
+        s.full_auto_build = true;
         s.damage = false;
         s.critical_only = true;
         s.invert_y = true;

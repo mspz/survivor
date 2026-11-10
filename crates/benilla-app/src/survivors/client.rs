@@ -15,9 +15,12 @@ pub(super) fn input(
     auto: Option<Res<auto::Auto>>,
     session: Res<session::LocalSession>,
     mut server: ResMut<session::Sessions>,
+    smith: Option<Res<super::dungeon_smith::View>>,
 ) {
     use options::Action;
-    let interactive = matches!(*phase.get(), Phase::Playing | Phase::Hub)
+    let interactive = (matches!(*phase.get(), Phase::Playing | Phase::Hub)
+        || (*phase.get() == Phase::GameOver && super::dungeon_smith::available(&run)))
+        && !smith.as_deref().is_some_and(|v| v.blocks_input())
         && !selection.talents_open
         && !selection.sheet_open
         && !selection.bags_open
@@ -65,7 +68,7 @@ pub(super) fn input(
             automatic: auto.is_some(),
             active: interactive && run.dead_t.is_none(),
             jump: settings.just_pressed(Action::Jump, &keys),
-            mobility: interactive && settings.just_pressed(Action::Mobility, &keys),
+            mobility: interactive && *phase.get() != Phase::GameOver && settings.just_pressed(Action::Mobility, &keys),
             aim: aim.0,
         },
     );
@@ -74,6 +77,41 @@ pub(super) fn input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cleared_dungeons_keep_movement_until_a_shop_or_exit_dialog_is_opened() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
+            .init_resource::<options::Settings>()
+            .init_resource::<characters::Roster>()
+            .init_resource::<hero::CamRig>()
+            .init_resource::<hero::AimPoint>()
+            .init_resource::<session::Sessions>()
+            .init_resource::<session::LocalSession>()
+            .init_resource::<session::ServerInput>()
+            .init_resource::<super::super::dungeon_smith::View>()
+            .init_resource::<Selection>()
+            .insert_resource(State::new(Phase::GameOver))
+            .insert_resource(Run { won: true, expedition_map: data::DUNGEONS[0], ..default() })
+            .add_systems(Update, (input, session::receive).chain());
+        let id = app.world().resource::<session::LocalSession>().id();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        app.update();
+        let command = app.world().resource::<session::ServerInput>().for_client(id);
+        assert!(command.active);
+        assert_eq!(command.axes, Vec2::Y);
+        assert!(!app.world_mut().resource_mut::<super::super::dungeon_smith::View>().request_leave());
+        app.update();
+        assert!(!app.world().resource::<session::ServerInput>().for_client(id).active);
+        app.world_mut().resource_mut::<super::super::dungeon_smith::View>().speak();
+        app.update();
+        assert!(!app.world().resource::<session::ServerInput>().for_client(id).active);
+        app.world_mut().insert_resource(super::super::dungeon_smith::View::default());
+        app.world_mut().resource_mut::<Run>().won = false;
+        app.update();
+        assert!(!app.world().resource::<session::ServerInput>().for_client(id).active);
+    }
     #[test]
     fn meter_pointer_capture_keeps_keyboard_movement_but_blocks_mouse_movement() {
         let mut app = App::new();
@@ -160,6 +198,8 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins(shared_chest::plugin)
         .add_plugins(super::bank::plugin)
         .add_plugins(super::gambling::plugin)
+        .add_plugins(super::dungeon_smith::plugin)
+        .add_plugins(super::builds::plugin)
         .add_plugins(super::hub_interact::plugin)
         .add_plugins(runes::plugin)
         .add_plugins(damage_colors::plugin)

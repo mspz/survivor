@@ -139,6 +139,7 @@ pub(super) fn plugin(app: &mut App) {
 pub(super) fn render(
     mut commands: Commands,
     phase: Res<State<Phase>>,
+    smith: Option<Res<super::super::dungeon_smith::View>>,
     selection: Res<Selection>,
     view: Res<View>,
     run: Res<Run>,
@@ -152,7 +153,8 @@ pub(super) fn render(
     let Some(font) = font else {
         return;
     };
-    let show = selection.sheet_open && in_world(*phase.get());
+    let upgrading = smith.as_ref().is_some_and(|v| v.is_open());
+    let show = selection.sheet_open && (in_world(*phase.get()) || (*phase.get() == Phase::GameOver && upgrading));
     let index = view
         .selected
         .min((run.abilities.len() + super::super::procs::available(&run).len()).saturating_sub(1));
@@ -193,7 +195,7 @@ pub(super) fn render(
             BorderColor::all(Color::srgb(0.36, 0.32, 0.24)),
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(view.sheet.x),
+                left: if upgrading { Val::Px(18.0) } else { Val::Px(view.sheet.x) },
                 top: Val::Px(view.sheet.y),
                 width: Val::Px(824.0),
                 height: Val::Px(HEIGHT),

@@ -872,7 +872,10 @@ fn pump_guest(world: &mut World, network: &mut Network) -> std::io::Result<()> {
                 guest.socket.send(&wire::ToServer::Chest(request))?;
             }
             let automatic = world.get_resource::<game::options::Settings>()
-                .is_none_or(|settings| settings.auto_draw_cards);
+                .is_none_or(|settings| settings.auto_draw_cards || (settings.full_auto_build
+                    && world.get_resource::<game::Run>().is_some_and(|run|
+                        world.get_resource::<game::builds::Store>()
+                            .is_some_and(|builds| builds.has_active_build(run.class.id)))));
             let open = world.get_resource_mut::<game::card_draw::Request>()
                 .is_some_and(|mut request| std::mem::take(&mut request.0));
             guest.socket.send(&wire::ToServer::CardDraw { automatic, open })?;
@@ -1074,7 +1077,7 @@ fn publish(world: &mut World) {
         );
         peer.money_earned = peer
             .money_earned
-            .saturating_add((money as f64 * f64::from(player.run.expeditions.reward_multiplier())).round() as u64)
+            .saturating_add((money as f64 * f64::from(player.run.expeditions.gold_multiplier())).round() as u64)
             .min(game::currency::MAX_BALANCE);
         for &level in &opened {
             let item = world.resource_scope(|world, mut rng: Mut<Rng>| {
@@ -3049,6 +3052,7 @@ mod tests {
     ) -> game::items::Item {
         use game::items::{Affix, AffixKind, Effect, EquipmentType, Item, Rarity, SlotKind};
         Item {
+            upgrade_basis: None,
             affix_rules: 0,
             id: 0,
             base: "live-gear-test".into(),

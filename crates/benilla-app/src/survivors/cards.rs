@@ -246,6 +246,81 @@ mod shortcut_tests {
         app.update();
     }
     #[test]
+    fn auto_pick_requires_an_explicit_press_and_uses_the_normal_pick_not_banish() {
+        for button in [false, true] {
+            let mut app = app(Phase::LevelUp, [2; 3]);
+            let class = app.world().resource::<Run>().class;
+            app.insert_resource(super::super::builds::Store::fixture(class));
+            app.world_mut().resource_mut::<Offer>().choices = vec![
+                Choice::NewAbility(data::ability(class.pool[0])),
+                Choice::NewAbility(data::ability(class.start)),
+            ];
+            app.update();
+            assert!(app.world().resource::<PendingPick>().0.is_none());
+            app.world_mut().resource_mut::<BanishMode>().0 = true;
+            let entity = if button { Some(app.world_mut().spawn((super::super::builds::AutoButton, Interaction::Pressed)).id()) }
+                else { app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyA); None };
+            app.update();
+            assert_eq!(app.world().resource::<PendingPick>().0, Some((1, 0.0)));
+            assert!(!app.world().resource::<BanishMode>().0);
+            app.world_mut().resource_mut::<PendingPick>().0 = None;
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear_just_pressed(KeyCode::KeyA);
+            app.update();
+            assert!(app.world().resource::<PendingPick>().0.is_none(), "holding a key or unchanged button must not pick again");
+            if let Some(e) = entity { app.world_mut().despawn(e); }
+        }
+        let mut app = app(Phase::LevelUp, [2; 3]);
+        press(&mut app, KeyCode::KeyA);
+        assert!(app.world().resource::<PendingPick>().0.is_none());
+        let class = app.world().resource::<Run>().class;
+        app.insert_resource(super::super::builds::Store::fixture(class));
+        app.insert_resource(State::new(Phase::Playing));
+        press(&mut app, KeyCode::KeyA);
+        assert!(app.world().resource::<PendingPick>().0.is_none());
+    }
+    #[test]
+    fn full_auto_waits_for_the_deal_and_requires_an_active_build() {
+        let mut app = app(Phase::LevelUp, [2; 3]);
+        let class = app.world().resource::<Run>().class;
+        app.insert_resource(super::super::builds::Store::fixture(class));
+        app.world_mut().resource_mut::<super::super::options::Settings>().full_auto_build = true;
+        app.world_mut().resource_mut::<Offer>().choices = vec![
+            Choice::NewAbility(data::ability(class.pool[0])),
+            Choice::NewAbility(data::ability(class.start)),
+        ];
+        let cards: Vec<_> = (0..2).map(|index| app.world_mut().spawn((
+            Card { index, t: if index == 0 { DEAL_SECS - 0.01 } else { DEAL_SECS },
+                hover: 0.0, tilt: Vec2::ZERO, picked: None, rarity: Rarity::Common },
+            Interaction::None,
+        )).id()).collect();
+        app.update();
+        assert!(app.world().resource::<PendingPick>().0.is_none());
+        app.world_mut().get_mut::<Card>(cards[0]).unwrap().t = DEAL_SECS;
+        app.world_mut().resource_mut::<BanishMode>().0 = true;
+        app.update();
+        assert_eq!(app.world().resource::<PendingPick>().0, Some((1, 0.0)));
+        assert!(!app.world().resource::<BanishMode>().0);
+
+        app.world_mut().resource_mut::<PendingPick>().0 = None;
+        app.insert_resource(super::super::builds::Store::default());
+        app.update();
+        assert!(app.world().resource::<PendingPick>().0.is_none());
+    }
+    #[test]
+    fn full_auto_uses_first_offer_when_the_build_has_no_preference_for_it() {
+        let mut app = app(Phase::LevelUp, [2; 3]);
+        let class = app.world().resource::<Run>().class;
+        app.insert_resource(super::super::builds::Store::fixture(class));
+        app.world_mut().resource_mut::<super::super::options::Settings>().full_auto_build = true;
+        app.world_mut().resource_mut::<Offer>().choices = vec![Choice::Heal, Choice::Heal];
+        for index in 0..2 {
+            app.world_mut().spawn((Card { index, t: DEAL_SECS, hover: 0.0,
+                tilt: Vec2::ZERO, picked: None, rarity: Rarity::Common }, Interaction::None));
+        }
+        app.update();
+        assert_eq!(app.world().resource::<PendingPick>().0, Some((0, 0.0)));
+    }
+    #[test]
     fn shortcuts_use_the_same_pending_actions_and_banish_card_selection() {
         for (key, expected) in [(KeyCode::KeyR, 3), (KeyCode::KeyS, 4)] {
             let mut app = app(Phase::LevelUp, [2; 3]);
@@ -668,9 +743,13 @@ pub(super) fn choose_card(
     keys: Res<ButtonInput<KeyCode>>,
     settings: Res<super::options::Settings>,
     cards: Query<(&Card, &Interaction), Changed<Interaction>>,
+    all_cards: Query<&Card>,
     offer: Res<Offer>,
     mut pending: ResMut<PendingPick>,
     mut mode: ResMut<BanishMode>,
+    run: Res<Run>,
+    builds: Option<Res<super::builds::Store>>,
+    auto_buttons: Query<&Interaction, (With<super::builds::AutoButton>, Changed<Interaction>)>,
 ) {
     if *phase.get() != Phase::LevelUp || pending.0.is_some() {
         return;
@@ -688,6 +767,21 @@ pub(super) fn choose_card(
     .enumerate()
     {
         if settings.just_pressed(action, &keys) {
+            pick = Some(i);
+        }
+    }
+    let manual_auto = settings.just_pressed(super::options::Action::AutoPick, &keys)
+        || auto_buttons.iter().any(|i| *i == Interaction::Pressed);
+    let full_auto_ready = settings.full_auto_build && all_cards.iter().count() == offer.len()
+        && all_cards.iter().all(|card| card.t >= DEAL_SECS);
+    if pick.is_none() && (manual_auto || full_auto_ready) {
+        let choice = builds.as_ref().and_then(|b| {
+            if manual_auto { b.choose(&run, offer.choices()) }
+            else { b.choose_full_auto(&run, offer.choices()) }
+        });
+        if let Some(i) = choice {
+            // Auto always picks a reward; it must never banish the preferred card.
+            mode.0 = false;
             pick = Some(i);
         }
     }

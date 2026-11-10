@@ -758,7 +758,7 @@ fn drop_on_victory(
     mut rng: ResMut<Rng>,
     specialty: Option<Res<super::specialty::Specialty>>,
 ) {
-    if !run.won || super::training::active(&selection) {
+    if !run.won || data::dungeon(run.expedition_map) || super::training::active(&selection) {
         return;
     }
     let Some(tier) = data::CAMPAIGN.iter().position(|&m| m == run.expedition_map) else {
@@ -820,6 +820,22 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_dungeon_victory_does_not_roll_or_grant_a_rune() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.insert_resource(Selection::default());
+        world.insert_resource(Runes::default());
+        world.insert_resource(Rng(42));
+        let before = world.resource::<Runes>().save.clone();
+        for &map in data::DUNGEONS {
+            world.insert_resource(Run { won: true, expedition_map: map, ..default() });
+            world.run_system_once(drop_on_victory).unwrap();
+            assert_eq!(world.resource::<Runes>().save, before);
+            assert_eq!(world.resource::<Rng>().0, 42);
+            assert!(world.resource::<Runes>().message.is_empty());
+        }
+    }
 
     fn runes() -> Runes {
         let mut r = Runes {

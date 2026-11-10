@@ -52,6 +52,7 @@ fn input(
     mut request: ResMut<Request>,
     buttons: Query<&Interaction, With<DrawButton>>,
     auto: Option<Res<super::auto::Auto>>,
+    builds: Option<Res<super::builds::Store>>,
 ) {
     let playing = *phase.get() == Phase::Playing
         && !selection.in_hub
@@ -65,7 +66,8 @@ fn input(
     }
     let open = playing && (clicked || settings.just_pressed(options::Action::DrawCards, &keys));
     // The automatic test runs pick their own cards.
-    let automatic = settings.auto_draw_cards || auto.is_some();
+    let automatic = settings.auto_draw_cards || auto.is_some()
+        || (settings.full_auto_build && builds.as_ref().is_some_and(|b| b.has_active_build(run.class.id)));
     if role.as_deref() == Some(&multiplayer::Role::Guest) {
         request.0 |= open;
     } else if apply(&mut run, automatic, open) && playing {
@@ -168,6 +170,31 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_auto_opens_saved_cards_only_with_an_active_build() {
+        for active in [false, true] {
+            let mut app = App::new();
+            let run = Run { hp: 100.0, stored_cards: 2, ..default() };
+            let class = run.class;
+            let mut settings = options::Settings::defaults();
+            settings.full_auto_build = true;
+            app.insert_resource(State::new(Phase::Playing))
+                .init_resource::<NextState<Phase>>()
+                .insert_resource(run)
+                .init_resource::<Selection>()
+                .insert_resource(settings)
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Request>()
+                .insert_resource(if active { super::super::builds::Store::fixture(class) }
+                    else { super::super::builds::Store::default() })
+                .add_systems(Update, input);
+            app.world_mut().resource_mut::<Selection>().in_hub = false;
+            app.update();
+            let run = app.world().resource::<Run>();
+            assert_eq!(run.pending_levels, if active { 2 } else { 0 });
+            assert_eq!(run.stored_cards, if active { 0 } else { 2 });
+        }
+    }
     #[test]
     fn manual_choices_chain_until_the_entire_reserve_is_consumed() {
         let mut run = Run {

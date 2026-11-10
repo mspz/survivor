@@ -699,6 +699,7 @@ impl Config {
             .collect();
         let tier = base.tier(level);
         Ok(Item {
+            upgrade_basis: None,
             affix_rules: 2,
             loot_class: None,
             id: 0,

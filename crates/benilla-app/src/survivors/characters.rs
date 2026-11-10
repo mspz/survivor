@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(app.world().resource::<Roster>().save.characters[0].xp, 125);
     }
     #[test]
-    fn dungeon_browser_offers_five_modifiers_and_displays_the_combined_reward() {
+    fn dungeon_modifiers_use_a_side_panel_and_show_details_on_hover() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
             .init_state::<Phase>()
@@ -564,12 +564,25 @@ mod tests {
             .init_resource::<talents::Account>()
             .insert_resource(expeditions::View { open: [false, true, false], ..default() })
             .insert_resource(hud::HudFont(Handle::default()))
-            .add_systems(Update, render);
+            .add_systems(Update, (render, expeditions::modifier_tooltip).chain());
         app.world_mut().resource_mut::<NextState<Phase>>().set(Phase::Hub);
         app.world_mut().resource_mut::<Roster>().expeditions = true;
         app.update();
+        assert_eq!(app.world_mut().query::<&expeditions::ModifierPanel>().iter(app.world()).count(), 1);
+        assert_eq!(app.world_mut().query::<&expeditions::ModifierHint>().iter(app.world()).count(), 6);
         assert_eq!(app.world_mut().query::<&Click>().iter(app.world())
-            .filter(|click| matches!(click, Click::DungeonMod(_, _))).count(), 12);
+            .filter(|click| matches!(click, Click::DungeonMod(_, true))).count(), 6);
+        assert!(!app.world_mut().query::<&Text>().iter(app.world())
+            .any(|text| text.0.contains("per rank")));
+        {
+            let world = app.world_mut();
+            *world.query::<(&expeditions::ModifierHint, &mut Interaction)>()
+                .iter_mut(world).next().unwrap().1 = Interaction::Hovered;
+        }
+        app.update();
+        assert_eq!(app.world_mut().query::<&expeditions::ModifierTooltip>().iter(app.world()).count(), 1);
+        assert!(app.world_mut().query::<&Text>().iter(app.world())
+            .any(|text| text.0.contains("per rank")));
         {
             let mut selection = app.world_mut().resource_mut::<Selection>();
             for index in 0..5 { selection.dungeon_mods.toggle(index); }
@@ -578,6 +591,10 @@ mod tests {
         app.update();
         assert!(app.world_mut().query::<&Text>().iter(app.world())
             .any(|text| text.0.contains("Loot ilvl 77 (+12)")));
+        app.world_mut().resource_mut::<Selection>().map = data::CAMPAIGN[0];
+        app.world_mut().resource_mut::<Selection>().version += 1;
+        app.update();
+        assert_eq!(app.world_mut().query::<&expeditions::ModifierPanel>().iter(app.world()).count(), 0);
     }
     #[test]
     fn expedition_browser_preserves_scroll_and_keeps_training_separate_and_restricted() {
@@ -752,6 +769,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(Startup, boot)
         .add_systems(Update, scroll.before(input))
         .add_systems(Update, expeditions::hover.after(render))
+        .add_systems(Update, expeditions::modifier_tooltip.after(render))
         .add_systems(Update, expeditions::toggle.before(render).after(input))
         .add_systems(Update, frontend::spell_hover.after(render))
         .add_systems(
@@ -848,7 +866,9 @@ pub(super) fn input(
     mut lobby: Option<ResMut<super::multiplayer::lobby::Lobby>>,
     mut exit: Option<ResMut<Messages<AppExit>>>,
     mut runes: Option<ResMut<super::runes::Runes>>,
+    builds: Option<Res<super::builds::ui::Panel>>,
 ) {
+    if builds.as_ref().is_some_and(|b| b.open) { typing.clear(); return; }
     if lobby.as_ref().is_some_and(|l| l.joining) {
         typing.clear();
         return;

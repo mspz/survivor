@@ -7,6 +7,8 @@ const SIDE: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Pictogram {
+    /// Auto: a gold spark for the selected build's suggested card.
+    Auto,
     /// Reroll: a die showing five.
     Die,
     /// Skip: an arrow pointing on.
@@ -53,6 +55,14 @@ pub(super) fn pixels(icon: Pictogram) -> Vec<u8> {
     let mut out = vec![0; SIDE * SIDE * 4];
     let circle = |cx: f32, cy: f32, r: f32| move |x: f32, y: f32| (x - cx).powi(2) + (y - cy).powi(2) <= r * r;
     match icon {
+        Pictogram::Auto => {
+            paint(&mut out, [40, 30, 20], |x, y| rounded_square(x, y, 0.44, 0.12));
+            paint(&mut out, [255, 205, 60], |x, y| {
+                let dx = (x - 0.5).abs();
+                let dy = (y - 0.5).abs();
+                dx + dy <= 0.34 || (dx <= 0.07 && dy <= 0.42) || (dy <= 0.07 && dx <= 0.42)
+            });
+        }
         Pictogram::Die => {
             paint(&mut out, [40, 30, 20], |x, y| rounded_square(x, y, 0.44, 0.12));
             paint(&mut out, [245, 238, 220], |x, y| rounded_square(x, y, 0.39, 0.09));
@@ -105,7 +115,7 @@ mod tests {
 
     #[test]
     fn each_pictogram_is_drawn_on_a_clear_background() {
-        for icon in [Pictogram::Die, Pictogram::Arrow, Pictogram::NoEntry] {
+        for icon in [Pictogram::Auto, Pictogram::Die, Pictogram::Arrow, Pictogram::NoEntry] {
             let p = pixels(icon);
             assert_eq!(alpha(&p, 0, 0), 0, "{icon:?} corner");
             assert!(p.chunks(4).filter(|c| c[3] == 255).count() > SIDE * SIDE / 8, "{icon:?}");

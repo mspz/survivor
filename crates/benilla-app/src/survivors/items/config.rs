@@ -770,6 +770,7 @@ impl Config {
         .collect::<Vec<_>>()
         .join(" ");
         Ok(Item {
+            upgrade_basis: None,
             affix_rules: 1,
             legendary: unique.map(|d| legendary::Roll {
                 unique: d.id,

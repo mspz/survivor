@@ -408,6 +408,7 @@ pub(super) fn plugin(app: &mut App) {
 #[cfg(test)]
 pub(super) fn fixture_item() -> Item {
     Item {
+        upgrade_basis: None,
         affix_rules: 0,
         legendary: None,
         base_damage: None,

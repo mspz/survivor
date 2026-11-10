@@ -27,6 +27,7 @@ pub(super) fn plugin(app: &mut App) {
 fn sync(
     mut commands: Commands,
     phase: Res<State<Phase>>,
+    smith: Option<Res<super::super::dungeon_smith::View>>,
     selection: Res<Selection>,
     view: Res<View>,
     mut target: ResMut<Target>,
@@ -36,7 +37,8 @@ fn sync(
     layers: Query<&RenderLayers>,
     mut cameras: Query<(&mut Camera, &mut Transform), With<PreviewCamera>>,
 ) {
-    let show = selection.sheet_open && super::in_world(*phase.get());
+    let show = selection.sheet_open && (super::in_world(*phase.get())
+        || (*phase.get() == Phase::GameOver && smith.as_ref().is_some_and(|v| v.is_open())));
     for (mut camera, _) in &mut cameras {
         camera.is_active = show;
     }
