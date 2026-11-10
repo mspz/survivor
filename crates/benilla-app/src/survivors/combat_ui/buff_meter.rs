@@ -1,8 +1,32 @@
 //! Sample actual aura state; never count a periodic tick as a new application.
 use super::meter::{DiagnosticPage, DiagnosticSection};
-use crate::survivors::{self as game, enemies::Enemy, Run};
+use crate::survivors::{self as game, Run, enemies::Enemy};
 use bevy::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
+mod dots;
+mod instances;
+use instances::InstanceKey;
+type Snapshots = BTreeMap<(String, String), Snapshot>;
+
+fn observe(snapshots: &mut Snapshots, observation: Observation) {
+    let snapshot = snapshots
+        .entry((observation.key.clone(), observation.target.clone()))
+        .or_default();
+    *snapshot
+        .instances
+        .entry(observation.token.clone().into())
+        .or_default() += 1;
+    snapshot.stacks += 1;
+    snapshot.power += observation.power;
+    if let Some(old) = &mut snapshot.observation {
+        old.until = match (old.until, observation.until) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            _ => None,
+        };
+    } else {
+        snapshot.observation = Some(observation);
+    }
+}
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(in crate::survivors) struct EffectMeter {
@@ -46,7 +70,7 @@ struct Target {
     applications: u64,
     refreshes: u64,
     uptime: f64,
-    instances: BTreeMap<String, u32>,
+    instances: BTreeMap<InstanceKey, u32>,
 }
 #[derive(Clone)]
 struct Observation {
@@ -67,7 +91,7 @@ struct Observation {
 #[derive(Default)]
 struct Snapshot {
     observation: Option<Observation>,
-    instances: BTreeMap<String, u32>,
+    instances: BTreeMap<InstanceKey, u32>,
     stacks: u32,
     power: f32,
 }
@@ -107,30 +131,19 @@ impl EffectMeter {
         meter
     }
 
+    #[cfg(test)]
     fn sample(&mut self, now: f32, observations: Vec<Observation>) {
+        let mut snapshots = Snapshots::new();
+        for observation in observations {
+            observe(&mut snapshots, observation);
+        }
+        self.sample_snapshots(now, snapshots);
+    }
+
+    fn sample_snapshots(&mut self, now: f32, snapshots: Snapshots) {
         let before = self.sampled_at;
         let dt = (now - before).max(0.0);
         self.sampled_at = now;
-        let mut snapshots = BTreeMap::<(String, String), Snapshot>::new();
-        for observation in observations {
-            let snapshot = snapshots
-                .entry((observation.key.clone(), observation.target.clone()))
-                .or_default();
-            *snapshot
-                .instances
-                .entry(observation.token.clone())
-                .or_default() += 1;
-            snapshot.stacks += 1;
-            snapshot.power += observation.power;
-            if let Some(old) = &mut snapshot.observation {
-                old.until = match (old.until, observation.until) {
-                    (Some(a), Some(b)) => Some(a.max(b)),
-                    _ => None,
-                };
-            } else {
-                snapshot.observation = Some(observation);
-            }
-        }
         for (key, entry) in &mut self.entries {
             let mut any = 0.0_f32;
             let mut ended = Vec::new();
@@ -488,12 +501,13 @@ mod tests {
         assert!(run.effect_meter.entries.is_empty());
         run.elapsed = 9.0;
         app.update();
-        assert!(app
-            .world()
-            .resource::<Run>()
-            .effect_meter
-            .entries
-            .is_empty());
+        assert!(
+            app.world()
+                .resource::<Run>()
+                .effect_meter
+                .entries
+                .is_empty()
+        );
     }
 }
 
@@ -525,12 +539,13 @@ mod ownership_tests {
             .insert_resource(companions)
             .add_systems(Update, track);
         app.update();
-        assert!(app
-            .world()
-            .resource::<Run>()
-            .effect_meter
-            .entries
-            .is_empty());
+        assert!(
+            app.world()
+                .resource::<Run>()
+                .effect_meter
+                .entries
+                .is_empty()
+        );
         let companions = app.world().resource::<game::multiplayer::Companions>();
         let effect = companions.0[&42]
             .run
@@ -648,6 +663,7 @@ pub(in crate::survivors) fn track(
     >,
 ) {
     let mut all = Vec::new();
+    let mut grouped = BTreeMap::<Option<u64>, Snapshots>::new();
     allied(&run, &mut all);
     if let Some(players) = players.as_deref() {
         for player in players.0.values() {
@@ -686,36 +702,7 @@ pub(in crate::survivors) fn track(
         }
         let target = format!("enemy:{}", entity.to_bits());
         let target_name = format!("{} #{}", enemy.def.name, entity.to_bits());
-        for dot in enemy.dots.iter().filter(|d| d.left > 0.0) {
-            let name = dot.meter_source.unwrap_or(dot.skill).replace('_', " ");
-            all.push(Observation {
-                source: dot.owner,
-                key: format!(
-                    "dot:{}:{}",
-                    dot.skill,
-                    dot.meter_source.unwrap_or(dot.skill)
-                ),
-                name,
-                spell: game::data::ability(dot.skill).spell,
-                kind: "DoT on enemy".into(),
-                tags: dot.tags.unwrap_or_default().labels(),
-                description: format!(
-                    "Periodic effect from {}. Each stack retains its own remaining duration.",
-                    dot.skill
-                ),
-                origin: format!("{:?} · Caster {:?}", dot.origin, dot.owner),
-                target: target.clone(),
-                target_name: target_name.clone(),
-                until: Some(run.elapsed + dot.left),
-                power: dot.dps,
-                token: format!(
-                    "{}:{}:{}",
-                    dot.meta.parent,
-                    dot.meta.started.to_bits(),
-                    dot.dps.to_bits()
-                ),
-            });
-        }
+        dots::collect(run.elapsed, entity, enemy, &mut grouped);
         if let Some(sources) = sources {
             for (&kind, (source, skill)) in &sources.0 {
                 let (left, power) = control_state(enemy)[kind];
@@ -770,24 +757,20 @@ pub(in crate::survivors) fn track(
             });
         }
     }
-    let mut grouped = BTreeMap::<Option<u64>, Vec<Observation>>::new();
     for observation in all {
-        grouped
-            .entry(observation.source)
-            .or_default()
-            .push(observation);
+        observe(grouped.entry(observation.source).or_default(), observation);
     }
     let now = run.elapsed;
     let owner = run.owner;
     run.effect_meter
-        .sample(now, grouped.remove(&owner).unwrap_or_default());
+        .sample_snapshots(now, grouped.remove(&owner).unwrap_or_default());
     if let Some(players) = players.as_deref_mut() {
         for player in players.0.values_mut() {
             let now = player.run.elapsed;
             player
                 .run
                 .effect_meter
-                .sample(now, grouped.remove(&player.run.owner).unwrap_or_default());
+                .sample_snapshots(now, grouped.remove(&player.run.owner).unwrap_or_default());
         }
     }
 }
