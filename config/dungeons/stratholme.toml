@@ -18,6 +18,9 @@ replenish_max_per_frame = 4
 initial_attack_delay = 0.5
 
 [combat]
+# Applies to melee, casters and bosses: 1 + rate * (actual monster level - 1).
+health_per_level = 0.02
+damage_per_level = 0.02
 end_multiplier = 15.0 # Health and damage growth at the end of the run.
 multiplayer_health_per_extra_player = 2
 monster_armour_per_level = 50
@@ -60,13 +63,16 @@ boss_damage = 14.25
 # The six entries follow the order in the dungeon modifier menu. Three ranks maximum.
 [modifiers]
 item_level_per_rank = [2, 2, 3, 3, 2, 3]
+# Additional monster mods: each rank adds guaranteed mods to mobs AND bosses.
+monster_mods_per_rank = 1
+monster_mod_item_level_per_rank = 2
 xp_per_rank = 1.25
-movement_per_rank = 0.30
-damage_per_rank = 0.25
-attack_rate_per_rank = 0.30
+movement_per_rank = 0.60
+damage_per_rank = 1.0
+attack_rate_per_rank = 1.0
 bosses_per_rank = 1
-spells_per_rank = 1
-warning_multiplier_per_rank = 0.70
+boss_mods_per_rank = 1
+warning_multiplier_per_rank = 0.50
 
 # Slot order: main area, player-targeted circles, arena ring, crossfire, closing sector.
 # Arrays of three entries follow health phases: above 70%, 70%-35%, below 35%.
@@ -74,10 +80,11 @@ warning_multiplier_per_rank = 0.70
 cast_range = 200.0
 pulse_interval = 1.0
 phase_thresholds = [0.70, 0.35]
-windup = [8.0, 4.5, 6.0, 6.0, 6.0]
+windup = [6.4, 3.6, 4.8, 4.8, 4.8]
 cooldown = [12.0, 9.0, 14.0, 14.0, 14.0]
-duration = [6.0, 5.0, 7.0, 6.0, 6.0]
-damage = [0.30, 0.40, 0.30, 0.30, 0.30]
+# Brief impact flash after a single detonation at the end of the windup.
+duration = [0.2, 0.2, 0.2, 0.2, 0.2]
+damage = [0.90, 1.20, 0.90, 0.90, 0.90]
 initial_delay = 3.0
 initial_stagger = 3.0
 recovery = 2.0

@@ -92,7 +92,8 @@ fn sync(
         if layer.intersects(&RenderLayers::default())
             && !layer.intersects(&RenderLayers::layer(LAYER))
         {
-            commands.entity(entity).insert(layer.with(LAYER));
+            // Equipment/model parts may be replaced before this deferred command applies.
+            commands.entity(entity).try_insert(layer.with(LAYER));
         }
     }
     let facing = tf.rotation * Vec3::new(view.yaw.sin() * 5.5, 1.45, -view.yaw.cos() * 5.5);
@@ -106,6 +107,24 @@ fn sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_layers_tolerate_model_parts_removed_before_commands_apply() {
+        let mut world = World::new();
+        world.insert_resource(State::new(Phase::Hub));
+        world.insert_resource(Selection {sheet_open: true, ..default()});
+        world.init_resource::<View>();
+        world.insert_resource(Target {image: Some(Handle::default())});
+        let hero = world.spawn((Hero {vy:0.0, air:0.0}, Transform::default())).id();
+        let part = world.spawn(ChildOf(hero)).id();
+        let mut system = IntoSystem::into_system(sync);
+        system.initialize(&mut world);
+        system.run_without_applying_deferred((), &mut world).unwrap();
+        world.despawn(part);
+        let replacement = world.spawn_empty().id();
+        system.apply_deferred(&mut world);
+        assert!(world.get::<RenderLayers>(replacement).is_none());
+        assert!(world.get::<RenderLayers>(hero).unwrap().intersects(&RenderLayers::layer(LAYER)));
+    }
     #[test]
     fn preview_targets_only_the_hero_and_stops_rendering_when_closed() {
         let mut app = App::new();

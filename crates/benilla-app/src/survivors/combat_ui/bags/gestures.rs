@@ -42,7 +42,7 @@ pub(super) fn input(
     chest: Option<Res<crate::survivors::shared_chest::View>>,
     bank: Option<Res<crate::survivors::bank::View>>,
     auto_salvage: Option<Res<super::auto_salvage::Editor>>,
-    vendor: Option<Res<crate::survivors::gambling::View>>,
+    mut vendor: Option<ResMut<crate::survivors::gambling::View>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     scale: Option<Res<UiScale>>,
@@ -113,6 +113,12 @@ pub(super) fn input(
                     selection.ui_captured = true;
                     return;
                 }
+                if let Some(vendor) = vendor.as_mut().filter(|v| v.recraft_active()) {
+                    vendor.place_recraft_item(id, inventory);
+                    state.suppress_click = true;
+                    selection.ui_captured = true;
+                    return;
+                }
                 let selling = vendor.as_ref().is_some_and(|v| v.open);
                 let result = if selling {
                     inventory.delete(id)
@@ -164,6 +170,7 @@ pub(super) fn input(
             })
             .min_by_key(|(_, target, _)| match target {
                 DropTarget::DungeonUpgrade => 0,
+                DropTarget::Recraft => 0,
                 DropTarget::Equipment(_) => 0,
                 DropTarget::Bag(_) => 1,
                 DropTarget::BagBackground => 2,
@@ -176,11 +183,18 @@ pub(super) fn input(
             state.suppress_click = true;
             return;
         }
+        if matches!(target, Some(DropTarget::Recraft)) {
+            if let Some(vendor) = vendor.as_mut() {
+                vendor.place_recraft_item(press.id, inventory);
+            }
+            state.suppress_click = true;
+            return;
+        }
         let result = match target {
             Some(DropTarget::Equipment(slot)) => inventory.drop_on_equipment(press.id, slot),
             Some(DropTarget::Bag(cell)) => inventory.drop_in_bag(press.id, cell),
             Some(DropTarget::BagBackground) => inventory.stash(press.id),
-            Some(DropTarget::DungeonUpgrade) | None => return,
+            Some(DropTarget::DungeonUpgrade | DropTarget::Recraft) | None => return,
         };
         inventory.notice = result.err().unwrap_or_default();
         inventory.apply(&mut run);

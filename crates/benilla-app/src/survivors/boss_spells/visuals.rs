@@ -116,6 +116,7 @@ impl Geometry {
         let direction = Vec3::from_array(w.direction);
         let tau = std::f32::consts::TAU;
         if let Some([radius, _]) = w.circle {
+            let radius = radius * w.spatial_scale;
             self.band(origin, 0.0, radius, 0.0, tau, base, ground);
             self.band(origin, 0.0, radius * p, 0.0, tau, fill, ground);
             self.band(
@@ -170,47 +171,47 @@ impl Geometry {
             Spell::Cone => {
                 let start = direction.z.atan2(direction.x) - std::f32::consts::FRAC_PI_4;
                 let angle = std::f32::consts::FRAC_PI_2;
-                self.band(origin, 0.0, CONE_RADIUS, start, angle, base, ground);
-                self.band(origin, 0.0, CONE_RADIUS * p, start, angle, fill, ground);
-                self.band(origin, CONE_RADIUS - 0.1, CONE_RADIUS + 0.05, start, angle, edge, ground);
+                self.band(origin, 0.0, CONE_RADIUS * w.spatial_scale, start, angle, base, ground);
+                self.band(origin, 0.0, (CONE_RADIUS * w.spatial_scale) * p, start, angle, fill, ground);
+                self.band(origin, (CONE_RADIUS * w.spatial_scale) - 0.1, (CONE_RADIUS * w.spatial_scale) + 0.05, start, angle, edge, ground);
                 for a in [start, start + angle] {
                     self.line(
                         origin,
-                        origin + Vec3::new(a.cos(), 0.0, a.sin()) * CONE_RADIUS,
+                        origin + Vec3::new(a.cos(), 0.0, a.sin()) * (CONE_RADIUS * w.spatial_scale),
                         edge,
                         ground,
                     );
                 }
             }
             Spell::Charge => {
-                let side = direction.cross(Vec3::Y) * 2.0;
+                let side = direction.cross(Vec3::Y) * 2.0 * w.spatial_scale;
                 // Subdivide the corridor so it follows slopes along the charge.
                 for i in 0..24 {
-                    let a = origin + direction * i as f32;
-                    let b = a + direction;
+                    let a = origin + direction * i as f32 * w.spatial_scale;
+                    let b = a + direction * w.spatial_scale;
                     self.quad([a - side, a + side, b + side, b - side], base, ground);
                     let amount = (24.0 * p - i as f32).clamp(0.0, 1.0);
                     if amount > 0.0 {
-                        let b = a + direction * amount;
+                        let b = a + direction * amount * w.spatial_scale;
                         self.quad([a - side, a + side, b + side, b - side], fill, ground);
                     }
                     self.line(a - side, b - side, edge, ground);
                     self.line(a + side, b + side, edge, ground);
                 }
                 self.line(origin - side, origin + side, edge, ground);
-                let end = origin + direction * 24.0;
+                let end = origin + direction * 24.0 * w.spatial_scale;
                 self.line(end - side, end + side, edge, ground);
             }
             Spell::Mortars => {
                 for point in &w.mortars {
                     let center = Vec3::from_array(*point);
-                    self.band(center, 0.0, MORTAR_RADIUS, 0.0, tau, base, ground);
-                    self.band(center, 0.0, MORTAR_RADIUS * p, 0.0, tau, fill, ground);
-                    self.band(center, MORTAR_RADIUS - 0.1, MORTAR_RADIUS + 0.05, 0.0, tau, edge, ground);
+                    self.band(center, 0.0, MORTAR_RADIUS * w.spatial_scale, 0.0, tau, base, ground);
+                    self.band(center, 0.0, (MORTAR_RADIUS * w.spatial_scale) * p, 0.0, tau, fill, ground);
+                    self.band(center, (MORTAR_RADIUS * w.spatial_scale) - 0.1, (MORTAR_RADIUS * w.spatial_scale) + 0.05, 0.0, tau, edge, ground);
                 }
             }
             Spell::Rings => {
-                for (inner, outer) in RING_BANDS {
+                for (inner, outer) in RING_BANDS.map(|(a, b)| (a * w.spatial_scale, b * w.spatial_scale)) {
                     self.band(origin, inner, outer, 0.0, tau, base, ground);
                     self.band(
                         origin,
@@ -321,11 +322,24 @@ pub(super) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     #[test]
+    fn gigantic_mod_scales_both_warning_mesh_and_damage_footprint() {
+        let scale = super::super::super::monster_stats::Bonuses(super::super::super::enemies::Rank::Gigantic).area_radius();
+        let warning = Warning { spell: Spell::Mortars, origin: [0.0; 3], direction: Vec3::X.to_array(),
+            mortars: vec![[0.0; 3]], elapsed: 2.0, circle: None, zones: vec![], windup_seconds: None, spatial_scale: scale };
+        let radius = MORTAR_RADIUS * scale;
+        assert!(warning.contains(Vec3::X * (radius - 0.01), 0.0));
+        assert!(!warning.contains(Vec3::X * (radius + 0.01), 0.0));
+        let mut geometry = Geometry::default();
+        geometry.warning(&warning, &|p| p);
+        let edge = geometry.positions.iter().map(|p| Vec3::from_array(*p).length()).fold(0.0_f32, f32::max);
+        assert!((edge - (radius + 0.05)).abs() < 0.01);
+    }
+    #[test]
     fn advancing_a_circle_fill_only_samples_the_new_front() {
         let mut warning = Warning {
             spell: Spell::Cone, origin: [0.0; 3], direction: Vec3::X.to_array(),
             mortars: vec![], elapsed: Spell::Cone.windup() * 0.5, circle: Some([18.0, Spell::Cone.windup()]),
-            windup_seconds: None, zones: vec![],
+            spatial_scale: 1.0, windup_seconds: None, zones: vec![],
         };
         let samples = GroundSamples::default();
         let queries = std::cell::Cell::new(0usize);
@@ -348,7 +362,7 @@ mod tests {
         let mut warning = Warning {
             spell: Spell::Cone, origin: [0.0, 6.0, 0.0], direction: Vec3::X.to_array(),
             mortars: vec![], elapsed: Spell::Cone.windup(), circle: None,
-            windup_seconds: None, zones: vec![],
+            spatial_scale: 1.0, windup_seconds: None, zones: vec![],
         };
         mesh.warning(&warning, &ground);
         warning.circle = Some([18.0, 0.0]);
@@ -371,7 +385,7 @@ mod tests {
         let warning = Warning {
             spell: Spell::Rings, origin: [0.0; 3], direction: Vec3::X.to_array(),
             mortars: vec![], elapsed: Spell::Rings.windup() * 0.5, circle: None,
-            windup_seconds: None, zones: vec![],
+            spatial_scale: 1.0, windup_seconds: None, zones: vec![],
         };
         let ground = |p: Vec3| Vec3::new(p.x, p.x * 0.2 + p.z * 0.1, p.z);
         let mut reference = Geometry::default();
@@ -424,7 +438,7 @@ mod tests {
             mortars: vec![],
             elapsed: 0.0,
             circle: None,
-            windup_seconds: None,
+            spatial_scale: 1.0, windup_seconds: None,
             zones: vec![],
         };
         let mut empty = Geometry::default();

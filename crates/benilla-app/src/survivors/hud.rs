@@ -1660,6 +1660,7 @@ pub(super) fn setup_hud(
                 }
             });
             root.spawn((OverStats, centered(f, "", 15.0, DIM)));
+            super::death_log::ui::launch_button(root,f);
             super::combat_ui::skin::button_sized(
                 root,
                 f,
@@ -1773,8 +1774,15 @@ fn choice_pool(run: &Run) -> Vec<Choice> {
         }
     }
     if run.abilities.len() < data::MAX_ABILITIES {
-        for key in run.class.pool {
-            if !run.abilities.iter().any(|o| o.def.key == *key)
+        let chase = &run.legendary;
+        let skill_pool: Vec<_> = if chase.has(super::items::legendary::chase::LEGACY) {
+            data::CLASSES.iter().flat_map(|c| c.pool.iter().copied()).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+        } else { run.class.pool.to_vec() };
+        for key in &skill_pool {
+            if (chase.has(super::items::legendary::chase::VISAGE) || !run.abilities.iter().any(|o| o.def.key == *key))
+                && (!chase.has(super::items::legendary::chase::GOSPEL)
+                    || !super::items::legendary::chase::offensive(data::ability(key))
+                    || !run.abilities.iter().any(|o| super::items::legendary::chase::offensive(o.def)))
                 && super::minions::eligible(run, key)
             {
                 pool.push(Choice::NewAbility(data::ability(key)));
@@ -2064,11 +2072,12 @@ pub(super) fn keys(
     panel: Res<super::options::Panel>,
     codex: Option<Res<super::codex::Panel>>,
     builds: Option<Res<super::builds::ui::Panel>>,
+    recap: Option<Res<super::death_log::ui::View>>,
     run: Option<Res<Run>>,
     mut selection: ResMut<Selection>,
     mut next: ResMut<NextState<Phase>>,
 ) {
-    if panel.open || codex.as_ref().is_some_and(|c| c.open) || builds.as_ref().is_some_and(|b| b.open) {
+    if panel.open || codex.as_ref().is_some_and(|c| c.open) || builds.as_ref().is_some_and(|b| b.open) || recap.as_ref().is_some_and(|r|r.open) {
         return;
     }
     match phase.get() {

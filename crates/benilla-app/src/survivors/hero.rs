@@ -490,6 +490,10 @@ pub(super) fn hurt_hero(run: &mut Run, raw: f32) -> f32 {
 
 /// Both hits and periodic ticks retain their damage school's tags.
 pub(super) fn hurt_hero_tagged(run: &mut Run, raw: f32, tags: super::spell_engine::Tags) -> f32 {
+    if run.legendary.has(super::items::legendary::chase::BULWARK) && !tags.contains(super::spell_engine::Tags::DOT) {
+        let roll = run.extra_spells.dodge_rng.f32();
+        return hurt_with_block_tagged(run, raw, roll, tags);
+    }
     let chance = super::extra_spells::dodge_chance(run);
     let roll = if chance > 0.0 {
         run.extra_spells.dodge_rng.f32()
@@ -512,6 +516,7 @@ fn hurt_hero_with_dodge(
         && roll < super::extra_spells::dodge_chance(run)
     {
         super::extra_spells::reacted(run, true);
+        super::death_log::record(run, tags, raw, 0.0, 0.0, super::death_log::Outcome::Dodged);
         return 0.0;
     }
     hurt_hero_after_avoidance(run, raw, tags)
@@ -521,6 +526,7 @@ fn hurt_hero_after_avoidance(run: &mut Run, raw: f32, tags: super::spell_engine:
     if run.pending_levels > 0 || run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
+    let incoming_raw = raw;
     let shield = if run.shield_t > 0.0 { run.shield } else { 0.0 };
     let raw =
         raw * if run.extra_spells.ice_until > run.elapsed {
@@ -536,6 +542,13 @@ fn hurt_hero_after_avoidance(run: &mut Run, raw: f32, tags: super::spell_engine:
             };
     // Apply the minimum hit before protection, so a fully absorbed hit cannot leak damage.
     let raw = raw.max(1.0);
+    let special_before = if run.monster_mods.runtime.shield_until > run.elapsed { run.monster_mods.runtime.shield } else { 0.0 };
+    let raw = super::monster_specials::player::defend(run, raw, tags);
+    let special_absorbed = (special_before - run.monster_mods.runtime.shield).max(0.0);
+    if run.monster_mods.runtime.avoided {
+        super::death_log::record(run, tags, incoming_raw, 0.0, 0.0, super::death_log::Outcome::Dodged);
+        return 0.0;
+    }
     let after_support = super::support_spells::absorb(run, raw);
     let support_absorbed = raw - after_support;
     let absorbed = after_support.min(shield.max(0.0));
@@ -551,6 +564,10 @@ fn hurt_hero_after_avoidance(run: &mut Run, raw: f32, tags: super::spell_engine:
     {
         run.talent_runtime.shield_burst += run.talent_runtime.shield_capacity;
     }
+    if super::items::legendary::chase::defer(run, dmg, tags) {
+        super::death_log::record(run, tags, incoming_raw, 0.0, absorbed + support_absorbed + special_absorbed, super::death_log::Outcome::Hit);
+        return 0.0;
+    }
     run.taken_meter.record_hit(
         run.taken_source,
         run.elapsed,
@@ -558,27 +575,41 @@ fn hurt_hero_after_avoidance(run: &mut Run, raw: f32, tags: super::spell_engine:
         false,
         tags.contains(super::spell_engine::Tags::DOT),
     );
+    super::death_log::record(run, tags, incoming_raw, dmg, absorbed + support_absorbed + special_absorbed,
+        if dmg > 0.0 { super::death_log::Outcome::Hit } else { super::death_log::Outcome::Absorbed });
+    super::monster_specials::player::hurt(run, dmg, run.hp, tags);
     run.hp -= dmg;
-    super::items::legendary::events::hurt(run, run.hp + dmg, absorbed + support_absorbed, dmg);
+    super::items::legendary::events::hurt(run, run.hp + dmg, absorbed + support_absorbed + special_absorbed, dmg);
     super::support_spells::hurt(run, dmg);
     dmg
 }
 
 /// Shields block an incoming melee blow before armour or absorption is consumed.
+pub(super) fn melee_avoidance(run: &Run) -> f32 {
+    super::monster_specials::player::block(run, run.equipment.block + super::talent_runtime::block_chance(run)
+        + super::extra_spells::block_bonus(run))
+        + super::extra_spells::dodge_chance(run)
+}
 pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
+    hurt_with_block_tagged(run, raw, roll, super::spell_engine::Tags::PHYSICAL | super::spell_engine::Tags::MELEE | super::spell_engine::Tags::ATTACK)
+}
+fn hurt_with_block_tagged(run: &mut Run, raw: f32, roll: f32, tags: super::spell_engine::Tags) -> f32 {
     // Reward selection protects each player's own run, including guests on the host.
-    if run.pending_levels > 0 {
+    if run.pending_levels > 0 || run.immune_t > 0.0 || run.dead_t.is_some() {
         return 0.0;
     }
-    let block = (run.equipment.block
+    let block = super::monster_specials::player::block(run, run.equipment.block
         + super::talent_runtime::block_chance(run)
-        + super::extra_spells::block_bonus(run))
-    .clamp(0.0, 0.75);
+        + super::extra_spells::block_bonus(run));
     if raw > 0.0 && roll >= block && roll < block + super::extra_spells::dodge_chance(run) {
         super::extra_spells::reacted(run, true);
+        super::death_log::record(run, tags, raw, 0.0, 0.0, super::death_log::Outcome::Dodged);
         return 0.0;
     }
     if raw > 0.0 && roll < block {
+        super::death_log::record(run, tags, raw, 0.0, 0.0, super::death_log::Outcome::Blocked);
+        super::items::legendary::chase::blocked(run, raw);
+        super::monster_specials::player::blocked(run);
         let recovery =
             run.equipment.life_on_block + run.stats().max_hp * run.equipment.life_on_block_percent;
         if recovery > 0.0 {
@@ -613,7 +644,7 @@ pub(super) fn hurt_hero_with_block(run: &mut Run, raw: f32, roll: f32) -> f32 {
         }
         return 0.0;
     }
-    hurt_hero_after_avoidance(run, raw, super::spell_engine::Tags::PHYSICAL)
+    hurt_hero_after_avoidance(run, raw, tags)
 }
 
 /// The clock, regeneration, the timed buffs and their visuals, death and victory.
@@ -654,6 +685,7 @@ pub(super) fn hero_vitals(
     }
     super::support_spells::advance_time(&mut run, dt);
     let stats = run.stats();
+    super::items::legendary::chase::advance(&mut run, dt);
     if run.shield_t > 0.0 && run.shield_t <= dt {
         let remaining = run.shield;
         super::items::legendary::events::shield_expired(&mut run, remaining);
@@ -665,6 +697,7 @@ pub(super) fn hero_vitals(
     let heal = (stats.regen + super::items::legendary::events::regeneration(&run)) * dt;
     if run.heal_t > 0.0 {
         let amount = run.heal_rate * dt.min(run.heal_t);
+        let raw_heal = amount * (1.0 + run.equipment.healing).max(0.0);
         if let Some((owner, skill)) = run.heal_credit {
             let amount = if run.heal_triggered {
                 run.recover(amount)
@@ -676,6 +709,8 @@ pub(super) fn hero_vitals(
                     owner,
                     skill,
                     amount,
+                    raw: raw_heal,
+                    recipient: Some(entity),
                 });
             }
         } else {
@@ -743,6 +778,8 @@ pub(super) fn hero_vitals(
     marks.flush(entity, guid.0, &mut store, &mut fields);
 
     if run.hp <= 0.0 {
+        let now = run.elapsed;
+        run.death_log.freeze(now);
         run.hp = 0.0;
         run.dead_t = Some(0.0);
         units::kill_unit(&mut store);

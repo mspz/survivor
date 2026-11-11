@@ -1,0 +1,29 @@
+# First balancing pass. Chase items only enter their assigned dungeon's unique pool.
+# Each dungeon-exclusive chase has one tenth the weight of an ordinary unique (1).
+loot_weight = 0.1
+steal_chance = 0.25
+steal_duration = 2.0
+pact_cost = 0.05
+pact_damage = 0.20
+stored_seconds = 2.0
+stored_damage = 0.20
+burst_interval = 0.10
+blocked_storage = 2.0
+reserve_spend = 0.10
+life_conversion = 0.10
+healing_damage = 1.0
+healing_radius = 6.0
+deferred_seconds = 4.0
+spread_interval = 1.0
+spread_radius = 8.0
+spread_fraction = 0.25
+isolated_dot_cap = 3.0
+maximum_block = 0.85
+hunger_linear_drain = 0.10
+hunger_quadratic_drain = 0.10
+hunger_damage = 1.0
+power_capacity = 100.0
+power_regen = 25.0
+power_cost_per_second = 10.0
+minimum_cast_interval = 0.10
+cooldown_quadratic = 0.10

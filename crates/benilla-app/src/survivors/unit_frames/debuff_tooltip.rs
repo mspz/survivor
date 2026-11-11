@@ -33,8 +33,9 @@ pub(super) fn show(
     mut commands: Commands,
     phase: Res<State<Phase>>,
     target: Res<Target>,
-    units: Query<&Status>,
+    units: Query<(&Status, Option<&super::super::enemies::Rank>)>,
     icons: Query<(&Interaction, &ui::DebuffIcon)>,
+    buffs: Query<(&Interaction, &ui::ModIcon)>,
     roots: Query<Entity, With<Tooltip>>,
     font: Res<hud::HudFont>,
     spells: Option<Res<crate::ui_action::Spells>>,
@@ -47,10 +48,14 @@ pub(super) fn show(
     if !matches!(*phase.get(), Phase::Playing | Phase::Hub | Phase::Paused) {
         return;
     }
-    let Some(status) = target.entity.and_then(|e| units.get(e).ok()) else {
+    let Some((status,rank)) = target.entity.and_then(|e| units.get(e).ok()) else {
         return;
     };
-    let Some((spell, left)) = icons
+    let modifier = buffs.iter().find_map(|(interaction,icon)| {
+        (*interaction!=Interaction::None && rank.is_some_and(|r|r.has(icon.0)))
+            .then(|| super::super::monster_specials::player::mod_aura(icon.0,None))
+    });
+    let debuff = icons
         .iter()
         .filter(|(i, _)| **i != Interaction::None)
         .find_map(|(_, icon)| {
@@ -58,12 +63,14 @@ pub(super) fn show(
                 .debuffs
                 .iter()
                 .find(|(spell, left)| *spell == icon.0 && *left > 0.0)
-        })
-    else {
-        return;
-    };
-    let def = data::ABILITIES.iter().find(|d| d.spell == *spell);
-    let name = hud::spell_name(spells.as_deref(), *spell, def.map_or("Debuff", |d| d.key));
+        });
+    let (name,effect,duration,is_buff) = if let Some(aura)=modifier {
+        (aura.name,aura.description,"Permanent monster modifier".to_owned(),true)
+    } else if let Some((spell,left))=debuff {
+        let def=data::ABILITIES.iter().find(|d|d.spell==*spell);
+        (hud::spell_name(spells.as_deref(),*spell,def.map_or("Debuff",|d|d.key)),
+            description(*spell).to_owned(),format!("Time remaining: {left:.1} s"),false)
+    } else { return; };
     let inv = scale.0.max(0.01);
     let (viewport, cursor) =
         windows
@@ -80,7 +87,7 @@ pub(super) fn show(
             GlobalZIndex(850),
             FocusPolicy::Pass,
             BackgroundColor(Color::srgb(0.02, 0.025, 0.04)),
-            BorderColor::all(Color::srgb(0.9, 0.1, 0.1)),
+            BorderColor::all(if is_buff {hud::GOLD_TONE} else {Color::srgb(0.9, 0.1, 0.1)}),
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px((cursor.x + 18.0).clamp(4.0, (viewport.x - 334.0).max(4.0))),
@@ -96,8 +103,8 @@ pub(super) fn show(
         .with_children(|body| {
             for (value, size, color) in [
                 (name, 17.0, hud::GOLD_TONE),
-                (description(*spell).into(), 14.0, Color::WHITE),
-                (format!("Time remaining: {left:.1} s"), 12.0, hud::GOLD_TONE),
+                (effect, 14.0, Color::WHITE),
+                (duration, 12.0, hud::GOLD_TONE),
             ] {
                 body.spawn((
                     Text::new(value),

@@ -44,11 +44,13 @@ pub(super) fn plugin(app: &mut App) {
             (
                 enemies::spawn_enemies,
                 training::tick,
-                (enemies::scale_enemies, boss_spells::tick, special_mobs::tick, enemies::protect_spawns).chain(),
+                (enemies::scale_enemies, death_log::index_sources, monster_stats::tick, monster_specials::prepare,
+                    monster_specials::player::tick, boss_spells::tick, special_mobs::tick,
+                    monster_specials::hazards, monster_siege::tick, monster_specials::player::fields, enemies::protect_spawns).chain(),
                 enemies::move_enemies,
                 talent_runtime::tick,
                 items::legendary::events::tick,
-                items::legendary::periodic::tick_world,
+                (items::legendary::periodic::tick_world, items::legendary::chase::spread).chain(),
                 items::legendary::effects::tick,
                 abilities::cast_abilities,
                 items::legendary::movement::tick,
@@ -153,6 +155,7 @@ pub(super) const BASE_MAGNET: f32 = 4.5;
 /// One run's state.
 #[derive(Resource)]
 pub(super) struct Run {
+    pub(super) death_log: death_log::Log,
     pub(super) draft_uses: [u8; 3],
     pub(super) banished_cards: std::collections::HashSet<(bool, &'static str)>,
     pub(super) support: super::support_spells::Runtime,
@@ -163,6 +166,9 @@ pub(super) struct Run {
     pub(super) expedition_map: usize,
     pub(super) dungeon_mods: dungeon_mods::Mods,
     pub(super) expedition_players: usize,
+    pub(super) monster_pressure: f32,
+    pub(super) monster_ailments: monster_specials::PlayerState,
+    pub(super) monster_mods: monster_specials::player::State,
     pub effect_meter: combat_ui::EffectMeter,
     pub meter: combat_ui::Meter,
     pub boss_meter: combat_ui::Meter,
@@ -178,6 +184,7 @@ pub(super) struct Run {
     /// The equipped account rune's hero-stat effects (its spell effects are spell modifiers).
     pub(super) rune: runes::Applied,
     pub(super) item_runtime: items::combat::Runtime,
+    pub(super) siege: super::monster_siege::PlayerState,
     pub(super) recasts: spell_engine::Recasts,
     pub(super) talent_build: [[u8; talents::NODES]; 3],
     pub(super) account_credited: u64,
@@ -257,20 +264,25 @@ impl Default for Run {
             expedition_map: data::CAMPAIGN[0],
             dungeon_mods: default(),
             expedition_players: 1,
+            monster_pressure: 1.0,
+            monster_ailments: default(),
             effect_meter: default(),
             meter: combat_ui::Meter::default(),
             boss_meter: default(),
             healing_meter: default(),
             taken_meter: default(),
             taken_source: "Damage taken",
+            death_log: default(),
             spell_modifiers: spell_engine::Modifiers::default(),
             equipment_version: None,
             equipment_hp: 0.0,
             equipment_armour: 0.0,
             weapon_damage: items::weapons::Loadout::default(),
             equipment: items::Bonuses::default(),
+            monster_mods: default(),
             rune: runes::Applied::default(),
             item_runtime: items::combat::Runtime::default(),
+            siege: default(),
             recasts: spell_engine::Recasts::default(),
             talent_build: [[0; talents::NODES]; 3],
             account_credited: 0,
@@ -402,7 +414,9 @@ impl Run {
             + self.support.power(self.elapsed, "stampeding_roar");
         self.specialty.apply_stats(&mut s);
         s.max_hp *= 1.0 + self.support.power(self.elapsed, "commanding_shout");
+        items::legendary::chase::stats(self, &mut s);
         s.regen += s.max_hp * (passive_regeneration + self.equipment.regeneration_percent);
+        monster_specials::player::stats(self, &mut s);
         s
     }
 
@@ -419,6 +433,7 @@ impl Run {
         self.next_guid
     }
     pub fn heal(&mut self, amount: f32) -> f32 {
+        items::legendary::chase::queue_heal(self, None, amount.max(0.0) * (1.0 + self.equipment.healing).max(0.0));
         let healed = self.recover(amount);
         self.healing_meter
             .record_hit("self_healing", self.elapsed, healed, false, false);
@@ -436,6 +451,7 @@ impl Run {
                 .max(0.0))
         .min((self.stats().max_hp - self.hp).max(0.0));
         self.hp += recovered;
+        self.monster_mods.runtime.healed += recovered;
         recovered
     }
 }

@@ -1273,6 +1273,7 @@ pub(super) fn tick(
         let profile = procs::resolve(&run, profile_key, 18.0, 0.0, 0.0, 0.0, 1);
         let speed = if pet.charge.is_some() { 30.0 } else { 8.0 }
             * (run.stats().speed / super::server::BASE_SPEED)
+            * super::monster_specials::player::pet_movement(&run, tf.translation)
             * profile.movement_speed;
         let move_by = (dt * speed).min((len - 1.5).max(0.0));
         tf.translation += delta.normalize_or_zero() * move_by;
@@ -1288,7 +1289,7 @@ pub(super) fn tick(
         }
         mv.speed = if move_by > 0.0 { speed } else { 0.0 };
         mv.flags = if move_by > 0.0 { 1 } else { 0 };
-        pet.cooldown -= dt;
+        pet.cooldown -= dt * super::monster_specials::player::pet_action(&run, tf.translation);
         if !pet.stationary {
             run.legendary.casting.pet = Some(tf.translation);
         }

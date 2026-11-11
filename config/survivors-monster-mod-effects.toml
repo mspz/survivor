@@ -1,0 +1,131 @@
+# Shared by campaign expeditions, Endless and all dungeons. Restart after edits.
+version = 1
+monster_ground_damage_multiplier = 1.5 # 150% damage for monster-only ground pressure mods.
+
+[ranged]
+chance = 0.02
+range = 20.0
+stand_off = 16.0
+interval = 3.0
+windup = 1.0
+
+# Modifier effects shared by melee, casters and bosses.
+# Distribution and weights live in survivors-monster-mods.toml.
+[elites]
+health_multiplier = 2.5
+size_multiplier = 1.25
+# Additional reduction after zone, armour and elemental defenses: 0.2 = 20%.
+damage_reduction = 0.0
+xp_multiplier = 3
+
+[sprinters]
+speed_multiplier = 1.5
+# Health, armour, resistances, damage, size and XP stay identical to normal monsters.
+
+[explosives]
+radius = 3.5 # yards; the warning matches the damage footprint.
+delay = 1.5 # seconds after death, with a filling orange ground circle.
+damage_multiplier = 2.0 # relative to this monster's scaled attack damage.
+
+[healers]
+radius = 10.0
+interval = 4.0 # seconds between pulses.
+heal_fraction = 0.1 # fraction of each ally's maximum HP; never heals itself or bosses.
+
+[protectors]
+radius = 8.0
+damage_reduction = 0.25 # additional reduction; overlapping auras never stack.
+# The aura excludes its source, bosses and training actors.
+
+# Permanent stat mods. "taken" fields are independent damage multipliers:
+# 0.8 = 20% less damage, multiplied AFTER armour and resistances, including DoTs.
+[stats]
+action_speed = 1.4
+physical_damage = 1.4
+added_elemental = 0.35
+dot_damage = 1.75
+critical_chance = 0.15
+critical_multiplier = 0.75
+projectiles = 2
+chains = 2
+area = 1.75
+range = 1.4
+physical_taken = 0.8
+elemental_taken = 0.8
+control_duration = 0.5
+slow_effect = 0.5
+regeneration = 0.05
+life_leech = 0.05
+aura_radius = 10.0
+aura_action_speed = 1.2
+oppression = 0.15
+
+# Triggered special mods. All heal/shield fractions use the SOURCE monster's maximum HP.
+[special]
+radius = 10.0
+rally_threshold = 0.35
+rally_cooldown = 20.0
+rally_shield = 0.2
+rally_duration = 5.0
+push_distance = 4.0
+death_duration = 8.0
+death_damage = 0.1
+death_action_speed = 0.08
+death_reduction = 0.12
+death_reduction_cap = 0.6
+guardian_interval = 6.0
+guardian_shield = 0.15
+guardian_duration = 5.0
+blood_interval = 6.0
+blood_heal = 0.5
+blood_copy = 0.3
+electric_distance = 8.0
+electric_radius = 8.0
+electric_damage = 1.2
+magnetic_interval = 8.0
+magnetic_windup = 1.0
+pull_distance = 3.0
+charge_distance = 12.0
+charge_length = 6.0
+charge_duration = 0.3
+charge_windup = 0.5
+charge_damage = 1.5
+wake_spacing = 3.0
+wake_interval = 0.75
+fire_duration = 3.0
+fire_radius = 2.5
+fire_damage = 0.25
+elusive_seconds = 2.0
+skin_threshold = 0.3
+skin_shield = 1.0
+skin_duration = 5.0
+skin_cooldown = 30.0
+reserve_cap = 0.5
+reserve_threshold = 0.2
+reserve_cooldown = 3.0
+riposte_block = 0.5
+block_cap = 0.75
+riposte_damage = 2.0
+riposte_duration = 5.0
+adaptation_duration = 6.0
+adaptation_taken = 0.5
+aegis_delay = 5.0
+aegis_shield = 0.25
+aegis_duration = 8.0
+bastion_per_second = 0.25
+bastion_cap = 1.0
+bastion_grace = 2.0
+predator_radius = 6.0
+predator_damage = 1.5
+infection_duration = 5.0
+infection_damage = 0.15
+bleed_duration = 4.0
+bleed_damage = 0.2
+bleed_vulnerability = 1.25
+ignite_chance = 0.25
+ignite_duration = 4.0
+ignite_damage = 0.2
+boss_repeat_delay = 1.0
+repeat_delay = 0.18
+death_stack_cap = 5
+extra_projectiles = 4

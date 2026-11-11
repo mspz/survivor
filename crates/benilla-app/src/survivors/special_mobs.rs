@@ -2,18 +2,19 @@
 use bevy::prelude::*;
 
 use super::{
+    Run, RunEntity,
     boss_spells::{Spell, Warning, Warnings},
     enemies::{Enemy, Rank},
-    hero::{self, Hero, HERO_RADIUS},
+    hero::{HERO_RADIUS, Hero},
     multiplayer::{Companions, RemoteOwner},
     spell_engine::Tags,
-    units::{flat, Fx, COLOR_HEAL, COLOR_HURT},
-    Run, RunEntity,
+    units::{COLOR_HEAL, COLOR_HURT, Fx, flat},
 };
 
 #[derive(Component, Default)]
 pub(super) struct Special {
     cooldown: f32,
+    protection_cooldown: f32,
     armed: bool,
 }
 
@@ -23,6 +24,7 @@ pub(super) struct Protection(pub f32);
 
 #[derive(Component)]
 pub(super) struct Bomb {
+    bonuses: super::monster_stats::Bonuses,
     source: Entity,
     origin: Vec3,
     radius: f32,
@@ -39,7 +41,7 @@ impl Bomb {
             mortars: vec![],
             elapsed: self.elapsed,
             circle: Some([self.radius, self.duration]),
-            windup_seconds: None,
+            spatial_scale: self.bonuses.area_radius(), windup_seconds: None,
             zones: vec![],
         }
     }
@@ -58,7 +60,7 @@ fn explosion_hit(run: &mut Run, player: Entity, bomb: &Bomb, fx: &mut Fx) {
     run.legendary.events.attacker = Some(bomb.source);
     run.taken_source = "Monster: death explosion";
     let raw = bomb.damage * (1.0 - run.support.power(run.elapsed, "smoke_bomb"));
-    let damage = hero::hurt_hero_tagged(run, raw, Tags::FIRE | Tags::SPELL | Tags::AREA);
+    let damage = super::monster_stats::deal(run, raw, Tags::FIRE | Tags::SPELL | Tags::AREA, bomb.bonuses, false, None);
     run.legendary.events.attacker = None;
     fx.impact(player, 13812);
     if damage > 0.0 {
@@ -72,7 +74,7 @@ pub(super) fn tick(
     time: Res<Time>,
     mut run: ResMut<Run>,
     mut companions: Option<ResMut<Companions>>,
-    mut enemies: Query<(Entity, &Transform, &mut Enemy, &Rank, Option<&mut Special>)>,
+    mut enemies: Query<(Entity, &Transform, &mut Enemy, &Rank, Option<&mut Special>, Option<&mut super::monster_specials::Runtime>)>,
     protected: Query<Entity, With<Protection>>,
     mut bombs: Query<(Entity, &mut Bomb)>,
     players: Query<(Entity, &Transform, Option<&RemoteOwner>, Has<Hero>), Without<Enemy>>,
@@ -86,16 +88,17 @@ pub(super) fn tick(
     let config = run.expeditions.clone();
     let mut heals = Vec::new();
     let mut protectors = Vec::new();
-    for (entity, tf, enemy, rank, state) in &mut enemies {
+    for (entity, tf, enemy, rank, state, _) in &mut enemies {
         let Some(mut state) = state else {
             continue;
         };
         if enemy.dead {
-            if *rank == Rank::Explosive && !state.armed {
+            if rank.has(Rank::Explosive) && !state.armed {
                 state.armed = true;
                 commands.spawn((
                     RunEntity,
                     Bomb {
+                        bonuses: super::monster_stats::Bonuses(*rank),
                         source: entity,
                         origin: tf.translation,
                         radius: config.explosives.radius,
@@ -112,22 +115,24 @@ pub(super) fn tick(
                     mortars: vec![],
                     elapsed: 0.0,
                     circle: Some([config.explosives.radius, config.explosives.delay]),
-                    windup_seconds: None,
+                    spatial_scale: super::monster_stats::Bonuses(*rank).area_radius(), windup_seconds: None,
                     zones: vec![],
                 });
             }
             continue;
         }
-        if !ally(&enemy) {
+        if enemy.hp <= 0.0 || super::training::actor(enemy.def) {
             continue;
         }
         state.cooldown = (state.cooldown - dt).max(0.0);
-        if *rank == Rank::Protector {
-            protectors.push((entity, tf.translation, state.cooldown <= 0.0));
-            if state.cooldown <= 0.0 {
-                state.cooldown = 4.0;
+        state.protection_cooldown = (state.protection_cooldown - dt).max(0.0);
+        if rank.has(Rank::Protector) {
+            protectors.push((entity, tf.translation, state.protection_cooldown <= 0.0));
+            if state.protection_cooldown <= 0.0 {
+                state.protection_cooldown = 4.0;
             }
-        } else if *rank == Rank::Healer
+        }
+        if rank.has(Rank::Healer)
             && state.cooldown <= 0.0
             && enemy.stun_t <= 0.0
             && enemy.fear_t <= 0.0
@@ -139,14 +144,14 @@ pub(super) fn tick(
     for entity in &protected {
         commands.entity(entity).remove::<Protection>();
     }
-    for (entity, tf, mut enemy, _, _) in &mut enemies {
-        if !ally(&enemy) {
+    for (entity, tf, mut enemy, _, _, mut state) in &mut enemies {
+        if enemy.dead || enemy.hp <= 0.0 || super::training::actor(enemy.def) {
             continue;
         }
         let mut shield = false;
         let mut flash = false;
         for &(source, pos, pulse) in &protectors {
-            if source != entity && in_range(pos, tf.translation, config.protectors.radius) {
+            if (source == entity || ally(&enemy)) && in_range(pos, tf.translation, config.protectors.radius) {
                 shield = true;
                 flash |= pulse;
             }
@@ -160,13 +165,13 @@ pub(super) fn tick(
             }
         }
         for &(source, pos) in &heals {
-            if source == entity || !in_range(pos, tf.translation, config.healers.radius) {
+            if (source != entity && !ally(&enemy)) || !in_range(pos, tf.translation, config.healers.radius) {
                 continue;
             }
             let restored = (enemy.max_hp * config.healers.heal_fraction)
                 .min((enemy.max_hp - enemy.hp).max(0.0));
             if restored > 0.0 {
-                enemy.hp += restored;
+                super::monster_specials::heal(&mut enemy, state.as_deref_mut(), restored, true);
                 fx.cast(source, 635, &[entity], None);
                 fx.number(None, entity, restored, false, COLOR_HEAL);
             }
@@ -227,7 +232,7 @@ mod tests {
                     &super::super::data::roster(0).enemies[0],
                     Vec3::X * x,
                     Vec3::ZERO,
-                    rank == Rank::Boss,
+                    rank.is_boss(),
                 )
             })
             .unwrap();
@@ -248,7 +253,34 @@ mod tests {
         world.run_system_once(tick).unwrap();
     }
     #[test]
-    fn healers_restore_nearby_allies_on_cooldown_without_healing_self_bosses_or_corpses() {
+    fn combined_boss_mods_heal_protect_and_explode_independently() {
+        let mut world = arena();
+        let rank = Rank::Boss
+            .with(Rank::Healer)
+            .with(Rank::Protector)
+            .with(Rank::Explosive);
+        let source = spawn(&mut world, rank, 0.0);
+        let near = spawn(&mut world, Rank::Normal, 3.0);
+        advance(&mut world, 0.1);
+        assert!(world.get::<Enemy>(source).unwrap().boss);
+        assert_eq!(world.get::<Enemy>(source).unwrap().hp, 60.0);
+        assert_eq!(world.get::<Protection>(source).unwrap().0, 0.25);
+        assert_eq!(world.get::<Enemy>(near).unwrap().hp, 60.0);
+        assert_eq!(world.get::<Protection>(near).unwrap().0, 0.25);
+        // A protector pulse must not delay the healer's independent cooldown.
+        world.resource_mut::<Run>().expeditions.healers.interval = 1.0;
+        advance(&mut world, 4.0);
+        advance(&mut world, 1.0);
+        assert_eq!(world.get::<Enemy>(near).unwrap().hp, 80.0);
+        world.get_mut::<Enemy>(source).unwrap().dead = true;
+        advance(&mut world, 0.1);
+        assert_eq!(world.query::<&Bomb>().iter(&world).count(), 1);
+        assert!(world.get::<Protection>(near).is_none());
+        advance(&mut world, 0.1);
+        assert_eq!(world.query::<&Bomb>().iter(&world).count(), 1);
+    }
+    #[test]
+    fn healers_include_self_but_exclude_other_bosses_and_corpses() {
         let mut world = arena();
         let healer = spawn(&mut world, Rank::Healer, 0.0);
         let near = spawn(&mut world, Rank::Normal, 3.0);
@@ -258,7 +290,8 @@ mod tests {
         world.get_mut::<Enemy>(dead).unwrap().dead = true;
         advance(&mut world, 0.1);
         assert_eq!(world.get::<Enemy>(near).unwrap().hp, 60.0);
-        for entity in [healer, far, boss, dead] {
+        assert_eq!(world.get::<Enemy>(healer).unwrap().hp, 60.0);
+        for entity in [far, boss, dead] {
             assert_eq!(world.get::<Enemy>(entity).unwrap().hp, 50.0);
         }
         advance(&mut world, 1.0);
@@ -272,13 +305,13 @@ mod tests {
         assert_eq!(world.get::<Enemy>(near).unwrap().hp, 60.0);
     }
     #[test]
-    fn protection_excludes_self_never_stacks_and_ends_when_sources_die_or_move_away() {
+    fn protection_includes_self_never_stacks_and_ends_when_sources_die_or_move_away() {
         let mut world = arena();
         let first = spawn(&mut world, Rank::Protector, 0.0);
         let near = spawn(&mut world, Rank::Normal, 3.0);
         let far = spawn(&mut world, Rank::Normal, 30.0);
         advance(&mut world, 0.1);
-        assert!(world.get::<Protection>(first).is_none());
+        assert_eq!(world.get::<Protection>(first).unwrap().0, 0.25);
         assert_eq!(world.get::<Protection>(near).unwrap().0, 0.25);
         assert!(world.get::<Protection>(far).is_none());
         let second = spawn(&mut world, Rank::Protector, 2.0);

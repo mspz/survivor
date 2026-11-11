@@ -1,5 +1,6 @@
-# Monster variants and caster settings: survivors-monster-types.toml (shared; restart after edits).
+# Monster variants and caster settings: survivors-monster-mod-effects.toml (shared; restart after edits).
 # Endless starts at map 0. Rewards add per completed map: +60% gold, +30% XP.
+# Monster and boss level: 60 + completed maps (60, 61, 62, ...), including casters.
 version = 1
 initial_seconds = 360.0
 shorter_per_map = 60.0
@@ -16,6 +17,9 @@ reward_per_map = 0.3
 gold_per_map = 0.6
 
 [combat]
+# Applies to melee, casters and bosses: 1 + rate * (actual monster level - 1).
+health_per_level = 0.02
+damage_per_level = 0.02
 version = 1
 end_multiplier = 3.0
 multiplayer_health_per_extra_player = 2

@@ -1,11 +1,13 @@
 //! Rare expedition casters: zone-themed schools, ranged movement and travelling spell hits.
 use super::{
-    data, enemies, hero,
+    data, enemies,
     spell_engine::Tags,
     units::{Fx, COLOR_HURT},
     Rng, Run,
 };
 use bevy::prelude::*;
+#[cfg(test)]
+use super::hero;
 
 #[derive(Component, Clone, Copy, Debug)]
 pub(super) struct Caster {
@@ -62,7 +64,7 @@ pub(super) fn profile(map: usize) -> Option<Caster> {
         _ => return None,
         },
     };
-    let tuning = &super::monster_types::get().ranged;
+    let tuning = &super::monster_mod_effects::get().ranged;
     Some(Caster {
         name,
         spell,
@@ -91,9 +93,18 @@ pub(super) fn spawn(
             .find(|d| d.name == caster.name)
             .expect("authored caster belongs to its expedition")
     });
-    let entity = enemies::spawn_mob(commands, run, rng, def, pos, hero);
+    let base = if caster.is_some() { super::monster_mods::Base::Caster } else { super::monster_mods::Base::Melee };
+    let entity = enemies::spawn_mob_base(commands, run, rng, def, pos, hero, base);
     if let Some(caster) = caster {
         commands.entity(entity).insert(caster);
+        commands.queue(move |world: &mut World| {
+            let rank = world.get::<enemies::Rank>(entity).copied().unwrap_or(enemies::Rank::Normal);
+            let range = super::monster_stats::Bonuses(rank).range();
+            if let Some(mut caster) = world.get_mut::<Caster>(entity) {
+                caster.range *= range;
+                caster.stand_off *= range;
+            }
+        });
     }
     entity
 }
@@ -104,6 +115,8 @@ pub(super) struct Missile {
     pub owner: Option<u64>,
     pub caster: Caster,
     pub damage: f32,
+    pub bonuses: super::monster_stats::Bonuses,
+    pub critical: bool,
     left: f32,
 }
 #[derive(Default)]
@@ -128,6 +141,8 @@ impl Pending {
             owner,
             caster,
             damage,
+            bonuses: Default::default(),
+            critical: false,
             left: distance / speed.max(1.0),
         });
     }
@@ -147,20 +162,26 @@ impl Pending {
         }
         due
     }
+    pub fn modify_last(&mut self, bonuses: super::monster_stats::Bonuses, critical: bool, delay: f32) {
+        if let Some(missile) = self.missiles.last_mut() {
+            missile.bonuses = bonuses; missile.critical = critical; missile.left += delay;
+        }
+    }
 }
-pub(super) fn impact(missile: Missile, run: &mut Run, fx: &mut Fx) {
+pub(super) fn impact(missile: Missile, run: &mut Run, fx: &mut Fx) -> f32 {
     if run.dead_t.is_some() || run.pending_levels > 0 {
-        return;
+        return 0.0;
     }
     run.legendary.events.attacker = Some(missile.attacker);
     run.taken_source = missile.caster.name;
     let raw = missile.damage * (1.0 - run.support.power(run.elapsed, "smoke_bomb"));
-    let damage = hero::hurt_hero_tagged(run, raw, missile.caster.tags);
+    let damage = super::monster_stats::deal(run, raw, missile.caster.tags, missile.bonuses, missile.critical, None);
     run.legendary.events.attacker = None;
     fx.impact(missile.target, missile.caster.spell);
     if damage > 0.0 {
-        fx.number(run.owner, missile.target, damage, false, COLOR_HURT);
+        fx.number(run.owner, missile.target, damage, missile.critical, COLOR_HURT);
     }
+    damage
 }
 
 #[cfg(test)]
@@ -258,7 +279,7 @@ mod tests {
             world.run_system_once(enemies::move_enemies).unwrap();
             let en = world.get::<enemies::Enemy>(enemy).unwrap();
             assert!(en.root_t > 0.0, "freeze state must remain available");
-            let resistant = rank != enemies::Rank::Normal;
+            let resistant = rank == enemies::Rank::Boss;
             assert!(
                 (world.get::<Transform>(enemy).unwrap().translation.x
                     - if resistant { 15.75 } else { 16.0 })
@@ -454,6 +475,113 @@ mod tests {
             .is_empty());
     }
     #[test]
+    fn echo_repeats_native_caster_and_melee_activations_once() {
+        for caster in [false, true] {
+            let (mut world, _, enemy) = combat();
+            world.entity_mut(enemy).insert(enemies::Rank::Echo);
+            world.resource_mut::<Run>().equipment_armour = 0.0;
+            world.resource_mut::<Run>().equipment.resistances.nature = 0.0;
+            if !caster {
+                world.entity_mut(enemy).remove::<Caster>();
+                world.get_mut::<Transform>(enemy).unwrap().translation = Vec3::X;
+                world.init_resource::<super::super::boss_spells::Warnings>();
+            }
+            let system = world.register_system(enemies::move_enemies);
+            world.run_system(system).unwrap();
+            if caster {
+                world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(1.0));
+                world.resource_mut::<Run>().elapsed += 1.0;
+                world.run_system(system).unwrap();
+                assert_eq!(world.resource::<Messages<crate::creature_anim::SpellGoTargets>>().len(), 2);
+                world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(1.0));
+                world.resource_mut::<Run>().elapsed += 1.0;
+                world.run_system(system).unwrap();
+            } else {
+                assert_eq!(world.resource::<Run>().hp, 80.0);
+                world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(0.2));
+                world.resource_mut::<Run>().elapsed += 0.2;
+                world.run_system_once(super::super::monster_specials::hazards).unwrap();
+                assert_eq!(world.resource::<Run>().hp, 60.0);
+                world.run_system_once(super::super::monster_specials::hazards).unwrap();
+            }
+            assert_eq!(world.resource::<Run>().hp, 60.0);
+        }
+    }
+    #[test]
+    fn both_artillery_mods_hit_seven_distinct_targets() {
+        use super::super::multiplayer::{Companion, Companions, RemoteOwner};
+        let (mut world, _, enemy) = combat();
+        let mut rank = enemies::Rank::Artillery.with(enemies::Rank::GreaterArtillery);
+        rank.base = super::super::monster_mods::Base::Caster;
+        world.entity_mut(enemy).insert(rank);
+        let mut players = Companions::default();
+        for owner in 1..=6 {
+            let entity = world.spawn((RemoteOwner(owner), Transform::from_xyz(0.0, 0.0, owner as f32))).id();
+            players.0.insert(owner, Companion { entity, run: Run { owner: Some(owner), hp: 100.0, ..default() },
+                physics: hero::Hero { vy: 0.0, air: 0.0 }, offer: default(), offer_id: 0 });
+        }
+        world.insert_resource(players);
+        let system = world.register_system(enemies::move_enemies);
+        world.run_system(system).unwrap();
+        for _ in 0..2 {
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(1.0));
+            world.resource_mut::<Run>().elapsed += 1.0;
+            world.run_system(system).unwrap();
+        }
+        assert_eq!(world.resource::<Messages<crate::creature_anim::SpellGoTargets>>().len(), 7);
+        assert!(world.resource::<Run>().hp < 100.0);
+        assert!(world.resource::<Companions>().0.values().all(|p| (p.run.hp - 80.0).abs() < 0.001));
+    }
+    #[test]
+    fn frenzy_accelerates_actual_casts_and_unstoppable_reduces_controls_and_slows() {
+        for fast in [false, true] {
+            let (mut world, _, enemy) = combat();
+            if fast { world.entity_mut(enemy).insert(enemies::Rank::Frenzied); }
+            let system = world.register_system(enemies::move_enemies);
+            world.run_system(system).unwrap();
+            world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(0.72));
+            world.resource_mut::<Run>().elapsed += 0.72;
+            world.run_system(system).unwrap();
+            assert_eq!(world.resource::<Messages<crate::creature_anim::SpellGoTargets>>().len() > 0, fast);
+        }
+        let (mut world, _, enemy) = combat();
+        world.entity_mut(enemy).remove::<Caster>().insert(enemies::Rank::Unstoppable);
+        { let mut e = world.get_mut::<enemies::Enemy>(enemy).unwrap();
+            e.speed = 10.0; e.root_t = 2.0; e.slow = 0.1; e.slow_t = 4.0; }
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(0.5));
+        world.run_system_once(enemies::move_enemies).unwrap();
+        assert_eq!(world.get::<enemies::Enemy>(enemy).unwrap().root_t, 1.0);
+        world.get_mut::<enemies::Enemy>(enemy).unwrap().root_t = 0.0;
+        world.run_system_once(enemies::move_enemies).unwrap();
+        assert!((world.get::<Transform>(enemy).unwrap().translation.x - 13.25).abs() < 0.001);
+    }
+    #[test]
+    fn artillery_and_chain_mods_hit_distinct_party_targets_and_leech_actual_damage() {
+        use super::super::multiplayer::{Companion, Companions, RemoteOwner};
+        for modifier in [enemies::Rank::Artillery, enemies::Rank::Conductor] {
+            let (mut world, _, enemy) = combat();
+            world.entity_mut(enemy).insert(modifier.with(enemies::Rank::Vampiric));
+            { let mut e = world.get_mut::<enemies::Enemy>(enemy).unwrap(); e.max_hp = 100.0; e.hp = 50.0; }
+            let entity = world.spawn((RemoteOwner(42), Transform::from_xyz(12.0, 0.0, 0.0))).id();
+            let mut guest = Run { owner: Some(42), hp: 100.0, ..default() };
+            guest.equipment.resistances.nature = 25.0;
+            let mut players = Companions::default();
+            players.0.insert(42, Companion { entity, run: guest,
+                physics: hero::Hero { vy: 0.0, air: 0.0 }, offer: default(), offer_id: 0 });
+            world.insert_resource(players);
+            let system = world.register_system(enemies::move_enemies);
+            world.run_system(system).unwrap();
+            for _ in 0..2 {
+                world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+                world.resource_mut::<Run>().elapsed += 1.0;
+                world.run_system(system).unwrap();
+            }
+            assert!((world.resource::<Run>().hp - 90.0).abs() < 0.001);
+            assert!((world.resource::<Companions>().0[&42].run.hp - 85.0).abs() < 0.001);
+            assert!((world.get::<enemies::Enemy>(enemy).unwrap().hp - 51.25).abs() < 0.001);
+        }
+    }
+    #[test]
     fn ranged_missiles_hit_the_selected_guest_and_stuns_stop_new_casts() {
         use super::super::multiplayer::{Companion, Companions, RemoteOwner};
         let (mut world, _, enemy) = combat();
@@ -557,6 +685,15 @@ mod tests {
         let casters = world.query::<&Caster>().iter(&world).count();
         assert!((150..=250).contains(&casters), "{casters}/10000");
         assert_eq!(world.query::<&enemies::Enemy>().iter(&world).count(), 10000);
+        let mut modded_casters = 0;
+        for (rank, caster) in world.query::<(&enemies::Rank, Option<&Caster>)>().iter(&world) {
+            assert_eq!(rank.base, if caster.is_some() {
+                super::super::monster_mods::Base::Caster
+            } else { super::super::monster_mods::Base::Melee });
+            assert!(rank.count() <= 1);
+            modded_casters += usize::from(caster.is_some() && rank.count() > 0);
+        }
+        assert!(modded_casters > 0, "casters independently receive campaign mods");
     }
     #[test]
     fn missiles_travel_once_and_are_cleared_when_the_expedition_clock_resets() {

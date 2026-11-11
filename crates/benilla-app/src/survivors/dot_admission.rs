@@ -11,6 +11,7 @@ pub(super) struct Target<'a> {
     pub armour: f32,
     pub resistances: Resistances,
     pub multiplier: f32,
+    pub mod_bonuses: super::monster_stats::Bonuses,
     pub debuffs: Option<&'a Debuffs>,
     pub taunt: Option<&'a Taunted>,
 }
@@ -79,7 +80,7 @@ pub(super) fn covered_cached(
                 .map(|hp| on_hit::damage(1.0, hp, enemy.max_hp, enemy.boss, target.armour, mods))
                 .fold(f32::INFINITY, f32::min)
                 * (1.0 - target.resistances.reduction(tags))
-                * target.multiplier;
+                * target.multiplier * target.mod_bonuses.damage_taken(tags);
             factors.insert(key, factor);
             factor
         });
@@ -189,6 +190,7 @@ mod tests {
             armour: 0.0,
             resistances: default(),
             multiplier: 1.0,
+            mod_bonuses: Default::default(),
             debuffs: None,
             taunt: None,
         }

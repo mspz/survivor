@@ -1,7 +1,7 @@
 //! Versioned wire values. Builds come from trusted clients; Bevy entity IDs stay local.
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 20;
+pub const VERSION: u32 = 25;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -124,6 +124,10 @@ pub enum Effect {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub death_log: Option<super::super::death_log::Report>,
+    #[serde(default)]
+    pub monster_mods: super::super::monster_specials::player::Snapshot,
     #[serde(default)]
     pub auras: Vec<super::super::player_auras::Aura>,
     #[serde(default)]

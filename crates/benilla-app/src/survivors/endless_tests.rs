@@ -2,6 +2,24 @@ use super::*;
 use bevy::ecs::system::RunSystemOnce;
 
 #[test]
+fn monster_levels_follow_transitions_even_when_returning_to_the_same_map() {
+    let mut run=Run::default();
+    begin_at(&mut run,0);
+    let base=&roster(data::CAMPAIGN[0]).enemies[0];
+    for index in 0..4 {
+        assert_eq!(run.endless.unwrap().monster_level(),60+index);
+        let actor=leveled_actor(run.endless.unwrap(),base);
+        assert_eq!(actor.level,60+index);
+        assert_eq!(actor.display,base.display);
+        assert_eq!(actor.name,base.name);
+        assert!(std::ptr::eq(actor,leveled_actor(run.endless.unwrap(),base)),"definitions are shared across spawns");
+        advance(&mut run,data::CAMPAIGN[index as usize%2]);
+    }
+    assert_eq!(Stage {index:u32::MAX,..default()}.monster_level(),u32::MAX);
+    assert_eq!(base.level,60,"original roster is immutable");
+}
+
+#[test]
 fn gold_and_xp_have_separate_additive_progression_and_start_without_a_bonus() {
     let mut run = Run::default();
     assert_eq!(run.expeditions.gold_multiplier(), 1.0);

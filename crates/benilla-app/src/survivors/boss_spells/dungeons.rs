@@ -427,6 +427,20 @@ pub(in crate::survivors) enum Zone {
     },
 }
 impl Zone {
+    pub(super) fn scale_area(&mut self, scale: f32) {
+        match self {
+            Self::Ring { inner, outer, .. } | Self::Sector { inner, outer, .. } => {
+                *inner *= scale; *outer *= scale;
+            }
+            Self::Lane { from, to, width } => {
+                let a = Vec3::from_array(*from); let b = Vec3::from_array(*to);
+                let center = (a + b) * 0.5;
+                *from = (center + (a - center) * scale).to_array();
+                *to = (center + (b - center) * scale).to_array();
+                *width *= scale;
+            }
+        }
+    }
     pub(super) fn contains(&self, pos: Vec3, radius: f32) -> bool {
         match *self {
             Self::Ring {
@@ -568,7 +582,7 @@ pub(super) fn warning(ability: Ability, arena: Vec3, phase: u8, targets: &[Playe
         }
     }
     Warning {
-        windup_seconds: None,
+        spatial_scale: 1.0, windup_seconds: None,
         spell: Spell::Dungeon(ability),
         origin: arena.to_array(),
         direction: Vec3::X.to_array(),

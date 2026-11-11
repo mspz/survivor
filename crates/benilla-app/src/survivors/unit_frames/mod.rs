@@ -89,11 +89,12 @@ pub(in crate::survivors) fn sync_status(
             Option<&Label>,
             Option<&Marks>,
             Option<&super::talent_runtime::Taunted>,
+            Option<&super::monster_specials::Runtime>,
         ),
         With<RunEntity>,
     >,
 ) {
-    for (entity, store, hero, enemy, owner, label, marks, taunt) in &units {
+    for (entity, store, hero, enemy, owner, label, marks, taunt, special) in &units {
         let player = if hero.is_some() {
             Some(&*run)
         } else {
@@ -108,7 +109,7 @@ pub(in crate::survivors) fn sync_status(
         };
         let mut status = if let Some(enemy) = enemy {
             Status {
-                name: label.map_or_else(|| enemy.def.name.into(), |l| l.0.clone()),
+                name: enemy.def.name.into(),
                 health: enemy.hp.max(0.0),
                 maximum: enemy.max_hp,
                 level: enemy.def.level,
@@ -154,6 +155,16 @@ pub(in crate::survivors) fn sync_status(
             for (spell, left) in marks.active_debuffs() {
                 add_debuff(&mut status.debuffs, spell, left);
             }
+        }
+        if let Some(special) = special {
+            if special.shield > 0.0 { add_debuff(&mut status.debuffs, 17, special.shield_until - run.elapsed); }
+            if special.death_stacks > 0 && special.death_until > run.elapsed {
+                add_debuff(&mut status.debuffs, 6673, special.death_until - run.elapsed);
+                status.debuff_stacks.push((6673, special.death_stacks));
+            }
+        }
+        if let Some(player) = player {
+            for (spell, left) in player.monster_ailments.active() { add_debuff(&mut status.debuffs, spell, left); }
         }
         if let Some(enemy) = enemy {
             for dot in &enemy.dots {
@@ -223,10 +234,13 @@ mod tests {
             .single(&world)
             .unwrap();
         world.get_mut::<Enemy>(entity).unwrap().hp = 17.0;
+        let name=world.get::<Enemy>(entity).unwrap().def.name;
+        world.entity_mut(entity).insert((Label(format!("{name} - Brutal / Echo")),super::super::enemies::Rank::Brutal.with(super::super::enemies::Rank::Echo)));
         world.get_mut::<Enemy>(entity).unwrap().slow_t = 2.0;
         world.get_mut::<Marks>(entity).unwrap().add(589, 4.0);
         world.run_system_once(sync_status).unwrap();
         let status = world.get::<Status>(entity).unwrap();
+        assert_eq!(status.name,name,"monster mods belong in the buff row, not in the frame caption");
         assert_eq!(status.health, 17.0);
         assert_eq!(
             status.maximum,

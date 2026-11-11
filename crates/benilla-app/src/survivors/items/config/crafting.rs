@@ -376,6 +376,71 @@ pub(in crate::survivors) struct CraftAffix {
     pub group: String,
 }
 impl Config {
+    pub(in crate::survivors) fn recraft_affixes(&self, item: &Item, class: u8) -> Vec<CraftAffix> {
+        let Some(base) = self.bases.iter().find(|base| base.id == item.base) else {
+            return vec![];
+        };
+        let mut rng = Rng(1);
+        self.craft_pool().iter()
+            .filter(|a| a.weight > 0.0 && a.compatible_profile(base, Some(CraftProfile::Intelligence)))
+            .map(|a| {
+                let a = a.for_weapon(base, Some(CraftProfile::Intelligence));
+                let mut rolled = self.craft_roll_affix(&a, item.level, class, item.rarity, true, &mut rng);
+                rolled.value = item_level::scale(a.effect, a.min, item.level);
+                let minimum = rolled.description();
+                rolled.value = item_level::scale(a.effect, item_level::roll_max(a.effect, a.max, item.rarity), item.level);
+                let maximum = rolled.description();
+                CraftAffix { id: a.id, label: if minimum == maximum { maximum } else { format!("{minimum} - {maximum}") }, kind: a.kind, group: a.group }
+            }).collect()
+    }
+
+    pub(in crate::survivors) fn generate_recraft(
+        &self, source: &Item, edits: &[(usize, Option<String>)], class: u8, rng: &mut Rng,
+    ) -> Result<Item, String> {
+        if !crate::survivors::data::CLASSES.iter().any(|c| c.id == class) {
+            return Err("Unknown class.".into());
+        }
+        let base = self.bases.iter().find(|b| b.id == source.base
+            && b.slot == source.slot && b.equipment_type == source.equipment_type)
+            .ok_or("This item base cannot be recrafted.")?;
+        let pool = self.craft_pool();
+        let mut slots = crate::survivors::items::recraft::slots(source)?.map(|a| a.cloned());
+        let (_, cap) = source.rarity.affix_limits();
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![];
+        for (slot, id) in edits {
+            if *slot >= 6 || slot % 3 >= cap || !seen.insert(*slot) {
+                return Err("Invalid affix slot.".into());
+            }
+            let kind = if *slot < 3 { AffixKind::Prefix } else { AffixKind::Suffix };
+            let definition = if let Some(id) = id {
+                Some(pool.iter().find(|a| &a.id == id && a.kind == kind && a.weight > 0.0
+                    && a.compatible_profile(base, Some(CraftProfile::Intelligence)))
+                    .ok_or("This affix is incompatible with the item.")?)
+            } else { None };
+            slots[*slot] = None;
+            pending.push((*slot, definition));
+        }
+        let mut groups: BTreeSet<_> = slots.iter().flatten().map(|a| a.group.as_str()).collect();
+        for (_, definition) in &pending {
+            if let Some(a) = definition {
+                if !groups.insert(a.group.as_str()) {
+                    return Err("Each affix group can only appear once.".into());
+                }
+            }
+        }
+        for (slot, definition) in pending {
+            slots[slot] = definition.map(|a| self.craft_roll_affix(
+                &a.for_weapon(base, Some(CraftProfile::Intelligence)),
+                source.level, class, source.rarity, true, rng));
+        }
+        let mut item = source.clone();
+        item.affixes = slots.into_iter().flatten().collect();
+        item.affix_rules = 2;
+        // Future upgrades must scale the edited rolls rather than restore the old ones.
+        item.upgrade_basis = None;
+        Ok(item)
+    }
     pub(in crate::survivors) fn training_legendary_choices(
         &self,
         request: &CraftRequest,
@@ -612,7 +677,7 @@ impl Config {
             .iter()
             .any(|c| c.id == class)
         {
-            return Err("Classe inconnue.".into());
+            return Err("Unknown class.".into());
         }
         if request.rarity == Rarity::Legendary && !training {
             return Err("Unique items cannot be crafted at this blacksmith.".into());

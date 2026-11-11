@@ -1,0 +1,104 @@
+# Host-owned mod distribution. Restart after edits.
+# Effects and caster settings live in survivors-monster-mod-effects.toml.
+version = 1
+# Relative weights, without replacement. Zero disables a mod.
+# Specialized mods are filtered by the creature's actual capabilities.
+# Each special mod has half the selection weight of one common stat mod.
+[weights]
+colossus = 2
+sprinter = 2
+explosive = 1
+healer = 1
+protector = 1
+frenzied = 2
+brutal = 2
+pyromancer = 2
+glacial = 2
+storm = 2
+profane = 2
+venomous = 2
+precise = 2
+devastating = 2
+artillery = 2
+conductor = 2
+gigantic = 2
+long_range = 2
+armoured = 2
+fireproof = 2
+winter = 2
+insulated = 2
+occult = 2
+unstoppable = 2
+regenerating = 2
+vampiric = 2
+# Retired: never rolls, including when an old config gives it a nonzero weight.
+thorny = 0
+banner = 1
+oppressor = 2
+rally = 1
+death_avenger = 1
+guardian = 1
+blood_link = 1
+electrostatic = 1
+magnetic = 1
+charger = 1
+burning_wake = 1
+elusive = 1
+second_skin = 1
+avenger = 1
+riposte = 1
+adaptive = 1
+aegis = 1
+bastion = 1
+predator = 1
+plagued = 1
+hemorrhagic = 1
+incendiary = 1
+greater_artillery = 1
+echo = 1
+
+# Monster-only pressure mods; cannot be stolen. Bombardier requires a caster.
+bombardier = 1
+aftermath = 1
+flusher = 1
+mage_hunter = 1
+concentration_breaker = 1
+beater = 1
+besieger = 1
+siege_volley = 1
+desecrator = 1
+
+[campaign]
+# Campaign zone order, not map IDs. Bosses never roll mods here.
+chance = [0.03, 0.06, 0.09, 0.12, 0.12, 0.15]
+max_mods = [1, 1, 1, 1, 2, 3]
+
+[dungeon]
+monster_chance = 0.30
+monster_max_mods = 4
+boss_chance = 0.20
+boss_max_mods = 2
+# The dungeon option adds guaranteed mods to EVERY monster and boss, after the roll.
+# Extra mods remain distinct and cannot exceed the enabled mod pool.
+
+[endless.monsters]
+# Stage numbers start at 1, independently of the randomly selected map.
+chance = 0.25
+chance_per_stage = 0.05
+max_chance = 1.0
+initial_max_mods = 1
+stages_per_extra_mod = 3
+max_mods = 5
+# Guaranteed minimum also rises, keeping later stages from rolling only one mod.
+initial_min_mods = 1
+stages_per_extra_min_mod = 6
+
+[endless.bosses]
+chance = 0.15
+chance_per_stage = 0.025
+max_chance = 0.75
+initial_max_mods = 1
+stages_per_extra_mod = 6
+max_mods = 5
+initial_min_mods = 1
+stages_per_extra_min_mod = 12

@@ -11,22 +11,26 @@ pub(super) struct Config {
     pub endless: Option<super::endless::Stage>,
     version: u32,
     #[serde(skip)]
-    pub elites: super::monster_types::Elites,
+    pub elites: super::monster_mod_effects::Elites,
     #[serde(skip)]
-    pub sprinters: super::monster_types::Sprinters,
+    pub sprinters: super::monster_mod_effects::Sprinters,
     #[serde(skip)]
-    pub explosives: super::monster_types::Explosives,
+    pub explosives: super::monster_mod_effects::Explosives,
     #[serde(skip)]
-    pub healers: super::monster_types::Healers,
+    pub healers: super::monster_mod_effects::Healers,
     #[serde(skip)]
-    pub protectors: super::monster_types::Protectors,
+    pub protectors: super::monster_mod_effects::Protectors,
     pub end_multiplier: f32,
     #[serde(default = "default_party_health")]
     multiplayer_health_per_extra_player: f32,
     #[serde(skip)]
-    pub ranged: super::monster_types::Ranged,
+    pub ranged: super::monster_mod_effects::Ranged,
     monster_health: f32,
     monster_damage: f32,
+    #[serde(default = "default_level_scaling")]
+    health_per_level: f32,
+    #[serde(default = "default_level_scaling")]
+    damage_per_level: f32,
     monster_armour_per_level: f32,
     boss_armour_per_level: f32,
     #[serde(default)]
@@ -43,6 +47,7 @@ pub(super) struct Config {
 fn default_party_health() -> f32 {
     2.5
 }
+pub(super) fn default_level_scaling() -> f32 { 0.02 }
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Zone {
@@ -55,7 +60,7 @@ pub(super) struct Zone {
     boss_damage: f32,
 }
 impl Config {
-    pub(super) fn set_monster_types(&mut self, types: &super::monster_types::Config) {
+    pub(super) fn set_monster_mod_effects(&mut self, types: &super::monster_mod_effects::Config) {
         self.elites = types.elites.clone();
         self.sprinters = types.sprinters.clone();
         self.explosives = types.explosives.clone();
@@ -71,9 +76,11 @@ impl Config {
     }
     pub(super) fn parse(text: &str) -> Result<Self, String> {
         let mut c: Self = toml::from_str(text).map_err(|e| e.to_string())?;
-        c.set_monster_types(super::monster_types::get());
+        c.set_monster_mod_effects(super::monster_mod_effects::get());
         let valid = |v: f32| v.is_finite() && v > 0.0 && v <= 1000.0;
         if c.version != 1
+            || ![c.health_per_level, c.damage_per_level].into_iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
             || !c.monster_resistance_per_level.valid()
             || !c.boss_resistance_per_level.valid()
             || ![c.monster_armour_per_level, c.boss_armour_per_level]
@@ -209,6 +216,12 @@ impl Config {
         };
         (health * multiplier, damage * multiplier)
     }
+    pub fn stats_at_level(&self, map: usize, boss: bool, level: u32) -> (f32, f32) {
+        let (health, damage) = self.stats(map, boss);
+        let levels = level.saturating_sub(1) as f32;
+        (health * (1.0 + self.health_per_level * levels),
+            damage * (1.0 + self.damage_per_level * levels))
+    }
     pub fn population(&self, map: usize, elapsed: f32) -> usize {
         let p = self.progress(elapsed);
         (((self.population_start as f32 + p * (self.population_end - self.population_start) as f32)
@@ -238,6 +251,33 @@ impl Default for Config {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn level_growth_is_linear_configurable_and_compatible_with_older_configs() {
+        let config = Config::parse(FILE).unwrap();
+        for boss in [false, true] {
+            let (health, damage) = config.stats(data::CAMPAIGN[0], boss);
+            for (level, multiplier) in [(0, 1.0), (1, 1.0), (60, 2.18), (110, 3.18)] {
+                let actual = config.stats_at_level(data::CAMPAIGN[0], boss, level);
+                assert!((actual.0 / health - multiplier).abs() < 0.00001);
+                assert!((actual.1 / damage - multiplier).abs() < 0.00001);
+            }
+        }
+        let legacy = FILE.lines().filter(|line| !line.starts_with("health_per_level =")
+            && !line.starts_with("damage_per_level =")).collect::<Vec<_>>().join("\n");
+        assert_eq!(Config::parse(&legacy).unwrap().stats_at_level(0, false, 110), config.stats_at_level(0, false, 110));
+        let custom = FILE.replace("health_per_level = 0.02", "health_per_level = 0.0")
+            .replace("damage_per_level = 0.02", "damage_per_level = 0.04");
+        let custom = Config::parse(&custom).unwrap();
+        let base = custom.stats(0, false);
+        let scaled = custom.stats_at_level(0, false, 11);
+        assert_eq!(scaled.0, base.0);
+        assert!((scaled.1 / base.1 - 1.4).abs() < 0.00001);
+        for field in ["health_per_level", "damage_per_level"] {
+            for invalid in ["-0.01", "nan", "inf", "1.01"] {
+                assert!(Config::parse(&FILE.replace(&format!("{field} = 0.02"), &format!("{field} = {invalid}"))).is_err());
+            }
+        }
+    }
     #[test]
     fn all_dungeons_are_harder_than_the_final_expedition_at_the_same_time() {
         let config = Config::default();
@@ -364,7 +404,7 @@ mod tests {
         for enemy in world.query::<&enemies::Enemy>().iter(&world) {
             assert_eq!(enemy.hp / enemy.max_hp, 0.25);
             let config = &world.resource::<Run>().expeditions;
-            let (health, damage) = config.stats(data::CAMPAIGN[0], enemy.boss);
+            let (health, damage) = config.stats_at_level(data::CAMPAIGN[0], enemy.boss, enemy.def.level);
             assert_eq!(enemy.max_hp, health);
             assert_eq!(enemy.hp, health * 0.25);
             assert_eq!(enemy.damage, damage * config.end_multiplier);
@@ -373,7 +413,7 @@ mod tests {
         world.run_system_once(enemies::scale_enemies).unwrap();
         for enemy in world.query::<&enemies::Enemy>().iter(&world) {
             let config = &world.resource::<Run>().expeditions;
-            assert_eq!(enemy.max_hp, config.stats(data::CAMPAIGN[0], enemy.boss).0);
+            assert_eq!(enemy.max_hp, config.stats_at_level(data::CAMPAIGN[0], enemy.boss, enemy.def.level).0);
         }
         for boss in [false, true] {
             let entity = world
@@ -389,8 +429,8 @@ mod tests {
                 })
                 .unwrap();
             let config = &world.resource::<Run>().expeditions;
-            let expected = config.stats(data::CAMPAIGN[0], boss).0 * config.end_multiplier;
             let enemy = world.get::<enemies::Enemy>(entity).unwrap();
+            let expected = config.stats_at_level(data::CAMPAIGN[0], boss, enemy.def.level).0 * config.end_multiplier;
             assert_eq!(enemy.max_hp, expected);
             assert_eq!(enemy.hp, expected);
         }
@@ -466,7 +506,7 @@ mod tests {
             }
             assert_eq!(
                 enemy.max_hp,
-                config.stats(data::CAMPAIGN[0], enemy.boss).0 * 2.5
+                config.stats_at_level(data::CAMPAIGN[0], enemy.boss, enemy.def.level).0 * 2.5
             );
             enemy.hp *= 0.25;
         }
@@ -497,7 +537,7 @@ mod tests {
                         assert_eq!(enemy.max_hp, training::DUMMY.hp);
                         continue;
                     }
-                    let (health, damage) = config.stats(data::CAMPAIGN[0], enemy.boss);
+                    let (health, damage) = config.stats_at_level(data::CAMPAIGN[0], enemy.boss, enemy.def.level);
                     assert_eq!(enemy.max_hp, health * 2.5);
                     assert_eq!(enemy.hp, health * 2.5 * 0.25);
                     assert_eq!(enemy.damage, damage * config.factor(450.0));
@@ -521,7 +561,7 @@ mod tests {
                 let enemy = world.get::<enemies::Enemy>(entity).unwrap();
                 assert_eq!(
                     enemy.max_hp,
-                    config.stats(data::CAMPAIGN[0], boss).0
+                    config.stats_at_level(data::CAMPAIGN[0], boss, enemy.def.level).0
                         * config.factor(450.0)
                         * config.party_health(total)
                 );

@@ -1,4 +1,4 @@
-//! A continuous level-60 journey through campaign maps, with stage-local clocks and rewards.
+//! A journey starting at level 60, gaining one monster level per campaign-map transition.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -154,6 +154,23 @@ pub(super) struct Stage {
     pub xp_base: u64,
     pub xp_earned: u64,
     pub choices: Option<[usize; 2]>,
+}
+impl Stage {
+    pub fn monster_level(self) -> u32 {
+        60_u32.saturating_add(self.index)
+    }
+}
+
+/// Enemy components retain static definitions. Share one immutable copy per used
+/// actor/level, rather than allocating a definition for every spawned monster.
+pub(super) fn leveled_actor(stage: Stage, def: &'static data::EnemyDef) -> &'static data::EnemyDef {
+    type Actors = std::collections::HashMap<(usize, u32), &'static data::EnemyDef>;
+    static ACTORS: LazyLock<std::sync::Mutex<Actors>> = LazyLock::new(Default::default);
+    let level = stage.monster_level();
+    if def.level == level { return def; }
+    let mut actors = ACTORS.lock().unwrap_or_else(|error| error.into_inner());
+    *actors.entry((def as *const data::EnemyDef as usize, level))
+        .or_insert_with(|| Box::leak(Box::new(data::EnemyDef { level, ..*def })))
 }
 
 pub(super) fn begin(run: &mut Run) {
@@ -365,8 +382,9 @@ fn offer(
                     panel.spawn(hud::centered_bundle(
                         &font.0,
                         format!(
-                            "Next: {:.0} min | Gold +{:.0}% | XP +{:.0}%\nChoose your next expedition",
+                            "Next: {:.0} min | Monsters ilvl {}\nGold +{:.0}% | XP +{:.0}%\nChoose your next expedition",
                             config().duration(next) / 60.0,
+                            Stage { index: next, ..default() }.monster_level(),
                             (config().gold(next) - 1.0) * 100.0,
                             (config().reward(next) - 1.0) * 100.0
                         ),

@@ -1,4 +1,4 @@
-# Monster variants and caster settings: survivors-monster-types.toml (shared; restart after edits).
+# Monster variants and caster settings: survivors-monster-mod-effects.toml (shared; restart after edits).
 # Reloaded when starting a run. All multipliers are relative to the base values.
 version = 1
 end_multiplier = 15.0 # 300% health and damage at 15 minutes; capped thereafter.
@@ -11,6 +11,9 @@ monster_armour_per_level = 50
 boss_armour_per_level = 10.0
 monster_health = 40
 monster_damage = 10
+# Applies to melee, casters and bosses. Linear multiplier: 1 + rate * (level - 1).
+health_per_level = 0.02
+damage_per_level = 0.02
 boss_health = 1000.0
 boss_damage = 100.0
 population_start = 18

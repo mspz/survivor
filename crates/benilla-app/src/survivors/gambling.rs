@@ -7,6 +7,7 @@ use super::{
     talents, units, Phase, Rng, Run, Selection,
 };
 use bevy::{prelude::*, ui::RelativeCursorPosition};
+mod recraft;
 pub(super) const NPC_ENTRY: u32 = 9_000_001;
 pub(super) const TEST_SMITH_ENTRY: u32 = 9_000_002;
 pub(super) const TEST_GOLD_ENTRY: u32 = 9_000_003;
@@ -112,6 +113,10 @@ fn equipment_label(kind: EquipmentType) -> &'static str {
 }
 #[derive(Resource)]
 pub(super) struct View {
+    recraft: bool,
+    source: Option<u64>,
+    source_owner: Option<u64>,
+    recraft_dirty: [bool; 6],
     legendary: Option<super::items::legendary::Roll>,
     training: bool,
     dropdown: Option<usize>,
@@ -132,6 +137,10 @@ pub(super) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            recraft: false,
+            source: None,
+            source_owner: None,
+            recraft_dirty: [false; 6],
             legendary: None,
             training: false,
             dropdown: None,
@@ -153,6 +162,7 @@ impl Default for View {
 }
 impl View {
     fn ready(&self) -> bool {
+        if self.recraft { return self.source.is_some(); }
         self.selected.iter().all(|selected| *selected)
     }
     fn item_level(&self, xp: u64) -> u32 {
@@ -224,6 +234,9 @@ struct ScrollArea;
 struct ItemPreview;
 #[derive(Component, Clone, Copy)]
 pub(super) enum Click {
+    Tab(bool),
+    ClearSource,
+    RestoreAffix(usize),
     Open,
     Gold,
     Close,
@@ -389,6 +402,14 @@ pub(super) fn input(
         };
     }
     let was_open = view.open;
+    if view.recraft && view.source.is_some() && view.source_owner != inventory.money_owner() {
+        view.source = None;
+        view.source_owner = None;
+        view.dropdown = None;
+        view.recraft_dirty.fill(false);
+        view.affixes.fill(None);
+        view.revision = view.revision.wrapping_add(1);
+    }
     let accessible = heroes
         .single()
         .is_ok_and(|t| accessible(&selection, *phase.get(), t.translation));
@@ -427,6 +448,14 @@ pub(super) fn input(
     }
     for (interaction, click) in &clicks {
         if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let Click::Tab(recraft) = *click {
+            *view = View { recraft, training, open: true, revision: view.revision.wrapping_add(1), ..default() };
+            continue;
+        }
+        if view.recraft && !matches!(click, Click::Open | Click::Close) {
+            recraft::click(&mut view, *click, &mut inventory, &account, &mut rng);
             continue;
         }
         match *click {
@@ -699,6 +728,10 @@ fn render(
             });
         return;
     }
+    if view.recraft {
+        recraft::render(&mut commands, &view, &inventory, &font.0);
+        return;
+    }
     let request = view.request();
     let choices = if view.ready() {
         inventory.craft_affixes(&request, level)
@@ -718,6 +751,7 @@ fn render(
         ))
         .with_children(|ui| {
             skin::backdrop(ui);
+            recraft::tabs(ui, &font.0, false);
             ui.spawn((
                 text(
                     &font.0,
@@ -1344,6 +1378,7 @@ fn tooltip(
     let Some(font) = font else {
         return;
     };
+    if view.recraft { return; }
     let content = buttons.iter().filter(|(i, _)| **i == Interaction::Hovered).find_map(|(_, click)| match click {
         Click::Selector(Selector::Slot) if view.selected[0] => Some(format!("Slot: {:?}\nSelect another slot.",view.slot)),
         Click::Dropdown(6) => view.legendary.as_ref().and_then(|roll| inventory.training_legendary_choices(&view.request()).into_iter().find(|c| c.roll == *roll)).map(|c| format!("{}\n{}", c.label, c.description)),

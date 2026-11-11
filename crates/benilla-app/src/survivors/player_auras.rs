@@ -33,6 +33,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
         return vec![];
     }
     let mut out = super::items::combat::active_buffs(run);
+    out.extend(super::monster_specials::player::buffs(run));
     for b in run.support.buffs.iter().filter(|b| b.until > run.elapsed) {
         if let Some(def) = data::ABILITIES.iter().find(|d| d.key == b.key) {
             let mut desc = super::support_spells::description(b.key)
@@ -65,7 +66,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
     if run.shield > 0.0 && run.shield_t > 0.0 {
         out.push(Aura::buff(
             17,
-            "Bouclier d'absorption",
+            "Absorption Shield",
             format!("Absorbs {:.0} more damage.", run.shield),
             Some(run.shield_t),
         ));
@@ -105,7 +106,7 @@ pub(super) fn collect(run: &Run) -> Vec<Aura> {
         out.push(Aura::buff(
             def.map_or(139, |d| d.spell),
             "Healing over time",
-            format!("Rend {:.1} points de vie par seconde.", run.heal_rate),
+            format!("Restores {:.1} health per second.", run.heal_rate),
             Some(run.heal_t),
         ));
     }

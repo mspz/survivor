@@ -3,6 +3,7 @@ use super::*;
 use crate::survivors::data::{AbilityDef, Kind};
 pub(in crate::survivors) mod casting;
 mod catalogue;
+pub(in crate::survivors) mod chase;
 pub(in crate::survivors) mod effects;
 pub(in crate::survivors) mod events;
 pub(in crate::survivors) mod milestones;
@@ -30,9 +31,16 @@ impl Roll {
 pub(super) fn definition(id: u16) -> Option<&'static catalogue::Definition> {
     DEFINITIONS.iter().find(|d| d.id == id)
 }
+/// Read-only loot preview, shared with the actual dungeon eligibility rules.
+pub(in crate::survivors) fn dungeon_uniques(map: usize) -> impl Iterator<Item = (&'static str, &'static str)> {
+    DEFINITIONS.iter()
+        .filter(move |d| chase::dungeon(d.id) == Some(map) && chase::weight(d.id, Some(map)) > 0.0)
+        .map(|d| (d.name, d.description))
+}
 
 #[derive(Default)]
 pub(in crate::survivors) struct Runtime {
+    pub chase: chase::State,
     pub equipped: BTreeMap<u16, Roll>,
     pub levels: BTreeMap<u16, u32>,
     pub events: events::State,
@@ -98,7 +106,7 @@ impl Runtime {
 }
 
 pub(in crate::survivors) fn visible_buffs(run: &Run) -> Vec<crate::survivors::player_auras::Aura> {
-    run.legendary
+    let mut buffs: Vec<_> = run.legendary
         .events
         .active_buffs(run.elapsed)
         .filter_map(|(id, left)| {
@@ -110,7 +118,9 @@ pub(in crate::survivors) fn visible_buffs(run: &Run) -> Vec<crate::survivors::pl
                 Some(left),
             ))
         })
-        .collect()
+        .collect();
+    buffs.extend(chase::visible_buffs(run));
+    buffs
 }
 
 pub(super) fn validate_item(item: &Item) -> bool {
@@ -125,8 +135,10 @@ pub(super) fn supported(id: u16) -> bool {
     definition(id).is_some()
 }
 pub(super) fn base_allowed(id: u16, class: u8, kind: EquipmentType) -> bool {
-    if matches!(id, 47 | 99 | 213 | 277) {
+    if matches!(id, 47 | 99 | 213 | 277 | chase::BULWARK) {
         kind == EquipmentType::Shield
+    } else if matches!(id, chase::GOSPEL | chase::TESTAMENT) {
+        matches!(kind, EquipmentType::TwoHand | EquipmentType::Staff)
     } else if definition(id).is_some_and(|d| d.slot == SlotKind::OffHand) && kind.one_handed() {
         super::equipment::dual_wield(class)
     } else {
@@ -325,7 +337,7 @@ mod tests {
     }
     #[test]
     fn catalogue_preserves_all_160_accepted_designs() {
-        assert_eq!(DEFINITIONS.len(), 160);
+        assert_eq!(DEFINITIONS.len(), 175);
         let mut ids = BTreeSet::new();
         let mut names = BTreeSet::new();
         for d in DEFINITIONS {

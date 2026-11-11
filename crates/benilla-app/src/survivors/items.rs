@@ -18,6 +18,7 @@ pub(in crate::survivors) use config::crafting::{CraftAffix, CraftProfile, CraftR
 mod equipment;
 mod item_level;
 mod upgrade;
+pub(in crate::survivors) mod recraft;
 pub(in crate::survivors) use auto_salvage::Rule as AutoSalvageRule;
 pub(super) mod legendary;
 mod starter;
@@ -1319,10 +1320,11 @@ impl Inventory {
         run.equipment_hp = hp;
         run.equipment_armour = armour;
         run.weapon_damage = weapons;
-        bonuses.block = bonuses.block.clamp(0.0, 0.75);
+        bonuses.block = bonuses.block.clamp(0.0, if uniques.contains_key(&legendary::chase::BULWARK) { legendary::chase::config().maximum_block } else { 0.75 });
         run.equipment = bonuses;
         combat::equip(run, procs);
         run.legendary.equipped = uniques;
+        legendary::chase::equip(run);
         legendary::events::equip(run);
         legendary::casting::equip(run);
         legendary::effects::equip(run);
@@ -1472,6 +1474,13 @@ pub(in crate::survivors) fn reward_item_level(map: usize, monster_level: u32, bo
         chest_item_level(monster_level, boss)
     }
 }
+pub(in crate::survivors) fn drop_item_level(run: &Run, monster_level: u32, boss: bool) -> u32 {
+    if run.endless.is_some() {
+        monster_level.clamp(1, super::dungeon_config::MAX_REWARD_LEVEL)
+    } else {
+        reward_item_level(run.expedition_map, monster_level, boss) + run.dungeon_modifiers().bonus()
+    }
+}
 pub(super) fn chest_drops(
     mut commands: Commands,
     mut drops: MessageReader<Loot>,
@@ -1486,8 +1495,9 @@ pub(super) fn chest_drops(
         {
             continue;
         }
-        match inventory.config.generate_reward(
-            reward_item_level(run.expedition_map, drop.item_level, drop.boss) + run.dungeon_modifiers().bonus(),
+        match inventory.config.generate_dungeon_reward(
+            run.expedition_map,
+            drop_item_level(&run, drop.item_level, drop.boss),
             run.class.id,
             compensated_magic_find(run.equipment.magic_find + run.specialty.magic_find),
             &mut rng,

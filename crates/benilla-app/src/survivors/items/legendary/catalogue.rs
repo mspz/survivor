@@ -10,6 +10,7 @@ impl Definition {
     /// Drop progression follows effect power, independently of equip/save validation.
     pub fn min_drop_level(&self) -> u32 {
         match self.id {
+            401..=415 => 60,
             // Conditional utility and recovery, without additional damage activations.
             331 | 337 | 338 | 340 => 20,
             // Positioning, constrained healing and temporary defensive support.
@@ -24,6 +25,36 @@ impl Definition {
     }
 }
 pub(in crate::survivors::items) const DEFINITIONS: &[Definition] = &[
+    Definition { id: 401, name: "HEAD HUNTER", slot: SlotKind::Waist,
+        description: "Killing an enemy with modifiers has a 25% chance to steal one modifier for a base duration of 2 seconds, affected by your Duration modifiers. Identical modifiers refresh without stacking. No limit to different stolen modifiers. Exclusive to Lower Blackrock Spire." },
+    Definition { id: 402, name: "Gospel of the Single Spell", slot: SlotKind::MainHand,
+        description: "You can use only one offensive skill. It deals 200% more Damage and gains only the first applicable benefit: 50% more Area of Effect; DoT proliferation from living enemies; 3 Forks; or at least 3 total targets for non-projectile targeted skills. Exclusive to Stratholme." },
+    Definition { id: 403, name: "Pact of Two Lives", slot: SlotKind::Ring,
+        description: "Casting a skill costs 5% of Maximum Life and adds 20% of Maximum Life as base Damage matching its damage type. You cannot cast if the cost would kill you. Higher-level skills take priority. Exclusive to Scholomance." },
+    Definition { id: 404, name: "Hourglass of Stolen Time", slot: SlotKind::Trinket,
+        description: "Offensive skills store additional uses, up to the number of casts possible in 2 seconds (minimum 1). Stored uses unleash only against bosses and deal 80% less Damage. Repeats generate no uses. Exclusive to Dire Maul West." },
+    Definition { id: 405, name: "Skin of the Unconquered", slot: SlotKind::Chest,
+        description: "Store 200% of Damage you Block. Casting a skill consumes 10% of the current reserve, adding it as base Damage to offensive skills, matching their damage type. Exclusive to Blackrock Depths." },
+    Definition { id: 406, name: "Legacy of the Nine", slot: SlotKind::Neck,
+        description: "Skills from every class can appear in your skill choices, without weapon requirements. Selection weights and skill slot limits are unchanged. Grants no class talents. Exclusive to Dire Maul West." },
+    Definition { id: 407, name: "Blood of the Last King", slot: SlotKind::Head,
+        description: "Increases to Damage are converted to increases to Maximum Life at 10% of their value. More and Less multipliers are unchanged. Exclusive to Lower Blackrock Spire." },
+    Definition { id: 408, name: "Hands of Sacrilege", slot: SlotKind::Hands,
+        description: "Your healing also deals 100% of its amount as Holy Damage within 6 yards of each recipient, even at full Life. Healing skills can cast in combat at full Life. Overlapping explosions can hit the same enemy. Exclusive to Stratholme." },
+    Definition { id: 409, name: "Oath of the Final Second", slot: SlotKind::Ring,
+        description: "Damage you take after defences is dealt to you over 4 seconds instead of immediately. Deferred Damage cannot be cancelled and can kill you. Healing restores Life without reducing the remaining debt. Exclusive to Stratholme." },
+    Definition { id: 410, name: "The Faceless Visage", slot: SlotKind::Head,
+        description: "Known skills can appear again as new copies, with unchanged selection weights. Each copy occupies a skill slot and has its own level, upgrades and cooldown. Duplicate choices are not guaranteed. Exclusive to Dire Maul West." },
+    Definition { id: 411, name: "Crown of Cold Ashes", slot: SlotKind::Head,
+        description: "Every second, 25% of your DoT skills' damage spreads from living enemies to a nearby enemy within 8 yards. Copies can spread. Without a neighbour, the original DoT strengthens, up to 3 times its initial damage. Excludes separately applied ailments and poisons. Exclusive to Dire Maul East." },
+    Definition { id: 412, name: "Tyrant's Bulwark", slot: SlotKind::OffHand,
+        description: "You can Block direct spells and area hits. Maximum Block Chance is 85%. Blocking resets your offensive skill with the longest remaining cooldown. One reset per incoming hit. Exclusive to Blackrock Depths." },
+    Definition { id: 413, name: "Ring of Absolute Hunger", slot: SlotKind::Ring,
+        description: "Life Leech continues at full Life. Excess Leech fills a reserve that increases Damage by 100% per Maximum Life stored. The reserve drains continuously, faster the higher it grows. Grants no action speed. Exclusive to Dire Maul East." },
+    Definition { id: 414, name: "Testament of the First Mage", slot: SlotKind::MainHand,
+        description: "Offensive skills without Damage over Time consume Power instead of waiting for their cooldown. Power regenerates naturally; Cooldown Recovery increases its regeneration. Buffs, minions and persistent areas are excluded. Exclusive to Scholomance." },
+    Definition { id: 415, name: "The Patient Executioner", slot: SlotKind::Trinket,
+        description: "Your skills deal more Damage the longer their cooldown. Exclusive to Scholomance." },
     Definition {
         id: 1,
         name: r#"Phoenix's Echo"#,

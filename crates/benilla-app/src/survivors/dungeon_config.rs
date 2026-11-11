@@ -61,6 +61,10 @@ pub(super) struct Config {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Combat {
+    #[serde(default = "expedition::default_level_scaling")]
+    health_per_level: f32,
+    #[serde(default = "expedition::default_level_scaling")]
+    damage_per_level: f32,
     end_multiplier: f32,
     multiplayer_health_per_extra_player: f32,
     monster_health: f32,
@@ -91,14 +95,20 @@ pub(super) struct Actor {
 #[serde(deny_unknown_fields)]
 pub(super) struct Modifiers {
     pub item_level_per_rank: [u32; 6],
+    #[serde(default = "default_monster_mods_per_rank")]
+    pub monster_mods_per_rank: u8,
+    #[serde(default = "default_monster_mod_item_level_per_rank")]
+    pub monster_mod_item_level_per_rank: u32,
     pub xp_per_rank: f64,
     pub movement_per_rank: f32,
     pub damage_per_rank: f32,
     pub attack_rate_per_rank: f32,
     pub bosses_per_rank: usize,
-    pub spells_per_rank: usize,
+    pub boss_mods_per_rank: u8,
     pub warning_multiplier_per_rank: f32,
 }
+fn default_monster_mods_per_rank() -> u8 { 1 }
+fn default_monster_mod_item_level_per_rank() -> u32 { 2 }
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -218,8 +228,10 @@ impl Config {
                 .iter()
                 .map(|&v| u64::from(v) * 3)
                 .sum::<u64>()
+                + u64::from(m.monster_mod_item_level_per_rank) * 3
                 + u64::from(c.item_level)
                 > u64::from(MAX_REWARD_LEVEL)
+            || !(1..=5).contains(&m.monster_mods_per_rank)
             || !c.character_xp_multiplier.is_finite()
             || !(1.0..=1000.0).contains(&c.character_xp_multiplier)
             || !m.xp_per_rank.is_finite()
@@ -232,7 +244,7 @@ impl Config {
             .into_iter()
             .all(|v| v.is_finite() && (0.0..=10.0).contains(&v))
             || m.bosses_per_rank > 8
-            || m.spells_per_rank > 1
+            || m.boss_mods_per_rank > 5
             || !m.warning_multiplier_per_rank.is_finite()
             || !(0.1..=1.0).contains(&m.warning_multiplier_per_rank)
             || !(0.0 < s.phase_thresholds[1]
@@ -299,6 +311,47 @@ impl Config {
     }
 }
 
+// Keep immutable definitions shared across spawns, with one roster per used reward level.
+pub(super) fn leveled_actor(
+    map: usize,
+    level: u32,
+    def: &'static data::EnemyDef,
+    boss: bool,
+) -> &'static data::EnemyDef {
+    static ROSTERS: OnceLock<Vec<Vec<OnceLock<data::Roster>>>> = OnceLock::new();
+    let rosters = ROSTERS.get_or_init(|| {
+        data::DUNGEONS
+            .iter()
+            .map(|_| (0..=MAX_REWARD_LEVEL).map(|_| OnceLock::new()).collect())
+            .collect()
+    });
+    let index = data::DUNGEONS
+        .iter()
+        .position(|&m| m == map)
+        .expect("dungeon map");
+    let level = level.clamp(1, MAX_REWARD_LEVEL);
+    let roster = rosters[index][level as usize].get_or_init(|| {
+        let base = data::roster(map);
+        let actors = |defs: &[data::EnemyDef]| {
+            defs.iter()
+                .map(|d| data::EnemyDef { level, ..*d })
+                .collect()
+        };
+        data::Roster {
+            enemies: actors(&base.enemies),
+            bosses: actors(&base.bosses),
+        }
+    });
+    (if boss {
+        &roster.bosses
+    } else {
+        &roster.enemies
+    })
+    .iter()
+    .find(|actor| actor.name == def.name)
+    .unwrap_or(def)
+}
+
 pub(super) fn get(map: usize) -> &'static Config {
     static CONFIGS: OnceLock<Vec<Config>> = OnceLock::new();
     let configs = CONFIGS.get_or_init(|| {
@@ -354,7 +407,8 @@ mod tests {
                 c.expedition().unwrap().for_map(map).stats(map, false),
                 (640.0, 127.5)
             );
-            assert_eq!(c.spells.windup, [8.0, 4.5, 6.0, 6.0, 6.0]);
+            assert_eq!(c.spells.windup, [6.4, 3.6, 4.8, 4.8, 4.8]);
+            assert_eq!(c.spells.duration, [0.2; 5]);
             assert_eq!(data::roster(map).bosses.len(), c.bosses.len());
         }
     }
@@ -377,14 +431,14 @@ mod tests {
         }
     }
     #[test]
-    fn independent_combat_fields_keep_shared_monster_types() {
+    fn independent_combat_fields_keep_shared_monster_mod_effects() {
         let text = FILES[0]
             .1
             .replace("monster_health = 40", "monster_health = 80");
         let custom = Config::parse(&text).unwrap();
         let engine = custom.expedition().unwrap();
         assert_eq!(engine.stats(0, false).0, 1280.0);
-        assert_eq!(engine.elites.chance, super::super::monster_types::get().elites.chance);
+        assert_eq!(engine.elites.health_multiplier, super::super::monster_mod_effects::get().elites.health_multiplier);
         assert_eq!(
             get(data::DUNGEONS[1])
                 .expedition()

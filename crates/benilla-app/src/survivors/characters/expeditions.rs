@@ -3,6 +3,9 @@ use super::*;
 use bevy::ui::FocusPolicy;
 const MUTED: Color = Color::srgb(0.62, 0.61, 0.57);
 const EDGE: Color = Color::srgb(0.29, 0.25, 0.17);
+#[cfg(test)]
+#[path = "dungeon_loot_tests.rs"]
+mod loot_tests;
 #[derive(Resource)]
 pub(in crate::survivors) struct View {
     pub scroll: f32,
@@ -74,7 +77,26 @@ pub(super) struct ModifierHint(usize);
 pub(super) struct ModifierTooltip;
 #[derive(Component)]
 pub(super) struct ModifierPanel;
+#[derive(Component)]
+pub(super) struct DetailsScroll;
 
+pub(super) fn scroll_details(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut frames: Query<(&ComputedNode, &bevy::ui::RelativeCursorPosition, &mut ScrollPosition), With<DetailsScroll>>,
+) {
+    for event in wheel.read() {
+        let dy=match event.unit {
+            bevy::input::mouse::MouseScrollUnit::Line => event.y*32.0,
+            bevy::input::mouse::MouseScrollUnit::Pixel => event.y,
+        };
+        for (node,cursor,mut scroll) in &mut frames {
+            if cursor.cursor_over() {
+                scroll.0.y=(scroll.0.y-dy).clamp(0.0,
+                    ((node.content_size.y-node.size.y)*node.inverse_scale_factor).max(0.0));
+            }
+        }
+    }
+}
 pub(super) fn modifier_tooltip(
     mut commands: Commands,
     phase: Res<State<Phase>>,
@@ -338,6 +360,7 @@ fn detail(
                 super::super::dungeon_config::get(index).item_level + mods.bonus(),
                 mods.bonus(), mods.xp_multiplier()), 12.0, hud::GOLD_TONE));
         }
+        drops(ui,font,index);
         return;
     }
     ui.spawn((
@@ -421,6 +444,23 @@ fn detail(
             MUTED,
         ));
     }
+    drops(ui,font,index);
+}
+
+fn drops(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, map: usize) {
+    if !data::dungeon(map) { return; }
+    ui.spawn((label(font,"DROPS",12.0,hud::GOLD_TONE),Node { margin:UiRect::top(Val::Px(12.0)),..default() }));
+    for (name,description) in super::super::items::legendary::dungeon_uniques(map) {
+        ui.spawn((Node { width:Val::Percent(100.0),flex_shrink:0.0,
+            flex_direction:FlexDirection::Column,row_gap:Val::Px(4.0),
+            padding:UiRect::all(Val::Px(7.0)),..default() },
+            BackgroundColor(Color::srgba(0.18,0.14,0.07,0.45))))
+            .with_children(|item| {
+                item.spawn(label(font,name,14.0,Color::srgb(1.0,0.5,0.0)));
+                item.spawn(label(font,description,12.0,Color::WHITE));
+            });
+    }
+    ui.spawn(label(font,"Other non-exclusive legendaries can also drop.",11.0,MUTED));
 }
 
 fn modifiers(ui: &mut ChildSpawnerCommands, font: &Handle<Font>, selection: &Selection) {
@@ -474,7 +514,7 @@ pub(super) fn draw(
     let show_modifiers = !selection.endless && data::dungeon(selection.map);
     let beside = show_modifiers && viewport.x >= 720.0;
     let side_width = 280.0;
-    let side_height = 326.0;
+    let side_height = 68.0 + 43.0 * super::super::dungeon_mods::DEFINITIONS.len() as f32;
     let width = (viewport.x - 32.0 - if beside { side_width + 12.0 } else { 0.0 })
         .clamp(240.0, 980.0);
     let height = (viewport.y - 32.0 - if show_modifiers && !beside { side_height + 12.0 } else { 0.0 })
@@ -561,6 +601,7 @@ pub(super) fn draw(
                             .with_children(|left| {
                                 left.spawn((
                                     Scroll,
+                                    bevy::ui::RelativeCursorPosition::default(),
                                     Interaction::default(),
                                     ScrollPosition(Vec2::new(0.0, scroll)),
                                     Node {
@@ -606,10 +647,10 @@ pub(super) fn draw(
                                         if endless_available { endless.insert((Button, Click::Endless)); }
                                         endless.with_children(|row| {
                                             row.spawn(label(font, "Endless Expeditions", 16.0, if endless_available { hud::GOLD_TONE } else { MUTED }));
-                                            row.spawn(label(font, if endless_available { "Level 60 | 6 min start | Endless progression" } else { "Requires character level 60" }, 12.0, MUTED));
+                                            row.spawn(label(font, if endless_available { "Monsters ilvl 60 (+1/zone) | 6 min start" } else { "Requires character level 60" }, 12.0, MUTED));
                                         });
                                     }
-                                    group(list, font, 1, "Donjons", open[1]);
+                                    group(list, font, 1, "Dungeons", open[1]);
                                     if open[1] {
                                         for (rank, &index) in data::DUNGEONS.iter().enumerate() {
                                             row(list, font, selection, index, Some(rank + 1));
@@ -633,6 +674,10 @@ pub(super) fn draw(
                                 ));
                             });
                             body.spawn((
+                                DetailsScroll,
+                                Interaction::default(),
+                                bevy::ui::RelativeCursorPosition::default(),
+                                ScrollPosition::default(),
                                 BorderColor::all(EDGE),
                                 BackgroundColor(Color::srgb(0.06, 0.05, 0.035)),
                                 Node {
@@ -642,7 +687,7 @@ pub(super) fn draw(
                                         Val::Px(350.0)
                                     },
                                     height: if compact {
-                                        Val::Px(112.0)
+                                        Val::Px(180.0)
                                     } else {
                                         Val::Percent(100.0)
                                     },
@@ -651,12 +696,14 @@ pub(super) fn draw(
                                     border: UiRect::all(Val::Px(1.0)),
                                     flex_direction: FlexDirection::Column,
                                     row_gap: Val::Px(7.0),
-                                    overflow: Overflow::clip(),
+                                    overflow: Overflow::scroll_y(),
                                     ..default()
                                 },
                             ))
                             .with_children(|right| {
-                                detail(right, font, selection, compact || height < 610.0)
+                                right.spawn(Node { width:Val::Percent(100.0),flex_shrink:0.0,
+                                    flex_direction:FlexDirection::Column,row_gap:Val::Px(7.0),..default() })
+                                    .with_children(|content| detail(content, font, selection, compact || height < 610.0));
                             });
                         });
                     panel

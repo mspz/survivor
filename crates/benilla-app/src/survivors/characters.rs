@@ -770,6 +770,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(Update, scroll.before(input))
         .add_systems(Update, expeditions::hover.after(render))
         .add_systems(Update, expeditions::modifier_tooltip.after(render))
+        .add_systems(Update, expeditions::scroll_details.before(input))
         .add_systems(Update, expeditions::toggle.before(render).after(input))
         .add_systems(Update, frontend::spell_hover.after(render))
         .add_systems(
@@ -802,7 +803,7 @@ pub(super) fn logout(mut roster: ResMut<Roster>, account: Res<talents::Account>)
 struct Scroll;
 fn scroll(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
-    mut frames: Query<(&ComputedNode, &mut ScrollPosition), With<Scroll>>,
+    mut frames: Query<(&ComputedNode, &mut ScrollPosition, Option<&bevy::ui::RelativeCursorPosition>), With<Scroll>>,
     roster: Option<Res<Roster>>,
     mut expeditions: Option<ResMut<expeditions::View>>,
 ) {
@@ -813,7 +814,8 @@ fn scroll(
         };
         // Only the current character list or expedition dialog exists. Keep it scrollable
         // over its child buttons, which take hover focus away from their parent node.
-        for (node, mut position) in &mut frames {
+        for (node, mut position, cursor) in &mut frames {
+            if cursor.is_some_and(|cursor| !cursor.cursor_over()) { continue; }
             position.0.y = (position.0.y - dy).clamp(
                 0.0,
                 ((node.content_size.y - node.size.y) * node.inverse_scale_factor).max(0.0),

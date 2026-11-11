@@ -12,6 +12,8 @@ pub(super) struct Credit {
     pub owner: Option<u64>,
     pub skill: &'static str,
     pub amount: f32,
+    pub raw: f32,
+    pub recipient: Option<Entity>,
 }
 
 pub(super) fn credit(
@@ -23,6 +25,7 @@ pub(super) fn credit(
         if let Some(source) =
             super::multiplayer::player_run(&mut run, Some(&mut players), credit.owner)
         {
+            legendary::chase::queue_heal(source, credit.recipient, credit.raw);
             source.healing_meter.record_hit(
                 credit.skill,
                 source.elapsed,
@@ -91,6 +94,8 @@ mod tests {
             owner: Some(42),
             skill: "renew",
             amount: 17.0,
+            raw: 17.0,
+            recipient: Some(entity),
         });
         world.run_system_once(credit).unwrap();
         assert!(world.resource::<Run>().healing_meter.rows(5.0).is_empty());
@@ -117,6 +122,9 @@ fn health(run: &Run) -> Option<f32> {
 }
 
 impl PartyHealing<'_, '_> {
+    pub fn flush_chase(&self, caster: &mut Run, pos: Vec3, foes: &[(Entity, Vec3)], hits: &mut MessageWriter<super::abilities::Hit>) {
+        legendary::chase::flush_heals(caster, pos, |e| self.positions.get(e).ok().map(|t| t.translation), foes, hits);
+    }
     fn visit(
         &mut self,
         caster: &mut Run,
@@ -224,10 +232,13 @@ impl PartyHealing<'_, '_> {
                 let owner = caster.owner;
                 let outgoing = zone.power * (1.0 + caster.equipment.healing).max(0.0);
                 let mut total = 0.0;
-                self.visit(caster, me, zone.pos, zone.radius, |_, target| {
+                let mut recipients = Vec::new();
+                self.visit(caster, me, zone.pos, zone.radius, |entity, target| {
+                    recipients.push(entity);
                     let amount = outgoing / (1.0 + target.equipment.healing).max(0.001);
                     total += apply(target, amount, 0.0, (owner, zone.key), false);
                 });
+                for entity in recipients { legendary::chase::queue_heal(caster, Some(entity), outgoing); }
                 caster
                     .healing_meter
                     .record_hit(zone.key, now, total, false, true);
@@ -267,12 +278,15 @@ impl PartyHealing<'_, '_> {
                 .is_ok_and(|t| super::units::flat(t.translation - center).length() <= radius)
         };
         let mut total = 0.0;
+        let mut recipients = Vec::new();
         let outgoing = amount * (1.0 + caster.equipment.healing).max(0.0);
         if near(me) && health(caster).is_some() {
+            recipients.push(me);
             total += apply(caster, amount, 0.0, credit, false);
         }
         let mut heal = |entity, target: &mut Run| {
             if entity != me && near(entity) && health(target).is_some() {
+                recipients.push(entity);
                 let amount = outgoing / (1.0 + target.equipment.healing).max(0.001);
                 total += apply(target, amount, 0.0, credit, false);
             }
@@ -288,6 +302,7 @@ impl PartyHealing<'_, '_> {
         caster
             .healing_meter
             .record_hit("efflorescence", caster.elapsed, total, false, true);
+        for recipient in recipients { legendary::chase::queue_heal(caster, Some(recipient), outgoing); }
     }
     #[allow(clippy::too_many_arguments)]
     pub fn cast(
@@ -390,6 +405,10 @@ impl PartyHealing<'_, '_> {
         caster
             .healing_meter
             .record_hit(def.key, caster.elapsed, healed, false, false);
+        if duration <= 0.0 {
+            let outgoing = amount * (1.0 + caster.equipment.healing).max(0.0);
+            legendary::chase::queue_heal(caster, Some(chosen), outgoing);
+        }
         chosen
     }
 }

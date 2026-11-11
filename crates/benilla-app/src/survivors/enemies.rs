@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 mod unstuck;
 mod motion;
+#[cfg(test)]
+mod level_scaling_tests;
 
 use benilla_world::rig_anim::GlobalSeqDrive;
 use crate::survivors::geometry::Surface as WorldPoint;
@@ -12,7 +14,7 @@ use bevy::prelude::*;
 
 use super::abilities::Hit;
 use super::data::{self, EnemyDef};
-use super::hero::{self, Hero};
+use super::hero::Hero;
 use super::units::{self, flat, yaw_toward, Fx, Marks, UnitSpec, COLOR_HURT};
 use super::{Phase, Rng, Run, Selection};
 use crate::creature_anim::{move_flags, MovementState};
@@ -47,20 +49,11 @@ pub(super) struct Enemy {
     pub dead: bool,
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(super) enum Rank {
-    Normal,
-    Elite,
-    Sprinter,
-    Explosive,
-    Healer,
-    Protector,
-    Boss,
-}
+pub(super) use super::monster_mods::Monster as Rank;
 impl Enemy {
-    /// Retain root/freeze timers for spell interactions without immobilizing major enemies.
+    /// Retain root/freeze timers for spell interactions without immobilizing bosses.
     pub(super) fn ignores_freeze(&self, rank: Option<&Rank>) -> bool {
-        self.boss || matches!(rank, Some(Rank::Elite | Rank::Boss))
+        self.boss || rank.is_some_and(|r| r.is_boss())
     }
 
     pub(super) fn cap_slow(&mut self, rank: Option<&Rank>) {
@@ -69,47 +62,6 @@ impl Enemy {
         }
     }
 }
-fn roll_rank(roll: f32, config: &super::expedition_config::Config, map: usize) -> Rank {
-    let zone = data::CAMPAIGN
-        .iter()
-        .position(|&m| m == map)
-        .map_or(if data::dungeon(map) { data::CAMPAIGN.len() } else { 0 }, |i| i + 1);
-    let mut threshold = 0.0;
-    for (rank, chance, first_zone) in [
-        (Rank::Elite, config.elites.chance, config.elites.first_zone),
-        (
-            Rank::Sprinter,
-            config.sprinters.chance,
-            config.sprinters.first_zone,
-        ),
-        (
-            Rank::Explosive,
-            config.explosives.chance,
-            config.explosives.first_zone,
-        ),
-        (
-            Rank::Healer,
-            config.healers.chance,
-            config.healers.first_zone,
-        ),
-        (
-            Rank::Protector,
-            config.protectors.chance,
-            config.protectors.first_zone,
-        ),
-    ] {
-        if zone < first_zone {
-            continue;
-        }
-        // Locked variants leave their probability to normal monsters, not to other variants.
-        threshold += chance;
-        if roll < threshold {
-            return rank;
-        }
-    }
-    Rank::Normal
-}
-
 #[derive(Component)]
 pub(super) struct ExpeditionScaling {
     damage: f32,
@@ -236,18 +188,15 @@ pub(super) fn spawn_enemy(
     }
     e
 }
-pub(super) fn spawn_mob(
-    commands: &mut Commands,
-    run: &mut Run,
-    rng: &mut Rng,
-    def: &'static EnemyDef,
-    pos: Vec3,
-    hero: Vec3,
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spawn_mob_base(
+    commands: &mut Commands, run: &mut Run, rng: &mut Rng,
+    def: &'static EnemyDef, pos: Vec3, hero: Vec3, base: super::monster_mods::Base,
 ) -> Entity {
     let rank = if super::training::actor(def) {
         Rank::Normal
     } else {
-        roll_rank(rng.f32(), &run.expeditions, run.expedition_map)
+        super::monster_mods::roll_base(run, rng, base)
     };
     spawn_rank(commands, run, def, pos, hero, rank)
 }
@@ -259,13 +208,23 @@ fn spawn_rank(
     hero: Vec3,
     rank: Rank,
 ) -> Entity {
-    let boss = rank == Rank::Boss;
-    let elite = rank == Rank::Elite;
+    let boss = rank.is_boss();
+    let elite = rank.has(Rank::Elite);
+    let bonuses = super::monster_stats::Bonuses(rank);
     let training = super::training::actor(def);
+    let def = if !training && run.endless.is_some() {
+        super::endless::leveled_actor(run.endless.unwrap(), def)
+    } else if !training && data::dungeon(run.expedition_map) {
+        let level = super::items::reward_item_level(run.expedition_map, def.level, boss)
+            + run.dungeon_modifiers().bonus();
+        super::dungeon_config::leveled_actor(run.expedition_map, level, def, boss)
+    } else {
+        def
+    };
     let (base_health, base_damage) = if training {
         (def.hp, def.damage)
     } else {
-        run.expeditions.stats(run.expedition_map, boss)
+        run.expeditions.stats_at_level(run.expedition_map, boss, def.level)
     };
     let modifiers = if training { Default::default() } else { run.dungeon_modifiers() };
     let tuning = data::dungeon(run.expedition_map).then(|| super::dungeon_config::get(run.expedition_map));
@@ -279,8 +238,9 @@ fn spawn_rank(
     };
     let size_multiplier = if boss {
         tuning.map_or(2.0, |c| c.boss_size_multiplier)
+            * bonuses.size()
     } else if elite {
-        run.expeditions.elites.size_multiplier
+        bonuses.size()
     } else {
         1.0
     };
@@ -308,13 +268,9 @@ fn spawn_rank(
     let hp = base_health
         * scale
         * party
-        * if elite {
-            run.expeditions.elites.health_multiplier
-        } else {
-            1.0
-        };
+        * bonuses.maximum_life();
     let movement = modifiers.movement() * run.expeditions.movement_multiplier()
-        * if rank == Rank::Sprinter { run.expeditions.sprinters.speed_multiplier } else { 1.0 };
+        * bonuses.movement();
     let movement = if run.endless.is_some() { super::endless::config().cap_movement(movement) } else { movement };
     commands.entity(e).insert((
         Enemy {
@@ -343,23 +299,16 @@ fn spawn_rank(
         },
         Marks::debuffs(),
         rank,
+        super::monster_specials::Runtime::new(run.elapsed, pos),
     ));
-    if elite {
-        commands
-            .entity(e)
-            .insert(super::unit_frames::Label(format!("{} · Elite", def.name)));
-    }
-    let special_label = match rank {
-        Rank::Explosive => Some("Explosif"),
-        Rank::Healer => Some("Soigneur"),
-        Rank::Protector => Some("Protecteur"),
-        _ => None,
-    };
-    if let Some(label) = special_label {
-        commands.entity(e).insert((
-            super::special_mobs::Special::default(),
-            super::unit_frames::Label(format!("{} - {label}", def.name)),
+    let labels = rank.labels();
+    if rank.count() > 0 {
+        commands.entity(e).insert(super::unit_frames::Label(
+            format!("{} - {}", def.name, labels.join(" / ")),
         ));
+    }
+    if rank.has(Rank::Explosive) || rank.has(Rank::Healer) || rank.has(Rank::Protector) {
+        commands.entity(e).insert(super::special_mobs::Special::default());
     }
     if !training {
         commands.entity(e).insert(ExpeditionScaling {
@@ -496,7 +445,8 @@ pub(super) fn spawn_enemies(
         for i in 0..zone.boss_quantity + run.dungeon_modifiers().extra_bosses() {
             let offset = Vec3::new((i % 4) as f32 * 3.0, 0.0, (i / 4) as f32 * 3.0);
             let position = ground(&world, pos + offset, hpos.y);
-            spawn_enemy(&mut commands, &mut run, def, position, hpos, true);
+            let rank = super::monster_mods::roll(&run, &mut rng, true);
+            spawn_rank(&mut commands, &mut run, def, position, hpos, rank);
         }
         run.bosses += 1;
         run.banner = Some((format!("{} approaches!", def.name), 4.0));
@@ -586,6 +536,9 @@ pub(super) fn move_enemies(
             Option<&mut super::ranged_enemies::Caster>,
             Option<&super::boss_spells::Skills>,
             Option<&Rank>,
+            Option<&super::monster_stats::AuraBonuses>,
+            Option<&mut super::monster_specials::Runtime>,
+            Has<super::monster_siege::LeapLock>,
         ),
         Without<Hero>,
     >,
@@ -612,19 +565,38 @@ pub(super) fn move_enemies(
         [c.monster_attack_interval, c.boss_attack_interval]
     } else { [1.3, 1.0] };
     let attack_rate = run.dungeon_modifiers().attack_rate();
+    let endless_movement = run.endless.is_some();
+    let now = run.elapsed;
+    let mut volley_targets = Vec::new();
+    if targetable(&run, false) { volley_targets.push((None, hero_e, hpos)); }
+    if let Some(party) = companions.as_deref() {
+        for (entity, tf, id) in &remotes {
+            if party.0.get(&id.0).is_some_and(|p| targetable(&p.run, false)) {
+                volley_targets.push((Some(id.0), entity, tf.translation));
+            }
+        }
+    }
     for missile in missiles.advance(run.elapsed, dt) {
+        let (source, bonuses) = (missile.attacker, missile.bonuses);
+        let impact_pos = if missile.owner.is_some() { remotes.get(missile.target).ok().map(|(_, tf, _)| tf.translation) } else { Some(hpos) };
+        let impact_raw = missile.damage;
+        let mut dealt = 0.0;
         if let Some(owner) = missile.owner {
             if remotes
                 .get(missile.target)
                 .is_ok_and(|(_, _, id)| id.0 == owner)
             {
                 if let Some(player) = companions.as_deref_mut().and_then(|p| p.0.get_mut(&owner)) {
-                    super::ranged_enemies::impact(missile, &mut player.run, &mut fx);
+                    dealt = super::ranged_enemies::impact(missile, &mut player.run, &mut fx);
                 }
             }
         } else if missile.target == hero_e {
-            super::ranged_enemies::impact(missile, &mut run, &mut fx);
+            dealt = super::ranged_enemies::impact(missile, &mut run, &mut fx);
         }
+        if dealt > 0.0 {
+            if let Some(pos) = impact_pos { super::monster_siege::aftermath(&mut commands, source, pos, impact_raw, bonuses.0); }
+        }
+        super::monster_stats::leech(&mut commands, source, dealt, bonuses);
     }
 
     // Separation over a coarse grid: only neighbours in the same or adjacent cells push.
@@ -672,8 +644,12 @@ pub(super) fn move_enemies(
         push.insert(ent, acc);
     }
 
-    for (ent, mut tf, mut e, mut mv, taunt, mut caster, skills, rank) in &mut enemies {
+    for (ent, mut tf, mut e, mut mv, taunt, mut caster, skills, rank, aura, mut special, leaping) in &mut enemies {
         let e = &mut *e;
+        let bonuses = super::monster_stats::Bonuses(rank.copied().unwrap_or(Rank::Normal));
+        let aura_speed = aura.map_or(1.0, |a| a.action_speed) * special.as_deref().map_or(1.0, |s| s.action_speed(now));
+        let power = special.as_deref().map_or(1.0, |s| s.damage(now));
+        let attack_rate = attack_rate * bonuses.action_speed() * aura_speed;
         if e.dead {
             unstuck.reset(ent);
             if mv.speed != 0.0 || mv.flags != 0 {
@@ -682,6 +658,12 @@ pub(super) fn move_enemies(
             }
             continue;
         }
+        if leaping {
+            mv.speed = 0.0; mv.flags = 0;
+            if let Some(caster) = caster.as_deref_mut() { caster.cancel(); }
+            continue;
+        }
+        if special.as_deref().is_some_and(|s| s.charge_until > now) { continue; }
         // Debuffs still expire on passive training targets; combat AI never runs for them.
         for t in [
             &mut e.slow_t,
@@ -690,7 +672,7 @@ pub(super) fn move_enemies(
             &mut e.fear_t,
             &mut e.weaken_t,
         ] {
-            *t = (*t - dt).max(0.0);
+            *t = (*t - dt / bonuses.control_duration()).max(0.0);
         }
         if e.slow_t <= 0.0 {
             e.slow = 1.0;
@@ -731,6 +713,10 @@ pub(super) fn move_enemies(
                     target = Some((Some(owner.0), entity, transform.translation));
                 }
             }
+        }
+        if rank.is_some_and(|r| r.has(Rank::MageHunter)) {
+            target = volley_targets.iter().filter(|t| flat(t.2-tf.translation).length() <= 45.0)
+                .max_by(|a,b| flat(a.2-tf.translation).length_squared().total_cmp(&flat(b.2-tf.translation).length_squared())).copied();
         }
         if let Some(taunt) = taunt.filter(|t| t.until > run.elapsed) {
             if let Some(id) = taunt.owner {
@@ -776,11 +762,11 @@ pub(super) fn move_enemies(
         let cast_ready = caster.as_deref_mut().is_some_and(|caster| {
             let eligible = dist <= caster.range && !lost && e.stun_t <= 0.0
                 && e.fear_t <= 0.0 && e.attack_cd <= 0.0 && !hero_down;
-            caster.ready(eligible.then_some(hero_e), dt)
+            caster.ready(eligible.then_some(hero_e), dt * bonuses.action_speed() * aura_speed)
         });
         e.cap_slow(rank);
         let held = e.stun_t > 0.0 || (e.root_t > 0.0 && !e.ignores_freeze(rank)) || lost;
-        let contact = dist <= super::spell_engine::targeting::melee_contact_range(e.radius);
+        let contact = dist <= super::spell_engine::targeting::melee_contact_range(e.radius) * bonuses.range();
         let mut step = Vec3::ZERO;
         let mut speed = 0.0;
         if !held && !hero_down {
@@ -791,7 +777,7 @@ pub(super) fn move_enemies(
             };
             if (caster.as_deref().map_or(!contact, |c| dist > c.stand_off)
                 && !caster.as_deref().is_some_and(|c| c.casting())) || e.fear_t > 0.0 {
-                speed = e.speed * e.slow;
+                speed = bonuses.movement_speed(e.speed, e.def.speed, aura_speed, endless_movement, e.slow);
                 step = dir * speed;
             }
             if dir != Vec3::ZERO {
@@ -801,7 +787,7 @@ pub(super) fn move_enemies(
         }
         let shove = push.get(&ent).copied().unwrap_or_default();
         let stand_off = caster.as_deref().map_or(
-            super::spell_engine::targeting::melee_contact_range(e.radius), |c| c.stand_off);
+            super::spell_engine::targeting::melee_contact_range(e.radius) * bonuses.range(), |c| c.stand_off);
         let travel = motion::travel(step, dt, dist, stand_off, e.fear_t > 0.0);
         let mut next = pos + travel + shove * (dt * 8.0).min(0.5);
         next = ground(&world, next, pos.y);
@@ -820,20 +806,40 @@ pub(super) fn move_enemies(
         if let Some(caster) = caster.as_deref() {
             if cast_ready {
                 e.attack_cd = caster.interval;
-                let speed = spells
-                    .as_deref()
-                    .and_then(|s| s.catalog.get(caster.spell))
+                let speed = spells.as_deref().and_then(|s| s.catalog.get(caster.spell))
                     .map_or(24.0, |s| if s.speed > 0.0 { s.speed } else { 24.0 });
-                missiles.launch(
-                    ent,
-                    hero_e,
-                    owner,
-                    *caster,
-                    e.damage * e.weaken,
-                    dist,
-                    speed,
-                );
-                fx.cast(ent, caster.spell, &[hero_e], None);
+                let critical = bonuses.critical(if rank.is_some_and(|r| r.has(Rank::Precise)) { rng.f32() } else { 1.0 });
+                let mut extra: Vec<_> = volley_targets.iter().filter(|(_, id, point)|
+                    *id != hero_e && flat(*point - pos).length() <= caster.range).copied().collect();
+                extra.sort_by(|a,b| flat(a.2-hpos).length_squared().total_cmp(&flat(b.2-hpos).length_squared()));
+                let repeats = usize::from(rank.is_some_and(|r| r.has(Rank::Echo)));
+                for repeat in 0..=repeats {
+                    let echo_delay = repeat as f32 * super::monster_specials::config().repeat_delay;
+                    if bonuses.0.has(Rank::Bombardier) {
+                        super::monster_siege::bombard(&mut commands, ent, hpos, e.damage * e.weaken * power, caster.tags, bonuses.0, echo_delay, critical);
+                        fx.cast(ent, caster.spell, &[], Some(hpos));
+                    } else {
+                        missiles.launch(ent, hero_e, owner, *caster, e.damage * e.weaken * power, dist, speed);
+                        missiles.modify_last(bonuses, critical, echo_delay);
+                        fx.cast(ent, caster.spell, &[hero_e], None);
+                    }
+                    let mut previous = hpos;
+                    let mut delay = dist/speed;
+                    for (i, (id, target, point)) in extra.iter().copied().take((bonuses.projectiles()+bonuses.chains()) as usize).enumerate() {
+                        let chain = i >= bonuses.projectiles() as usize;
+                        if chain && flat(point-previous).length() > caster.range { break; }
+                        let distance = if chain { flat(point-previous).length() } else { flat(point-pos).length() };
+                        if bonuses.0.has(Rank::Bombardier) {
+                            super::monster_siege::bombard(&mut commands, ent, point, e.damage * e.weaken * power, caster.tags, bonuses.0, echo_delay + if chain { delay } else { 0.0 }, critical);
+                            fx.cast(ent, caster.spell, &[], Some(point));
+                        } else {
+                            missiles.launch(ent, target, id, *caster, e.damage * e.weaken * power, distance, speed);
+                            missiles.modify_last(bonuses, critical, echo_delay + if chain { delay } else { 0.0 });
+                            fx.cast(ent, caster.spell, &[target], None);
+                        }
+                        if chain { delay += distance/speed; previous = point; }
+                    }
+                }
             }
         }
         if caster.is_none()
@@ -845,25 +851,29 @@ pub(super) fn move_enemies(
             && !hero_down
         {
             e.attack_cd = contact_intervals[usize::from(e.boss)];
-            let raw = e.damage * e.weaken;
-            let roll = if target_run.equipment.block > 0.0
-                || super::talent_runtime::block_chance(target_run) > 0.0
-                || super::extra_spells::block_bonus(target_run) > 0.0
-                || super::extra_spells::dodge_chance(target_run) > 0.0
-            {
+            let raw = e.damage * e.weaken * power * special.as_deref_mut().map_or(1.0, |s| s.take_riposte(now));
+            let roll = if super::hero::melee_avoidance(target_run) > 0.0 {
                 rng.f32()
             } else {
                 1.0
             };
             target_run.legendary.events.attacker = Some(ent);
             target_run.taken_source = e.def.name;
-            let taken = hero::hurt_hero_with_block(target_run, raw, roll);
+            let critical = bonuses.critical(if rank.is_some_and(|r| r.has(Rank::Precise)) { rng.f32() } else { 1.0 });
+            let taken = super::monster_stats::deal(target_run, raw,
+                super::spell_engine::Tags::PHYSICAL | super::spell_engine::Tags::ATTACK | super::spell_engine::Tags::MELEE,
+                bonuses, critical, Some(roll));
+            if taken > 0.0 { super::monster_siege::aftermath(&mut commands, ent, hpos, raw, bonuses.0); }
+            super::monster_specials::heal(e, special.as_deref_mut(), taken * bonuses.leech(), true);
             if target_run.extra_spells.ice_until > target_run.elapsed {
                 e.slow = e.slow.min(0.6);
                 e.slow_t = e.slow_t.max(2.0);
             }
             target_run.legendary.events.attacker = None;
             fx.swing(ent, hero_e, taken);
+            if rank.is_some_and(|r| r.has(Rank::Echo)) {
+                super::monster_specials::repeat(&mut commands, ent, hero_e, owner, tf.translation, rank.copied().unwrap_or(Rank::Normal), raw, critical);
+            }
             if taken > 0.0 {
                 fx.number(target_run.owner, hero_e, taken, false, COLOR_HURT);
             }
@@ -1194,6 +1204,63 @@ mod elite_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     #[test]
+    fn endless_spawn_levels_start_at_sixty_and_follow_stage_for_mobs_casters_and_bosses() {
+        for index in [0,1,2,50,141] {
+            for &map in data::CAMPAIGN {
+                let mut world=World::new();
+                world.insert_resource(Run { expedition_map:map,
+                    endless:Some(super::super::endless::Stage {index,..default()}),..default() });
+                world.run_system_once(|mut commands:Commands,mut run:ResMut<Run>| {
+                    let roster=super::super::endless::roster(run.expedition_map);
+                    let mut caster=Rank::Brutal;
+                    caster.base=super::super::monster_mods::Base::Caster;
+                    for rank in [Rank::Normal,caster,Rank::Boss.with(Rank::Echo)] {
+                        let defs=if rank.is_boss() { &roster.bosses } else { &roster.enemies };
+                        for def in defs { spawn_rank(&mut commands,&mut run,def,Vec3::X*35.0,Vec3::ZERO,rank); }
+                    }
+                }).unwrap();
+                let run=world.resource::<Run>();
+                assert_eq!(super::super::items::drop_item_level(run,60+index,false),(60+index).min(super::super::dungeon_config::MAX_REWARD_LEVEL));
+                assert_eq!(super::super::items::drop_item_level(run,60+index,true),(60+index).min(super::super::dungeon_config::MAX_REWARD_LEVEL));
+                for enemy in world.query::<&Enemy>().iter(&world) {
+                    assert_eq!(enemy.def.level,60+index,"map {map}: {}",enemy.def.name);
+                }
+            }
+        }
+    }
+    #[test]
+    fn dungeon_spawn_levels_match_reward_item_level_with_modifiers() {
+        for &map in data::DUNGEONS {
+            for modified in [false, true] {
+                let mut world = World::new();
+                let mut run = Run { expedition_map: map, ..default() };
+                if modified {
+                    for index in 0..super::super::dungeon_mods::DEFINITIONS.len() {
+                        for _ in 0..super::super::dungeon_mods::MAX_RANK {
+                            run.dungeon_mods.change(index, true);
+                        }
+                    }
+                }
+                let expected = super::super::items::reward_item_level(map, 60, false)
+                    + run.dungeon_modifiers().bonus();
+                world.insert_resource(run);
+                world.run_system_once(|mut commands: Commands, mut run: ResMut<Run>| {
+                    let roster = data::roster(run.expedition_map);
+                    for &rank in &[Rank::Normal, Rank::Elite, Rank::Sprinter,
+                        Rank::Explosive, Rank::Healer, Rank::Protector, Rank::Boss] {
+                        let defs = if rank == Rank::Boss { &roster.bosses } else { &roster.enemies };
+                        for def in defs {
+                            spawn_rank(&mut commands, &mut run, def, Vec3::X * 35.0, Vec3::ZERO, rank);
+                        }
+                    }
+                }).unwrap();
+                for enemy in world.query::<&Enemy>().iter(&world) {
+                    assert_eq!(enemy.def.level, expected, "map {map}, {}", enemy.def.name);
+                }
+            }
+        }
+    }
+    #[test]
     fn endless_ring_creation_is_bounded_and_pending_monsters_block_completion() {
         let mut world = World::new();
         crate::survivors::geometry::init_test_world(&mut world);
@@ -1250,19 +1317,22 @@ mod elite_tests {
         world.insert_resource(Rng(42));
         let map = data::DUNGEONS[0];
         let mut run = Run { expedition_map: map, elapsed: data::BOSS_EVERY_SECS, ..default() };
-        for index in [0, 1, 3] { run.dungeon_mods.toggle(index); }
+        for index in [0, 1, 3, 6] { run.dungeon_mods.toggle(index); }
         world.insert_resource(run);
         world.insert_resource(Selection { map, ..default() });
         world.spawn((Hero { vy: 0.0, air: 0.0 }, Transform::default()));
         world.run_system_once(spawn_enemies).unwrap();
         let run = world.resource::<Run>();
-        let expected_damage = run.expeditions.stats(map, true).1 * 1.25
+        let level = super::super::items::reward_item_level(map, 60, true) + run.dungeon_modifiers().bonus();
+        let expected_damage = run.expeditions.stats_at_level(map, true, level).1 * 1.25
             * run.expeditions.factor(run.elapsed);
-        let bosses: Vec<_> = world.query::<&Enemy>().iter(&world).filter(|e| e.boss)
-            .map(|e| (e.speed, e.def.speed, e.damage)).collect();
+        assert!(world.query::<&Rank>().iter(&world).all(|rank| rank.count() >= 1));
+        let bosses: Vec<_> = world.query::<(&Enemy, &Rank)>().iter(&world).filter(|(e, _)| e.boss)
+            .map(|(e, rank)| (e.speed, e.def.speed, e.damage, rank.has(Rank::Sprinter))).collect();
         assert_eq!(bosses.len(), 2);
-        for &(speed, base_speed, damage) in &bosses {
-            assert!((speed - base_speed * 1.3).abs() < 0.001);
+        for &(speed, base_speed, damage, sprinter) in &bosses {
+            let sprint = if sprinter { super::super::monster_mod_effects::get().sprinters.speed_multiplier } else { 1.0 };
+            assert!((speed - base_speed * 1.3 * sprint).abs() < 0.001);
             assert!((damage - expected_damage).abs() < 0.001);
         }
         world.run_system_once(scale_enemies).unwrap();
@@ -1277,132 +1347,6 @@ mod elite_tests {
         world.run_system_once(spawn_enemies).unwrap();
         assert_eq!(world.resource::<Run>().bosses, data::BOSS_WAVES);
         assert_eq!(world.query::<&Enemy>().iter(&world).filter(|e| e.boss && !e.dead).count(), 0);
-    }
-    #[test]
-    fn variants_unlock_across_the_campaign_and_accumulate_without_changing_their_chances() {
-        let config = super::super::expedition_config::Config::default();
-        let variants = [
-            (Rank::Elite, 2, 200),
-            (Rank::Sprinter, 3, 300),
-            (Rank::Explosive, 4, 300),
-            (Rank::Healer, 5, 200),
-            (Rank::Protector, 6, 200),
-        ];
-        for (index, &map) in data::CAMPAIGN.iter().enumerate() {
-            let mut special_total = 0;
-            for &(rank, first_zone, frequency) in &variants {
-                let expected = if index + 1 >= first_zone {
-                    frequency
-                } else {
-                    0
-                };
-                let actual = (0..10_000)
-                    .filter(|i| roll_rank((*i as f32 + 0.5) / 10_000.0, &config, map) == rank)
-                    .count();
-                assert_eq!(actual, expected, "zone {}: {rank:?}", index + 1);
-                special_total += actual;
-            }
-            let normals = (0..10_000)
-                .filter(|i| roll_rank((*i as f32 + 0.5) / 10_000.0, &config, map) == Rank::Normal)
-                .count();
-            assert_eq!(normals + special_total, 10_000);
-        }
-    }
-
-    #[test]
-    fn spawning_uses_the_current_expedition_and_configured_introduction() {
-        let mut world = World::new();
-        let mut run = Run::default();
-        run.expeditions.elites.chance = 1.0;
-        run.expeditions.sprinters.chance = 0.0;
-        run.expeditions.explosives.chance = 0.0;
-        run.expeditions.healers.chance = 0.0;
-        run.expeditions.protectors.chance = 0.0;
-        run.expeditions.elites.first_zone = 4;
-        world.insert_resource(run);
-        world.insert_resource(Rng(42));
-        for (zone, expected) in [
-            (0, Rank::Normal),
-            (2, Rank::Normal),
-            (3, Rank::Elite),
-            (5, Rank::Elite),
-        ] {
-            world.resource_mut::<Run>().expedition_map = data::CAMPAIGN[zone];
-            let entity = world
-                .run_system_once(
-                    |mut commands: Commands, mut run: ResMut<Run>, mut rng: ResMut<Rng>| {
-                        let def = &data::roster(run.expedition_map).enemies[0];
-                        spawn_mob(
-                            &mut commands,
-                            &mut run,
-                            &mut rng,
-                            def,
-                            Vec3::ZERO,
-                            Vec3::ZERO,
-                        )
-                    },
-                )
-                .unwrap();
-            assert_eq!(*world.get::<Rank>(entity).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn special_spawn_frequencies_are_disjoint_and_configurable() {
-        let mut config = super::super::expedition_config::Config::default();
-        for (rank, count) in [
-            (Rank::Elite, 200),
-            (Rank::Sprinter, 300),
-            (Rank::Explosive, 300),
-            (Rank::Healer, 200),
-            (Rank::Protector, 200),
-            (Rank::Normal, 8800),
-        ] {
-            assert_eq!(
-                (0..10_000)
-                    .filter(
-                        |i| roll_rank((*i as f32 + 0.5) / 10_000.0, &config, data::CAMPAIGN[5])
-                            == rank
-                    )
-                    .count(),
-                count
-            );
-        }
-        config.elites.chance = 0.0;
-        config.sprinters.chance = 0.0;
-        config.explosives.chance = 0.0;
-        config.healers.chance = 0.0;
-        config.protectors.chance = 1.0;
-        assert_eq!(roll_rank(0.99, &config, data::CAMPAIGN[5]), Rank::Protector);
-    }
-    #[test]
-    fn two_percent_of_regular_spawn_rolls_are_elite() {
-        let config = super::super::expedition_config::Config::default();
-        assert_eq!(roll_rank(0.0, &config, data::CAMPAIGN[5]), Rank::Elite);
-        assert_eq!(roll_rank(0.02, &config, data::CAMPAIGN[5]), Rank::Sprinter);
-        assert_eq!(
-            (0..10_000)
-                .filter(
-                    |i| roll_rank(*i as f32 / 10_000.0, &config, data::CAMPAIGN[5]) == Rank::Elite
-                )
-                .count(),
-            200
-        );
-    }
-    #[test]
-    fn three_percent_of_spawns_are_sprinters_and_variants_never_overlap() {
-        let config = super::super::expedition_config::Config::default();
-        assert_eq!(
-            (0..10_000)
-                .filter(
-                    |i| roll_rank(*i as f32 / 10_000.0, &config, data::CAMPAIGN[5])
-                        == Rank::Sprinter
-                )
-                .count(),
-            300
-        );
-        assert_eq!(roll_rank(0.05, &config, data::CAMPAIGN[5]), Rank::Explosive);
-        assert_eq!(roll_rank(0.15, &config, data::CAMPAIGN[5]), Rank::Normal);
     }
     #[test]
     fn final_wave_arrives_before_the_clear_can_finish_for_campaign_and_dungeons() {
@@ -1451,7 +1395,7 @@ mod elite_tests {
     }
 
     #[test]
-    fn elites_have_ten_times_health_and_triple_xp_without_boss_damage_or_rewards() {
+    fn colossus_and_sprinter_apply_their_permanent_stats_without_boss_rewards() {
         let mut world = World::new();
         world.insert_resource(Run {
             elapsed: 120.0,
@@ -1480,24 +1424,24 @@ mod elite_tests {
             .iter(&world)
             .find(|(r, ..)| **r == Rank::Elite)
             .unwrap();
-        assert_eq!(elite.max_hp, normal.max_hp * 10.0);
+        assert_eq!(elite.max_hp, normal.max_hp * 2.5);
         assert_eq!(elite.hp, elite.max_hp);
         assert_eq!(elite.damage, normal.damage);
         assert_eq!(elite.speed, normal.speed);
         assert_eq!(elite.xp, normal.xp * 3);
         assert!(!elite.boss);
-        assert!((elite_model.scale - normal_model.scale * 1.5).abs() < 0.001);
+        assert!((elite_model.scale - normal_model.scale * 1.25).abs() < 0.001);
         let (_, sprinter, sprinter_model, _) = query
             .iter(&world)
             .find(|(r, ..)| **r == Rank::Sprinter)
             .unwrap();
         assert_eq!(sprinter.max_hp, normal.max_hp);
-        assert_eq!(sprinter.speed, normal.speed * 3.0);
+        assert_eq!(sprinter.speed, normal.speed * 1.5);
         assert_eq!(sprinter.damage, normal.damage);
         assert_eq!(sprinter.xp, normal.xp);
         assert_eq!(sprinter_model.scale, normal_model.scale);
         assert!(!sprinter.boss);
-        assert!(label.unwrap().0.ends_with("Elite"));
+        assert!(label.unwrap().0.ends_with("Colossus"));
         assert!(
             query
                 .iter(&world)

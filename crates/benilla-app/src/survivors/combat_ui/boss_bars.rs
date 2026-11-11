@@ -37,7 +37,7 @@ fn sync(
         );
     let mut bosses: Vec<_> = units
         .iter()
-        .filter(|(_, rank, status)| **rank == Rank::Boss && status.health > 0.0)
+        .filter(|(_, rank, status)| rank.is_boss() && status.health > 0.0)
         .map(|(entity, _, status)| (entity, status))
         .collect();
     if !visible || bosses.is_empty() {
@@ -196,6 +196,7 @@ mod tests {
         plugin(&mut app);
         let first = app.world_mut().spawn(enemy(true, 100.0)).id();
         let second = app.world_mut().spawn(enemy(true, 50.0)).id();
+        app.world_mut().entity_mut(second).insert(Rank::Boss.with(Rank::Healer));
         app.world_mut().spawn(enemy(false, 100.0));
         app.world_mut()
             .resource_mut::<NextState<Phase>>()

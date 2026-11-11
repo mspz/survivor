@@ -21,6 +21,47 @@ struct Portraits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn net() -> crate::net::NetEntity {
+        crate::net::NetEntity { kind: benilla_protocol::EntityKind::Unit, display_id: Some(367), scale: 1.0 }
+    }
+    #[test]
+    fn despawned_target_does_not_crash_before_selection_catches_up() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(State::new(Phase::Playing))
+            .init_resource::<Target>()
+            .init_resource::<Assets<Image>>()
+            .add_plugins(plugin);
+        let enemy = app.world_mut().spawn((Transform::default(), net())).id();
+        app.world_mut().resource_mut::<Target>().entity = Some(enemy);
+        app.update();
+        app.world_mut().despawn(enemy);
+        let replacement = app.world_mut().spawn_empty().id();
+        app.update();
+        assert!(app.world().get::<RenderLayers>(replacement).is_none());
+        let world = app.world_mut();
+        assert!(world.query::<&Camera>().iter(world).all(|camera| !camera.is_active));
+    }
+    #[test]
+    fn portrait_layer_updates_tolerate_parts_despawned_before_deferred_commands_apply() {
+        for already_layered in [false, true] {
+            let mut world = World::new();
+            world.insert_resource(State::new(Phase::Playing));
+            world.init_resource::<Portraits>();
+            let root = world.spawn((Transform::default(), net())).id();
+            let part = world.spawn(ChildOf(root)).id();
+            if already_layered { world.entity_mut(part).insert(RenderLayers::default()); }
+            world.insert_resource(Target {entity:Some(root), ..default()});
+            let mut system = IntoSystem::into_system(sync);
+            system.initialize(&mut world);
+            system.run_without_applying_deferred((), &mut world).unwrap();
+            world.despawn(part);
+            let replacement = world.spawn_empty().id();
+            system.apply_deferred(&mut world);
+            assert!(world.get::<RenderLayers>(replacement).is_none());
+            assert!(world.get::<RenderLayers>(root).unwrap().intersects(&RenderLayers::layer(LAYERS[1])));
+        }
+    }
     #[test]
     fn changing_target_removes_the_previous_portrait_layer() {
         let mut app = App::new();
@@ -85,6 +126,10 @@ fn sync(
     if show {
         for (index, subject) in subjects.iter().enumerate() {
             if let Some(entity) = subject {
+                // Target selection may still reference a unit removed earlier this frame.
+                if !units.contains(*entity) {
+                    continue;
+                }
                 for part in std::iter::once(*entity).chain(children.iter_descendants(*entity)) {
                     wanted.entry(part).or_insert([false; 2])[index] = true;
                 }
@@ -105,7 +150,7 @@ fn sync(
             }
         }
         if next != *layer {
-            commands.entity(entity).insert(next);
+            commands.entity(entity).try_insert(next);
         }
     }
     for (entity, mask) in &wanted {
@@ -118,7 +163,8 @@ fn sync(
                 layer = layer.with(LAYERS[index]);
             }
         }
-        commands.entity(*entity).insert(layer);
+        // Model parts can disappear before these deferred cosmetic commands are applied.
+        commands.entity(*entity).try_insert(layer);
     }
     let mut images = images;
     for index in 0..2 {

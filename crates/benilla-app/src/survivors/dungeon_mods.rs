@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub(super) const MAX_RANK: u8 = 3;
 #[cfg(test)]
-pub(super) const MAX_BONUS: u32 = 15 * MAX_RANK as u32;
+pub(super) const MAX_BONUS: u32 = 17 * MAX_RANK as u32;
 pub(super) const BASE_XP_MULTIPLIER: u32 = 3;
 pub(super) struct Definition {
     pub name: &'static str,
@@ -22,37 +22,44 @@ pub(super) const DEFINITIONS: &[Definition] = &[
         name: "Reinforcements",
     },
     Definition {
-        name: "Boss arsenal",
+        name: "Extra modifiers on boss",
     },
     Definition {
         name: "Hasty boss spells",
     },
+    Definition {
+        name: "Additional monster mods",
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-#[serde(try_from = "SavedMods", into = "[u8; 6]")]
-pub struct Mods { ranks: [u8; 6], map: Option<usize> }
+#[serde(try_from = "SavedMods", into = "[u8; 7]")]
+pub struct Mods { ranks: [u8; 7], map: Option<usize> }
 impl PartialEq for Mods { fn eq(&self, other: &Self) -> bool { self.ranks == other.ranks } }
 impl Eq for Mods {}
-impl From<Mods> for [u8; 6] { fn from(mods: Mods) -> Self { mods.ranks } }
+impl From<Mods> for [u8; 7] { fn from(mods: Mods) -> Self { mods.ranks } }
 
 // Read old bit masks as rank one, while new snapshots carry explicit ranks.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum SavedMods { Ranks([u8; 6]), Legacy(u8) }
+enum SavedMods { Ranks([u8; 7]), Previous([u8; 6]), Legacy(u8) }
 impl TryFrom<SavedMods> for Mods {
     type Error = &'static str;
     fn try_from(value: SavedMods) -> Result<Self, Self::Error> {
         let ranks = match value {
             SavedMods::Ranks(ranks) => ranks,
-            SavedMods::Legacy(bits) => std::array::from_fn(|i| u8::from(bits & (1 << i) != 0)),
+            SavedMods::Previous(old) => std::array::from_fn(|i| old.get(i).copied().unwrap_or(0)),
+            SavedMods::Legacy(bits) => std::array::from_fn(|i| u8::from(i < 6 && bits & (1 << i) != 0)),
         };
         if ranks.iter().any(|&rank| rank > MAX_RANK) { return Err("dungeon rank exceeds maximum"); }
         Ok(Self { ranks, map: None })
     }
 }
 impl Mods {
-    pub(super) fn rank_bonus(self, index: usize) -> u32 { self.balance().modifiers.item_level_per_rank[index] }
+    pub(super) fn rank_bonus(self, index: usize) -> u32 {
+        if index == 6 { self.balance().modifiers.monster_mod_item_level_per_rank }
+        else { self.balance().modifiers.item_level_per_rank[index] }
+    }
     pub(super) fn rank_xp(self) -> f64 { self.balance().modifiers.xp_per_rank }
     pub(super) fn description(self, index: usize) -> String {
         let m = &self.balance().modifiers;
@@ -61,8 +68,9 @@ impl Mods {
             1 => format!("+{:.0}% monster and boss damage", m.damage_per_rank*100.0),
             2 => format!("+{:.0}% attack rate and boss spell cooldown recovery", m.attack_rate_per_rank*100.0),
             3 => format!("+{} bosses in every boss wave", m.bosses_per_rank),
-            4 => format!("+{} distinct spells per boss", m.spells_per_rank),
-            _ => format!("Boss spell warning time x{:.2}", m.warning_multiplier_per_rank),
+            4 => format!("+{} guaranteed distinct mods on every boss (up to 5 total)", m.boss_mods_per_rank),
+            5 => format!("Boss spell warning time x{:.2}", m.warning_multiplier_per_rank),
+            _ => format!("+{} guaranteed distinct mods on every monster and boss (up to 5 total)", m.monster_mods_per_rank),
         }
     }
     fn balance(self) -> &'static super::dungeon_config::Config { super::dungeon_config::get(self.map.unwrap_or(super::data::DUNGEONS[0])) }
@@ -93,14 +101,18 @@ impl Mods {
         if index < self.ranks.len() { self.ranks[index] = u8::from(self.ranks[index] == 0); }
     }
     pub(super) fn bonus(self) -> u32 {
-        self.balance().modifiers.item_level_per_rank.iter().enumerate().map(|(i, bonus)| u32::from(self.rank(i)) * bonus).sum()
+        self.balance().modifiers.item_level_per_rank.iter().enumerate().map(|(i, bonus)| u32::from(self.rank(i)) * bonus).sum::<u32>()
+            + u32::from(self.rank(6)) * self.rank_bonus(6)
     }
     pub(super) fn movement(self) -> f32 { 1.0 + self.balance().modifiers.movement_per_rank * f32::from(self.rank(0)) }
     pub(super) fn damage(self) -> f32 { 1.0 + self.balance().modifiers.damage_per_rank * f32::from(self.rank(1)) }
     pub(super) fn attack_rate(self) -> f32 { 1.0 + self.balance().modifiers.attack_rate_per_rank * f32::from(self.rank(2)) }
     pub(super) fn boss_warning_multiplier(self) -> f32 { self.balance().modifiers.warning_multiplier_per_rank.powi(i32::from(self.rank(5))) }
     pub(super) fn extra_bosses(self) -> usize { usize::from(self.rank(3)) * self.balance().modifiers.bosses_per_rank }
-    pub(super) fn extra_spells(self) -> usize { usize::from(self.rank(4)) * self.balance().modifiers.spells_per_rank }
+    pub(super) fn extra_boss_mods(self) -> u8 { self.rank(4).saturating_mul(self.balance().modifiers.boss_mods_per_rank).min(5) }
+    pub(super) fn extra_monster_mods(self) -> u8 {
+        self.rank(6).saturating_mul(self.balance().modifiers.monster_mods_per_rank).min(5)
+    }
 }
 
 #[cfg(test)]
@@ -111,21 +123,21 @@ mod tests {
         let old: Mods = serde_json::from_str("63").unwrap();
         assert_eq!(old.bonus(), 15);
         let mut mods = old;
-        for index in 0..6 {
+        for index in 0..DEFINITIONS.len() {
             for _ in 0..5 { mods.change(index, true); }
             assert_eq!(mods.rank(index), MAX_RANK);
         }
         assert_eq!(mods.bonus(), MAX_BONUS);
         assert_eq!(mods.extra_bosses(), 3);
-        assert_eq!(mods.extra_spells(), 3);
-        assert!((mods.movement() - 1.9).abs() < 0.001);
-        assert_eq!(mods.damage(), 1.75);
-        assert!((mods.boss_warning_multiplier() - 0.343).abs() < 0.001);
+        assert_eq!(mods.extra_boss_mods(), 3);
+        assert!((mods.movement() - 2.8).abs() < 0.001);
+        assert_eq!(mods.damage(), 4.0);
+        assert!((mods.boss_warning_multiplier() - 0.125).abs() < 0.001);
         assert_eq!(mods.reward_xp(u64::MAX, super::super::data::DUNGEONS[0]), u64::MAX);
         assert_eq!(mods, serde_json::from_str(&serde_json::to_string(&mods).unwrap()).unwrap());
         assert!(serde_json::from_str::<Mods>("[4,0,0,0,0,0]").is_err());
         assert!(mods.reward_xp(1000, super::super::data::DUNGEONS[0]) > old.reward_xp(1000, super::super::data::DUNGEONS[0]));
-        for index in 0..6 { for _ in 0..5 { mods.change(index, false); } }
+        for index in 0..DEFINITIONS.len() { for _ in 0..5 { mods.change(index, false); } }
         assert_eq!(mods, Mods::default());
     }
     #[test]
@@ -156,7 +168,7 @@ mod tests {
         let mut run = super::super::Run::default();
         assert!(super::super::hud::start_run(&mut run, &mut selection));
         selection.dungeon_mods.toggle(0);
-        assert_eq!(run.dungeon_modifiers().movement(), 1.3);
+        assert_eq!(run.dungeon_modifiers().movement(), 1.6);
         selection.dungeon_mods.toggle(0);
         selection.map = super::super::data::CAMPAIGN[0];
         assert!(super::super::hud::start_run(&mut run, &mut selection));
@@ -168,21 +180,21 @@ mod tests {
         for i in 0..DEFINITIONS.len() {
             mods.toggle(i);
         }
-        assert_eq!(mods.bonus(), 15);
-        assert_eq!(mods.movement(), 1.3);
-        assert_eq!(mods.damage(), 1.25);
-        assert_eq!(mods.attack_rate(), 1.3);
+        assert_eq!(mods.bonus(), 17);
+        assert_eq!(mods.movement(), 1.6);
+        assert_eq!(mods.damage(), 2.0);
+        assert_eq!(mods.attack_rate(), 2.0);
         assert_eq!(mods.extra_bosses(), 1);
-        assert_eq!(mods.extra_spells(), 1);
+        assert_eq!(mods.extra_boss_mods(), 1);
         for &map in super::super::data::DUNGEONS {
-            assert_eq!(mods.active(map).bonus(), 15);
+            assert_eq!(mods.active(map).bonus(), 17);
         }
         for &map in super::super::data::CAMPAIGN {
             assert_eq!(mods.active(map), Mods::default());
         }
         mods.toggle(0);
-        assert_eq!(mods.bonus(), 13);
-        mods.toggle(0);
         assert_eq!(mods.bonus(), 15);
+        mods.toggle(0);
+        assert_eq!(mods.bonus(), 17);
     }
 }

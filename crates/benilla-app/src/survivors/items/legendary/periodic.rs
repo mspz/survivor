@@ -19,6 +19,7 @@ pub(in crate::survivors) enum Family {
 }
 #[derive(Clone, Default)]
 pub(in crate::survivors) struct Meta {
+    pub chase_base: f32,
     pub parent: u64,
     pub family: Family,
     pub held: f32,

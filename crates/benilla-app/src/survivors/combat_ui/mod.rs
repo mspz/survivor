@@ -139,6 +139,7 @@ struct MeterRows;
 #[derive(Component)]
 struct Launcher;
 pub(super) fn plugin(app: &mut App) {
+    app.add_plugins(super::death_log::ui::plugin);
     app.init_resource::<View>()
         .add_message::<bevy::input::mouse::MouseWheel>()
         .add_systems(

@@ -13,6 +13,10 @@ pub(super) struct Caption(bool, u8);
 #[derive(Component)]
 pub(super) struct Debuffs;
 #[derive(Component)]
+pub(super) struct Buffs;
+#[derive(Component)]
+pub(super) struct ModIcon(pub super::super::enemies::Rank);
+#[derive(Component)]
 pub(super) struct DebuffIcon(pub u32);
 #[derive(Component)]
 pub(super) struct DebuffTimer(u32);
@@ -21,6 +25,7 @@ pub(super) struct DebuffStacks(u32);
 #[derive(Resource, Default)]
 pub(super) struct Cache {
     spells: Vec<u32>,
+    mods: Vec<super::super::enemies::Rank>,
 }
 const W: f32 = 240.0;
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Node {
@@ -159,20 +164,24 @@ pub(super) fn setup(mut commands: Commands, font: Res<hud::HudFont>) {
                 });
                 if mirrored {
                     ui.spawn((
-                        Debuffs,
                         Node {
                             position_type: PositionType::Absolute,
                             right: Val::Px(4.0),
                             top: Val::Px(80.0),
                             width: Val::Px(W),
-                            flex_wrap: FlexWrap::Wrap,
-                            justify_content: JustifyContent::FlexEnd,
-                            column_gap: Val::Px(3.0),
-                            row_gap: Val::Px(3.0),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(6.0),
                             ..default()
                         },
                         FocusPolicy::Pass,
-                    ));
+                    )).with_children(|auras| {
+                        for buff in [true,false] {
+                            let mut row=auras.spawn((Node { width:Val::Percent(100.0),
+                                flex_wrap:FlexWrap::Wrap,justify_content:JustifyContent::FlexEnd,
+                                column_gap:Val::Px(3.0),row_gap:Val::Px(3.0),..default() },FocusPolicy::Pass));
+                            if buff { row.insert(Buffs); } else { row.insert(Debuffs); }
+                        }
+                    });
                 }
             });
     }
@@ -185,7 +194,7 @@ pub(super) fn refresh(
     run: Res<Run>,
     mut target: ResMut<Target>,
     font: Res<hud::HudFont>,
-    units: Query<&Status>,
+    units: (Query<&Status>, Query<&super::super::enemies::Rank>),
     heroes: Query<Entity, With<Hero>>,
     mut frames: Query<(&Frame, &mut Node), Without<Fill>>,
     mut fills: Query<(&Fill, &mut Node, &mut BackgroundColor, &mut ImageNode), Without<Frame>>,
@@ -195,15 +204,18 @@ pub(super) fn refresh(
         Query<(&DebuffTimer, &mut Text), (Without<Caption>, Without<DebuffStacks>)>,
         Query<(&DebuffStacks, &mut Text), (Without<Caption>, Without<DebuffTimer>)>,
     ),
-    debuffs: Query<Entity, With<Debuffs>>,
+    rows: (Query<Entity, With<Debuffs>>, Query<Entity, With<Buffs>>),
     mut cache: ResMut<Cache>,
     windows: Query<&Window, With<PrimaryWindow>>,
     scale: Res<UiScale>,
 ) {
+    let (units,ranks)=units;
+    let (debuffs,buffs)=rows;
     let (mut timers, mut stacks) = labels;
     let show = !matches!(*phase.get(), Phase::Menu | Phase::GameOver);
     let player = heroes.single().ok().and_then(|e| units.get(e).ok());
     let victim = target.entity.and_then(|e| units.get(e).ok());
+    let target_rank = target.entity.and_then(|e| ranks.get(e).ok());
     if target.entity.is_some() && victim.is_none() {
         target.entity = None;
     }
@@ -282,6 +294,24 @@ pub(super) fn refresh(
             }
         }
     }
+    let mods:Vec<_>=super::super::enemies::Rank::MODS.into_iter()
+        .filter(|m| target_rank.is_some_and(|rank|rank.has(*m)) && victim.is_some()).collect();
+    if cache.mods != mods {
+        cache.mods=mods;
+        for parent in &buffs {
+            commands.entity(parent).despawn_children().with_children(|row| {
+                for &modifier in &cache.mods {
+                    let aura=super::super::monster_specials::player::mod_aura(modifier,None);
+                    row.spawn((ModIcon(modifier),Interaction::default(),
+                        BorderColor::all(Color::srgb(0.55,0.5,0.3)),
+                        Node { width:Val::Px(36.0),height:Val::Px(36.0),
+                            border:UiRect::all(Val::Px(2.0)),flex_shrink:0.0,..default() },FocusPolicy::Pass))
+                        .with_children(|icon| { icon.spawn((ImageNode::default(),hud::SpellIcon(aura.spell),
+                            Node {width:Val::Percent(100.0),height:Val::Percent(100.0),..default()},FocusPolicy::Pass)); });
+                }
+            });
+        }
+    }
     let effects: Vec<_> = victim
         .into_iter()
         .flat_map(|s| s.debuffs.iter())
@@ -356,6 +386,7 @@ pub(super) fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("mod_buffs_tests.rs");
     #[test]
     fn frames_update_health_debuffs_and_clear_despawned_targets() {
         let mut app = App::new();

@@ -30,6 +30,7 @@ mod rooms;
 mod saves;
 
 struct Peer {
+    death_report: Option<(u64, u64)>,
     money_earned: u64,
     trade: game::items::TradeAccount,
     socket: Socket,
@@ -313,6 +314,7 @@ fn pump_host(world: &mut World, network: &mut Network) {
             network.peers.insert(
                 network.next_peer,
                 Peer {
+                    death_report: None,
                     money_earned: 0,
                     trade: default(),
                     socket,
@@ -968,6 +970,8 @@ fn decode_choice(choice: wire::Choice) -> Option<hud::Choice> {
 
 fn stats(run: &Run, offer: &hud::Offer, offer_id: u64) -> wire::Stats {
     wire::Stats {
+        death_log: None,
+        monster_mods: game::monster_specials::player::snapshot(run),
         auras: game::player_auras::collect(run),
         healing_meter: run.healing_meter.clone(),
         taken_meter: run.taken_meter.clone(),
@@ -1084,7 +1088,7 @@ fn publish(world: &mut World) {
                 let inventory = world.get_resource::<game::items::Inventory>()?;
                 inventory
                     .config
-                    .generate_reward(level, class, game::items::compensated_magic_find(magic_find), &mut rng)
+                    .generate_dungeon_reward(world.resource::<Run>().expedition_map, level, class, game::items::compensated_magic_find(magic_find), &mut rng)
                     .ok()
             });
             if let Some(item) = item {
@@ -1280,6 +1284,9 @@ fn publish(world: &mut World) {
         {
             chest.notice = notice.clone();
         }
+        let run_id = world.get::<Guid>(companion.entity).map_or(0, |g| g.0);
+        let mut personal_stats = stats(&companion.run, &companion.offer, companion.offer_id);
+        personal_stats.death_log = game::death_log::replica(&companion.run.death_log, run_id, &mut peer.death_report);
         let snapshot = wire::Snapshot {
             dungeon_mods: world.resource::<Run>().dungeon_modifiers(),
             boss_warnings: world
@@ -1288,14 +1295,14 @@ fn publish(world: &mut World) {
             money_earned: peer.money_earned,
             chest,
             party: party.clone(),
-            run_id: world.get::<Guid>(companion.entity).map_or(0, |g| g.0),
+            run_id,
             loot: peer.loot.clone(),
             tick: network.tick,
             acknowledged: peer.sequence,
             phase: encode_phase(phase, companion),
             map: stage,
             in_hub,
-            stats: stats(&companion.run, &companion.offer, companion.offer_id),
+            stats: personal_stats,
             units: units.clone(),
             effects: effects
                 .iter()
@@ -1588,7 +1595,9 @@ fn apply_snapshot(world: &mut World, guest: &mut Guest, snapshot: wire::Snapshot
             run.class = class;
         }
         run.hp = stats.hp;
+        run.death_log.receive(snapshot.run_id, stats.death_log);
         run.elapsed = stats.elapsed;
+        game::monster_specials::player::restore(&mut run, stats.monster_mods);
         let previous_endless = run.endless;
         run.endless = stats.endless;
         if let Some(stage) = stats.endless {
@@ -1812,6 +1821,31 @@ mod tests {
         assert_eq!(decoded.auras.len(), 1);
         assert_eq!(decoded.auras[0].left, Some(5.0));
         assert!(decoded.auras[0].description.contains("40.0%"));
+        let mods = game::enemies::Rank::Colossus.with(game::enemies::Rank::Artillery).with(game::enemies::Rank::Echo);
+        run.monster_mods.grant(mods, run.elapsed, Some(7.0), Vec3::ZERO);
+        run.monster_mods.grant(mods, run.elapsed, Some(7.0), Vec3::ZERO);
+        let snapshot = super::stats(&run, &game::hud::Offer::default(), 0);
+        let decoded: super::wire::Stats = serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(decoded.auras.iter().filter(|a| a.name.starts_with("Monster modifier:")).count(), 3);
+        assert!(decoded.auras.iter().filter(|a| a.name.starts_with("Monster modifier:")).all(|a| a.left == Some(7.0)));
+        let mut guest = game::Run { elapsed: decoded.elapsed, ..default() };
+        game::monster_specials::player::restore(&mut guest, decoded.monster_mods);
+        assert_eq!(guest.monster_mods.rank(guest.elapsed), mods);
+        assert_eq!(guest.stats().max_hp, decoded.max_hp);
+        let attacker = Entity::from_raw_u32(88).unwrap();
+        let mut caster = game::enemies::Rank::Echo;
+        caster.base = game::monster_mods::Base::Caster;
+        run.death_log.remember(attacker, "Thuzadin Shadowcaster", caster);
+        run.death_log.record(20.0, Some(attacker), "Shadow bolt", game::spell_engine::Tags::SHADOW,
+            100.0, 100.0, 0.0, 50.0, game::death_log::Outcome::Hit);
+        let mut sent = None;
+        let mut snapshot = super::stats(&run, &game::hud::Offer::default(), 0);
+        snapshot.death_log = game::death_log::replica(&run.death_log, 4, &mut sent);
+        let decoded: super::wire::Stats = serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        let report = decoded.death_log.unwrap();
+        assert_eq!(report.events[0].source.kind(), "Caster");
+        assert!(report.events[0].source.mods.unwrap().has(game::enemies::Rank::Echo));
+        assert!(game::death_log::replica(&run.death_log, 4, &mut sent).is_none());
     }
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
@@ -2135,6 +2169,8 @@ mod tests {
     fn guest_opens_boss_chest_and_each_party_member_gets_exactly_one_item() {
         let mut host = world();
         host.insert_resource(game::items::Inventory::fixture(vec![]));
+        // This test checks delivery to the party, independently of the loot roll.
+        host.resource_mut::<game::items::Inventory>().config.boss_drop_chance = 1.0;
         host.init_resource::<Messages<game::items::ChestOpened>>();
         host.init_resource::<Messages<crate::sound::CoinSound>>();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2528,7 +2564,7 @@ mod tests {
                 mortars: vec![],
                 elapsed: 1.2,
                 circle: None,
-                windup_seconds: None,
+                spatial_scale: 1.0, windup_seconds: None,
                 zones: vec![],
             },
         ]));
@@ -2546,7 +2582,7 @@ mod tests {
             let def = &data::roster(run.expedition_map).enemies[0];
             game::enemies::spawn_enemy(&mut commands, &mut run, def, Vec3::X * 50.0, Vec3::ZERO, false)
         }).unwrap();
-        host.entity_mut(healer).insert(game::enemies::Rank::Healer);
+        host.entity_mut(healer).insert(game::enemies::Rank::Healer.with(game::enemies::Rank::Sprinter));
         let healer_guid = host.get::<Guid>(healer).unwrap().0;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -2652,7 +2688,8 @@ mod tests {
         };
         apply_snapshot(&mut guest_world, &mut guest, snapshot);
         let guest_healer = guest.entities[&healer_guid];
-        assert_eq!(guest_world.get::<game::enemies::Rank>(guest_healer), Some(&game::enemies::Rank::Healer));
+        assert_eq!(guest_world.get::<game::enemies::Rank>(guest_healer),
+            Some(&game::enemies::Rank::Healer.with(game::enemies::Rank::Sprinter)));
 
         let warnings = guest_world.resource::<game::boss_spells::Warnings>();
         assert_eq!(warnings.0[0].origin, [10.0, 2.0, 20.0]);

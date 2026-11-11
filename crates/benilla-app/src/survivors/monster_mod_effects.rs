@@ -1,13 +1,15 @@
-//! Shared monster variants and caster tuning, independent of expedition balance.
-use super::data;
+//! Shared monster mod effects and caster tuning, independent of expedition balance.
+
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
-const FILE: &str = include_str!("../../../../config/survivors-monster-types.toml");
+const FILE: &str = include_str!("../../../../config/survivors-monster-mod-effects.toml");
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
     version: u32,
+    #[serde(default = "default_ground_damage")]
+    pub monster_ground_damage_multiplier: f32,
     #[serde(default)]
     pub elites: Elites,
     #[serde(default)]
@@ -20,14 +22,123 @@ pub(super) struct Config {
     pub protectors: Protectors,
     #[serde(default)]
     pub ranged: Ranged,
+    #[serde(default)]
+    pub stats: StatEffects,
+    #[serde(default)]
+    pub special: super::monster_specials::Config,
+}
+fn default_ground_damage() -> f32 { 1.5 }
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct StatEffects {
+    pub action_speed: f32,
+    pub physical_damage: f32,
+    pub added_elemental: f32,
+    pub dot_damage: f32,
+    pub critical_chance: f32,
+    pub critical_multiplier: f32,
+    pub projectiles: u32,
+    pub chains: u32,
+    pub area: f32,
+    pub range: f32,
+    pub physical_taken: f32,
+    pub elemental_taken: f32,
+    pub control_duration: f32,
+    pub slow_effect: f32,
+    pub regeneration: f32,
+    pub life_leech: f32,
+    #[serde(rename = "thorns_per_level", skip_serializing)]
+    _obsolete_thorns_per_level: Option<f32>,
+    pub aura_radius: f32,
+    pub aura_action_speed: f32,
+    pub oppression: f32,
+}
+impl Default for StatEffects {
+    fn default() -> Self {
+        Self {
+            action_speed: 1.4,
+            physical_damage: 1.4,
+            added_elemental: 0.35,
+            dot_damage: 1.75,
+            critical_chance: 0.15,
+            critical_multiplier: 0.75,
+            projectiles: 2,
+            chains: 2,
+            area: 1.75,
+            range: 1.4,
+            physical_taken: 0.8,
+            elemental_taken: 0.8,
+            control_duration: 0.5,
+            slow_effect: 0.5,
+            regeneration: 0.05,
+            life_leech: 0.05,
+            _obsolete_thorns_per_level: None,
+            aura_radius: 10.0,
+            aura_action_speed: 1.2,
+            oppression: 0.15,
+        }
+    }
+}
+impl StatEffects {
+    fn valid(&self) -> bool {
+        [
+            self.action_speed,
+            self.physical_damage,
+            self.added_elemental,
+            self.dot_damage,
+            self.critical_chance,
+            self.critical_multiplier,
+            self.area,
+            self.range,
+            self.physical_taken,
+            self.elemental_taken,
+            self.control_duration,
+            self.slow_effect,
+            self.regeneration,
+            self.life_leech,
+            self.aura_radius,
+            self.aura_action_speed,
+            self.oppression,
+        ]
+        .into_iter()
+        .all(|v| v.is_finite() && (0.0..=1000.0).contains(&v))
+            && [
+                self.action_speed,
+                self.physical_damage,
+                self.dot_damage,
+                self.area,
+                self.range,
+                self.physical_taken,
+                self.elemental_taken,
+                self.control_duration,
+                self.aura_action_speed,
+                self.aura_radius,
+            ]
+            .into_iter()
+            .all(|v| v > 0.0)
+            && [
+                self.physical_taken,
+                self.elemental_taken,
+                self.control_duration,
+                self.slow_effect,
+                self.regeneration,
+                self.life_leech,
+                self.oppression,
+                self.critical_chance,
+            ]
+            .into_iter()
+            .all(|v| v <= 1.0)
+            && self.oppression < 1.0
+            && self.projectiles <= 8
+            && self.chains <= 8
+            && self.aura_radius >= 0.1
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Elites {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
     pub health_multiplier: f32,
     pub size_multiplier: f32,
     pub damage_reduction: f32,
@@ -36,11 +147,9 @@ pub(super) struct Elites {
 impl Default for Elites {
     fn default() -> Self {
         Self {
-            first_zone: 2,
-            chance: 0.02,
-            health_multiplier: 10.0,
-            size_multiplier: 1.5,
-            damage_reduction: 0.2,
+            health_multiplier: 2.5,
+            size_multiplier: 1.25,
+            damage_reduction: 0.0,
             xp_multiplier: 3,
         }
     }
@@ -48,26 +157,18 @@ impl Default for Elites {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Sprinters {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
     pub speed_multiplier: f32,
 }
 impl Default for Sprinters {
     fn default() -> Self {
         Self {
-            first_zone: 3,
-            chance: 0.03,
-            speed_multiplier: 3.0,
+            speed_multiplier: 1.5,
         }
     }
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Explosives {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
     pub radius: f32,
     pub delay: f32,
     pub damage_multiplier: f32,
@@ -75,8 +176,6 @@ pub(super) struct Explosives {
 impl Default for Explosives {
     fn default() -> Self {
         Self {
-            first_zone: 4,
-            chance: 0.03,
             radius: 3.5,
             delay: 1.5,
             damage_multiplier: 2.0,
@@ -86,9 +185,6 @@ impl Default for Explosives {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Healers {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
     pub radius: f32,
     pub interval: f32,
     pub heal_fraction: f32,
@@ -96,8 +192,6 @@ pub(super) struct Healers {
 impl Default for Healers {
     fn default() -> Self {
         Self {
-            first_zone: 5,
-            chance: 0.02,
             radius: 10.0,
             interval: 4.0,
             heal_fraction: 0.1,
@@ -107,17 +201,12 @@ impl Default for Healers {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Protectors {
-    /// Campaign zone number, starting at 1; the variant remains available afterwards.
-    pub first_zone: usize,
-    pub chance: f32,
     pub radius: f32,
     pub damage_reduction: f32,
 }
 impl Default for Protectors {
     fn default() -> Self {
         Self {
-            first_zone: 6,
-            chance: 0.02,
             radius: 8.0,
             damage_reduction: 0.25,
         }
@@ -150,30 +239,9 @@ impl Config {
         let c: Self = toml::from_str(text).map_err(|e| e.to_string())?;
         let valid = |v: f32| v.is_finite() && v > 0.0 && v <= 1000.0;
         if c.version != 1
-            || ![
-                c.elites.first_zone,
-                c.sprinters.first_zone,
-                c.explosives.first_zone,
-                c.healers.first_zone,
-                c.protectors.first_zone,
-            ]
-            .into_iter()
-            .all(|zone| (1..=data::CAMPAIGN.len()).contains(&zone))
-            || ![
-                c.elites.chance,
-                c.sprinters.chance,
-                c.explosives.chance,
-                c.healers.chance,
-                c.protectors.chance,
-            ]
-            .into_iter()
-            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
-            || c.elites.chance
-                + c.sprinters.chance
-                + c.explosives.chance
-                + c.healers.chance
-                + c.protectors.chance
-                > 1.0
+            || !valid(c.monster_ground_damage_multiplier)
+            || !c.special.valid()
+            || !c.stats.valid()
             || ![
                 c.elites.health_multiplier,
                 c.elites.size_multiplier,
@@ -207,24 +275,24 @@ impl Config {
             .all(valid)
             || c.ranged.stand_off >= c.ranged.range
         {
-            return Err("invalid monster type settings".into());
+            return Err("invalid monster mod effect settings".into());
         }
         Ok(c)
     }
 }
 
-/// One shared snapshot for campaign, Endless and dungeon variants; restart after disk edits.
+/// One shared effect snapshot for campaign, Endless and dungeon mods; restart after disk edits.
 pub(super) fn get() -> &'static Config {
     static CONFIG: LazyLock<Config> = LazyLock::new(|| {
-        let builtin = || Config::parse(FILE).expect("valid embedded monster types");
+        let builtin = || Config::parse(FILE).expect("valid embedded monster mod effects");
         if cfg!(test) {
             return builtin();
         }
         match crate::local_state::read_to_string(std::path::Path::new(
-            "config/survivors-monster-types.toml",
+            "config/survivors-monster-mod-effects.toml",
         )) {
             Ok(text) => Config::parse(&text).unwrap_or_else(|error| {
-                bevy::log::warn!("Invalid monster types: {error}; using embedded defaults");
+                bevy::log::warn!("Invalid monster mod effects: {error}; using embedded defaults");
                 builtin()
             }),
             Err(_) => builtin(),
@@ -235,96 +303,38 @@ pub(super) fn get() -> &'static Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn special_caps_and_timers_reject_invalid_configuration() {
+        for (key, value) in [("death_reduction_cap", 0.61), ("block_cap", 0.76),
+            ("blood_heal", 0.51), ("skin_shield", 1.01), ("adaptation_taken", 1.01),
+            ("magnetic_windup", 0.0), ("boss_repeat_delay", 0.0)] {
+            let mut table: toml::Value = toml::from_str(super::FILE).unwrap();
+            table["special"][key] = toml::Value::Float(value);
+            assert!(super::Config::parse(&toml::to_string(&table).unwrap()).is_err(), "{key}");
+        }
+    }
     use super::*;
     #[test]
-    fn variants_are_configurable_and_reject_invalid_settings() {
-        let mut table: toml::Value = toml::from_str(FILE).unwrap();
-        table["elites"]["chance"] = toml::Value::Float(0.1);
-        table["elites"]["health_multiplier"] = toml::Value::Float(15.0);
-        table["sprinters"]["chance"] = toml::Value::Float(0.2);
-        table["sprinters"]["speed_multiplier"] = toml::Value::Float(4.0);
-        let c = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(c.elites.chance, 0.1);
-        assert_eq!(c.elites.health_multiplier, 15.0);
-        assert_eq!(c.sprinters.chance, 0.2);
-        assert_eq!(c.sprinters.speed_multiplier, 4.0);
-        for (group, key, value) in [
-            ("elites", "chance", -0.1),
-            ("sprinters", "chance", 1.0),
-            ("elites", "damage_reduction", 1.0),
-            ("elites", "health_multiplier", 0.0),
-            ("sprinters", "speed_multiplier", 0.0),
+    fn stat_effects_reject_invalid_multipliers_regeneration_and_projectile_counts() {
+        for (key, value) in [
+            ("physical_taken", -0.8),
+            ("elemental_taken", 1.2),
+            ("regeneration", 1.1),
+            ("control_duration", 0.0),
+            ("oppression", 1.0),
         ] {
-            let mut invalid = table.clone();
-            invalid[group][key] = toml::Value::Float(value);
-            assert!(Config::parse(&toml::to_string(&invalid).unwrap()).is_err());
+            let mut table: toml::Value = toml::from_str(FILE).unwrap();
+            table["stats"][key] = toml::Value::Float(value);
+            assert!(
+                Config::parse(&toml::to_string(&table).unwrap()).is_err(),
+                "{key}"
+            );
         }
-        table.as_table_mut().unwrap().remove("elites");
-        table.as_table_mut().unwrap().remove("sprinters");
-        assert!(Config::parse(&toml::to_string(&table).unwrap()).is_ok());
+        assert_eq!(get().stats.regeneration, 0.05);
+        assert_eq!(get().stats.physical_taken, 0.8);
+        assert_eq!(get().stats.elemental_taken, 0.8);
     }
-    #[test]
-    fn support_and_explosive_settings_validate_ranges_and_legacy_defaults() {
-        let mut table: toml::Value = toml::from_str(FILE).unwrap();
-        for (group, key, value) in [
-            ("explosives", "delay", 0.0),
-            ("explosives", "radius", -1.0),
-            ("explosives", "damage_multiplier", -1.0),
-            ("healers", "interval", 0.0),
-            ("healers", "heal_fraction", 1.1),
-            ("protectors", "damage_reduction", 1.0),
-            ("protectors", "chance", 1.0),
-        ] {
-            let mut invalid = table.clone();
-            invalid[group][key] = toml::Value::Float(value);
-            assert!(Config::parse(&toml::to_string(&invalid).unwrap()).is_err());
-        }
-        table["healers"]["radius"] = toml::Value::Float(15.0);
-        table["protectors"]["damage_reduction"] = toml::Value::Float(0.3);
-        let config = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(config.healers.radius, 15.0);
-        assert_eq!(config.protectors.damage_reduction, 0.3);
-        for group in ["explosives", "healers", "protectors"] {
-            table.as_table_mut().unwrap().remove(group);
-        }
-        assert!(Config::parse(&toml::to_string(&table).unwrap()).is_ok());
-    }
-    #[test]
-    fn variant_introductions_are_configurable_and_validate_campaign_zone_numbers() {
-        let mut table: toml::Value = toml::from_str(FILE).unwrap();
-        for (group, expected) in [
-            ("elites", 2),
-            ("sprinters", 3),
-            ("explosives", 4),
-            ("healers", 5),
-            ("protectors", 6),
-        ] {
-            assert_eq!(table[group]["first_zone"].as_integer(), Some(expected));
-            for invalid in [0, 7] {
-                let mut config = table.clone();
-                config[group]["first_zone"] = toml::Value::Integer(invalid);
-                assert!(Config::parse(&toml::to_string(&config).unwrap()).is_err());
-            }
-            table[group].as_table_mut().unwrap().remove("first_zone");
-        }
-        let legacy = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(
-            [
-                legacy.elites.first_zone,
-                legacy.sprinters.first_zone,
-                legacy.explosives.first_zone,
-                legacy.healers.first_zone,
-                legacy.protectors.first_zone
-            ],
-            [2, 3, 4, 5, 6]
-        );
-        table["protectors"]
-            .as_table_mut()
-            .unwrap()
-            .insert("first_zone".into(), toml::Value::Integer(3));
-        let custom = Config::parse(&toml::to_string(&table).unwrap()).unwrap();
-        assert_eq!(custom.protectors.first_zone, 3);
-    }
+    use crate::survivors::data;
     #[test]
     fn ranged_profiles_validate_probability_geometry_and_timing() {
         for (field, value) in [
@@ -344,7 +354,10 @@ mod tests {
     #[test]
     fn all_modes_use_the_shared_types_without_serializing_them_into_balance_documents() {
         let check = |engine: super::super::expedition_config::Config| {
-            assert_eq!(engine.elites.chance, get().elites.chance);
+            assert_eq!(
+                engine.elites.health_multiplier,
+                get().elites.health_multiplier
+            );
             assert_eq!(
                 engine.sprinters.speed_multiplier,
                 get().sprinters.speed_multiplier

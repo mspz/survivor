@@ -173,12 +173,14 @@ impl Run {
         level: u8,
         roll: f32,
     ) -> spell_engine::Resolved {
-        let (profile, tags) = super::legendary::profile(self, def);
+        let (mut profile, tags) = super::legendary::profile(self, def);
+        super::legendary::chase::prepare_profile(self, &mut profile);
+        let chase_modifiers = super::legendary::chase::modifiers(self, def, tags);
         let mut resolved = spell_engine::resolve_tagged(
             &profile,
             level,
             &self.stats(),
-            self.spell_modifiers.entries(),
+            &chase_modifiers,
             self.weapon_damage_range(def).roll(roll)
                 * if super::super::talent_runtime::active(
                     self,
@@ -223,7 +225,7 @@ impl Run {
                     &native_def,
                     level,
                     &self.stats(),
-                    self.spell_modifiers.entries(),
+                    &chase_modifiers,
                     0.0,
                     original_tags,
                 );
@@ -238,6 +240,8 @@ impl Run {
         if resolved.direct_dot.is_some() {
             resolved.primary_critical = false;
         }
+        crate::survivors::monster_specials::player::spell(self, &mut resolved);
+        super::legendary::chase::resolved(self, def, &mut resolved);
         resolved
     }
 }

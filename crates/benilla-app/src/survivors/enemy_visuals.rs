@@ -1,4 +1,4 @@
-//! Per-instance model tints distinguish monster variants without ground markers.
+//! Per-instance model tints complement the rare mods' ground auras.
 use super::enemies::Rank;
 use benilla_world::{
     instance_tint::{self, InstanceTints},
@@ -8,15 +8,20 @@ use benilla_world::{
 use bevy::prelude::*;
 
 fn style(rank: Rank) -> Option<[u8; 3]> {
-    Some(match rank {
-        Rank::Elite => [255, 200, 55],
-        Rank::Sprinter => [55, 235, 255],
-        Rank::Explosive => [255, 65, 40],
-        Rank::Healer => [70, 255, 100],
-        Rank::Protector => [75, 120, 255],
-        Rank::Boss => [210, 80, 255],
-        Rank::Normal => return None,
-    })
+    if rank.is_boss() {
+        return Some([210, 80, 255]);
+    }
+    // One stable tint; the nameplate lists every mod on a combined monster.
+    [
+        (Rank::Explosive, [255, 65, 40]),
+        (Rank::Healer, [70, 255, 100]),
+        (Rank::Protector, [75, 120, 255]),
+        (Rank::Elite, [255, 200, 55]),
+        (Rank::Sprinter, [55, 235, 255]),
+    ]
+    .into_iter()
+    .find_map(|(modifier, color)| rank.has(modifier).then_some(color))
+    .or_else(|| (rank.count() > 0).then_some(if rank.is_special() { [235, 120, 220] } else { [235, 170, 65] }))
 }
 
 /// Follow the same model ownership chain as aura tints, including separately rigged attachments.
@@ -47,6 +52,7 @@ fn paint(
     }
 }
 pub(super) fn plugin(app: &mut App) {
+    app.add_plugins(super::rare_mod_auras::plugin);
     app.add_systems(Update, paint.after(crate::aura_visual::apply_aura_tint));
 }
 

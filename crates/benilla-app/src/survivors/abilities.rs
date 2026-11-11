@@ -11,6 +11,7 @@ use super::spell_engine::targeting::{around, densest, links, nearest, weakest, T
 use super::spell_engine::{self as engine, Resolved as Params};
 use super::units::{self, flat, Fx, Marks, UnitSpec, COLOR_HEAL};
 use super::{Rng, Run, RunEntity};
+use super::items::legendary::chase;
 use crate::net::{FieldChanged, Guid, ObjectStore};
 
 /// One blow landing on one enemy.
@@ -54,6 +55,144 @@ impl Hit {
 
 #[cfg(test)]
 mod spell_engine_integration_tests {
+    include!("chase_integration_tests.rs");
+    #[test]
+    fn concentration_breaker_blocks_spells_but_keeps_weapon_attacks_and_counts_real_casts() {
+        for key in ["fireball", "heroic_strike"] {
+            let (mut world, _) = legendary_world(key, 0, &[3.0]);
+            world.resource_mut::<Run>().siege.silenced_until = 100.0;
+            world.run_system_once(cast_abilities).unwrap();
+            let run = world.resource::<Run>();
+            assert_eq!(run.siege.casts, 0);
+            assert_eq!(run.abilities[0].cd > 0.0, key == "heroic_strike");
+            world.resource_mut::<Run>().siege.silenced_until = 0.0;
+            world.run_system_once(cast_abilities).unwrap();
+            assert_eq!(world.resource::<Run>().siege.casts, u64::from(key == "fireball"));
+        }
+    }
+    #[test]
+    fn player_monster_mods_modify_actual_hits_added_schools_and_periodic_instances() {
+        let (mut world, targets) = legendary_world("heroic_strike", 0, &[3.0]);
+        let target = targets[0];
+        { let mut run = world.resource_mut::<Run>();
+            run.hp = 20.0;
+            run.replace_spell_modifiers(998, [engine::Modifier { source: 998, filter: engine::Filter::default(), change: engine::Change::ArmourPenetration(1.0) }]);
+            let now = run.elapsed;
+            for modifier in [enemies::Rank::Brutal, enemies::Rank::Pyromancer, enemies::Rank::Vampiric,
+                enemies::Rank::Plagued, enemies::Rank::Hemorrhagic] {
+                run.monster_mods.grant(modifier, now, None, Vec3::ZERO);
+            }
+        }
+        let mut h = Hit::direct("heroic_strike", target, 100.0, false);
+        h.tags = Some(engine::Tags::PHYSICAL | engine::Tags::MELEE | engine::Tags::ATTACK | engine::Tags::DAMAGE);
+        world.write_message(h);
+        let system = world.register_system(apply_hits);
+        world.run_system(system).unwrap();
+        assert!(world.resource::<Run>().hp > 20.0);
+        let en = world.get::<Enemy>(target).unwrap();
+        assert!(en.hp < 900.0);
+        assert!(en.dots.iter().any(|d| d.skill == "proc_poison"));
+        assert!(en.dots.iter().any(|d| d.skill == "proc_bleed"));
+        let first_hp = en.hp;
+        let pending = world.resource::<PendingHits>();
+        assert_eq!(pending.0.len(), 1);
+        assert!(pending.0[0].1.tags.unwrap().contains(engine::Tags::FIRE));
+        assert_eq!(pending.0[0].1.damage, 35.0);
+        world.run_system(system).unwrap();
+        assert!(world.get::<Enemy>(target).unwrap().hp < first_hp);
+        assert!(world.resource::<PendingHits>().0.is_empty());
+    }
+    #[test]
+    fn special_absorption_and_adaptation_apply_to_real_hits_and_periodic_damage() {
+        let (mut world, targets) = legendary_world("fireball", 0, &[3.0]);
+        let target = targets[0];
+        let rank = enemies::Rank::Adaptive.with(enemies::Rank::SecondSkin);
+        let mut state = super::super::monster_specials::Runtime::new(0.0, Vec3::X * 3.0);
+        state.protect(50.0, 10.0);
+        world.entity_mut(target).insert((rank, state));
+        let system = world.register_system(apply_hits);
+        let hit = || {
+            let mut hit = Hit::direct("fireball", target, 100.0, false);
+            hit.tags = Some(engine::Tags::FIRE | engine::Tags::DAMAGE | engine::Tags::SPELL);
+            hit
+        };
+        world.write_message(hit());
+        world.run_system(system).unwrap();
+        let first = world.get::<Enemy>(target).unwrap().hp;
+        assert!((first - 950.0).abs() < 0.001);
+        world.write_message(hit());
+        world.run_system(system).unwrap();
+        assert!((world.get::<Enemy>(target).unwrap().hp - 900.0).abs() < 0.001);
+        world.get_mut::<Enemy>(target).unwrap().dots.push(enemies::Dot {
+            item_source: None, meta: default(), origin: Origin::Skill, owner: None,
+            skill: "fireball", meter_source: None,
+            tags: Some(engine::Tags::FIRE | engine::Tags::DOT | engine::Tags::DAMAGE),
+            dps: 100.0, left: 5.0, tick: 0.0,
+        });
+        world.run_system(system).unwrap();
+        assert!((world.get::<Enemy>(target).unwrap().hp - 850.0).abs() < 0.001);
+        world.get_mut::<Enemy>(target).unwrap().hp = 320.0;
+        world.write_message(hit());
+        world.run_system(system).unwrap();
+        assert!((world.get::<Enemy>(target).unwrap().hp - 270.0).abs() < 0.001);
+        assert_eq!(world.get::<super::super::monster_specials::Runtime>(target).unwrap().shield, 1000.0);
+    }
+    #[test]
+    fn retired_thorns_never_reflect_and_oppression_reduces_hits_and_dots() {
+        for (tags, reflected) in [(engine::Tags::MELEE | engine::Tags::ATTACK, false),
+            (engine::Tags::PROJECTILE, false), (engine::Tags::MELEE | engine::Tags::MINION, false)] {
+            let (mut world, targets) = legendary_world("heroic_strike", 0, &[3.0]);
+            world.entity_mut(targets[0]).insert(enemies::Rank::Thorny);
+            let before = world.resource::<Run>().hp;
+            let mut hit = Hit::direct("heroic_strike", targets[0], 10.0, false);
+            hit.tags = Some(tags | engine::Tags::PHYSICAL | engine::Tags::DAMAGE);
+            world.write_message(hit);
+            world.run_system_once(apply_hits).unwrap();
+            assert_eq!(world.resource::<Run>().hp < before, reflected);
+        }
+        let mut damages = Vec::new();
+        for multiplier in [1.0, 0.85] {
+            let (mut world, targets) = legendary_world("fireball", 0, &[3.0]);
+            world.resource_mut::<Run>().monster_pressure = multiplier;
+            world.write_message(Hit::direct("fireball", targets[0], 100.0, false));
+            world.get_mut::<Enemy>(targets[0]).unwrap().dots.push(enemies::Dot {
+                item_source: None, meta: default(), origin: Origin::Skill, owner: None,
+                skill: "fireball", meter_source: None, tags: Some(engine::Tags::FIRE | engine::Tags::DOT | engine::Tags::DAMAGE),
+                dps: 100.0, left: 5.0, tick: 0.0,
+            });
+            world.run_system_once(apply_hits).unwrap();
+            damages.push(1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp);
+        }
+        assert!((damages[1] - damages[0] * 0.85).abs() < 0.001);
+    }
+    #[test]
+    fn stat_mod_less_damage_applies_to_both_direct_and_periodic_damage_by_school() {
+        for (modifier, school) in [
+            (enemies::Rank::Armoured, engine::Tags::PHYSICAL),
+            (enemies::Rank::Fireproof, engine::Tags::FIRE),
+            (enemies::Rank::Winter, engine::Tags::COLD),
+            (enemies::Rank::Insulated, engine::Tags::NATURE | engine::Tags::LIGHTNING),
+            (enemies::Rank::Occult, engine::Tags::SHADOW),
+        ] {
+            let mut damages = Vec::new();
+            for modified in [false, true] {
+                let (mut world, targets) = legendary_world("fireball", 0, &[3.0]);
+                if modified { world.entity_mut(targets[0]).insert(modifier); }
+                let mut hit = Hit::direct("fireball", targets[0], 100.0, false);
+                hit.tags = Some(school | engine::Tags::DAMAGE);
+                world.write_message(hit);
+                world.get_mut::<Enemy>(targets[0]).unwrap().dots.push(enemies::Dot {
+                    item_source: None, meta: default(), origin: Origin::Skill, owner: None,
+                    skill: "fireball", meter_source: None, tags: Some(school | engine::Tags::DOT | engine::Tags::DAMAGE),
+                    dps: 100.0, left: 5.0, tick: 0.0,
+                });
+                world.run_system_once(apply_hits).unwrap();
+                damages.push(1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp);
+            }
+            assert!(damages[0] > 0.0);
+            assert!((damages[1] - damages[0] * 0.8).abs() < 0.001, "{modifier:?}: {damages:?}");
+        }
+    }
     #[test]
     fn lethal_existing_dots_suppress_new_stacks_without_suppressing_direct_hits() {
         for existing in [false, true] {
@@ -88,7 +227,9 @@ mod spell_engine_integration_tests {
             (false, None, false, false),
             (true, None, false, true),
             (false, Some(enemies::Rank::Elite), false, true),
+            (false, Some(enemies::Rank::Elite.with(enemies::Rank::Healer)), false, true),
             (false, Some(enemies::Rank::Boss), false, true),
+            (false, Some(enemies::Rank::Boss.with(enemies::Rank::Sprinter)), false, true),
             (false, Some(enemies::Rank::Sprinter), false, false),
             (false, None, true, true),
         ] {
@@ -356,7 +497,7 @@ mod spell_engine_integration_tests {
             world.write_message(hit);
             world.run_system_once(apply_hits).unwrap();
             let en = world.get::<Enemy>(targets[0]).unwrap();
-            assert_eq!(en.slow, if rank == enemies::Rank::Normal { 0.1 } else { 0.5 });
+            assert_eq!(en.slow, if rank == enemies::Rank::Boss { 0.5 } else { 0.1 });
             assert!(en.root_t > 0.0);
         }
     }
@@ -2090,7 +2231,8 @@ mod spell_engine_integration_tests {
                 tick: 0.0,
             });
         world.run_system_once(apply_hits).unwrap();
-        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5 * 0.8;
+        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5
+            * (1.0 - super::super::monster_mod_effects::get().elites.damage_reduction);
         let actual = 1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp;
         assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
     }
@@ -2195,7 +2337,7 @@ mod spell_engine_integration_tests {
             run.expedition_map = data::CAMPAIGN[5];
         }
         world.entity_mut(targets[0]).insert((
-            enemies::Rank::Elite,
+            enemies::Rank::Elite.with(enemies::Rank::Sprinter),
             super::super::special_mobs::Protection(0.25),
         ));
         let level = world.get::<Enemy>(targets[0]).unwrap().def.level;
@@ -2219,7 +2361,7 @@ mod spell_engine_integration_tests {
                 tick: 0.0,
             });
         world.run_system_once(apply_hits).unwrap();
-        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5 * 0.8 * 0.75;
+        let expected = 200.0 * (1.0 - (level as f32 * 10.0).min(75.0) / 100.0) * 0.5 * (1.0 - super::super::monster_mod_effects::get().elites.damage_reduction) * 0.75;
         let actual = 1000.0 - world.get::<Enemy>(targets[0]).unwrap().hp;
         assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
     }
@@ -2448,7 +2590,7 @@ mod spell_engine_integration_tests {
             .get_mut::<Transform>(targets[2])
             .unwrap()
             .translation
-            .x = 13.0;
+            .x = 18.0; // Outside the death explosion's expanded ~17-yard radius.
         world
             .get_mut::<Transform>(targets[3])
             .unwrap()
@@ -3152,6 +3294,18 @@ pub(super) struct GroundArea {
     /// The spell whose impact plays on each enemy a tick hits, 0 for none.
     impact: u32,
 }
+impl GroundArea {
+    pub(in crate::survivors) fn chase_seed(&self) -> Option<(super::enemies::Dot, f32)> {
+        if self.triggered || self.left <= 0.0 || self.damage <= 0.0 { return None; }
+        let dps = self.damage / self.every.max(0.1);
+        Some((super::enemies::Dot {
+            item_source: None, meta: super::items::legendary::periodic::Meta { chase_base: dps, ..default() },
+            origin: Origin::Skill, owner: self.owner, skill: self.skill, meter_source: None,
+            tags: Some(self.tags | engine::Tags::DOT | engine::Tags::DAMAGE), dps,
+            left: self.left, tick: 0.0,
+        }, self.radius))
+    }
+}
 
 #[derive(Component)]
 pub(super) struct Totem {
@@ -3380,7 +3534,7 @@ pub(super) fn cast_abilities(
     summons: Query<(Entity, &Transform, &super::talent_runtime::Summon)>,
 ) {
     let dt = time.delta_secs();
-    if run.pending_levels > 0 || dt <= 0.0 {
+    if run.pending_levels > 0 || dt <= 0.0 || run.monster_mods.stunned_until > run.elapsed {
         return;
     }
     let Ok((me, htf)) = hero.single() else { return };
@@ -3441,21 +3595,50 @@ pub(super) fn cast_abilities(
         }
     }
     let mut casts = std::collections::VecDeque::new();
+    let first_offensive = run.abilities.iter().position(|o| chase::offensive(o.def));
     for i in 0..run.abilities.len() {
         if run.disabled_spells.contains(run.abilities[i].def.key) {
             continue;
         }
         run.abilities[i].cd -= dt;
+        if run.legendary.has(chase::GOSPEL) && chase::offensive(run.abilities[i].def) && Some(i) != first_offensive {
+            continue;
+        }
+        if run.legendary.has(chase::HOURGLASS) && chase::offensive(run.abilities[i].def) {
+            let cooldown = run.resolve_spell(run.abilities[i].def, run.abilities[i].level).cooldown.max(chase::config().minimum_cast_interval);
+            let cap = (chase::config().stored_seconds / cooldown).floor().max(1.0) as u32;
+            let range = run.abilities[i].def.range.max(run.abilities[i].def.radius).max(5.0);
+            let store = run.legendary.chase.stored.entry(i).or_default();
+            store.0 += dt;
+            let gained = (store.0 / cooldown).floor() as u32;
+            store.0 %= cooldown;
+            store.2 = store.2.saturating_add(gained).min(cap);
+            let boss = foes.iter().any(|foe| enemies.get(foe.e).is_ok_and(|(_,_,e)| e.boss)
+                && foe.dist <= range);
+            if boss && store.2 > 0 && store.1 <= now {
+                casts.push_back((i, Some(0), false));
+            }
+        }
         let ordinal = run.recasts.take_due_ordinal(i, now);
         if run.abilities[i].cd <= 0.0 || ordinal.is_some() {
             casts.push_back((i, ordinal, false));
         }
     }
+    if run.legendary.has(chase::PACT) {
+        casts.make_contiguous().sort_by_key(|(i,_,_)| std::cmp::Reverse(run.abilities[*i].level));
+    }
+    let all_foes = foes.clone();
     while let Some((i, ordinal, extra)) = casts.pop_front() {
+        foes.clone_from(&all_foes);
+        let stored = ordinal == Some(0);
+        if stored { foes.retain(|foe| enemies.get(foe.e).is_ok_and(|(_,_,enemy)| enemy.boss)); }
         let repeated = ordinal.is_some() || extra;
         let o = &run.abilities[i];
         let original_def = o.def;
         let skill_level = o.level;
+        let native_cd = run.resolve_spell(original_def, skill_level).cooldown;
+        let life_cost = if run.legendary.has(chase::PACT) { run.stats().max_hp * chase::config().pact_cost } else { 0.0 };
+        if (!repeated || stored) && !chase::can_pay(&run, original_def, native_cd) { continue; }
         if !super::support_spells::cast_ready(&run, original_def.key) {
             continue;
         }
@@ -3505,6 +3688,15 @@ pub(super) fn cast_abilities(
         }
         foes.sort_by_key(|foe| !engine::targeting::threatens_owner(foe.dist, foe.radius));
         let mut p = run.resolve_spell_for_cast(original_def, o.level, &mut rng);
+        if run.siege.silenced_until > now && p.tags.contains(super::spell_engine::Tags::SPELL) {
+            continue;
+        }
+        if stored {
+            p.dmg *= chase::config().stored_damage;
+            p.dot *= chase::config().stored_damage;
+            if let Some(dot) = &mut p.direct_dot { dot.dps *= chase::config().stored_damage; }
+            p.recast = 0.0;
+        }
         if def.key == "mongoose_bite" && run.extra_spells.dodge_until > now {
             p.dmg *= 1.75;
         }
@@ -3512,7 +3704,7 @@ pub(super) fn cast_abilities(
         if extra && !super::procs::ready(&mut run, "proc_arcane_companion", p.tags) {
             continue;
         }
-        if let Some(ordinal) = ordinal {
+        if let Some(ordinal) = ordinal.filter(|n| *n != 0) {
             super::arcane_repeats::empower(&run, &mut p, ordinal);
         }
         p.cast_id = if repeated {
@@ -4176,6 +4368,13 @@ pub(super) fn cast_abilities(
             }
         };
         if fired {
+            if !repeated || stored { chase::cast(&mut run, original_def, native_cd, life_cost); }
+            if stored {
+                if let Some(store) = run.legendary.chase.stored.get_mut(&i) {
+                    store.2 = store.2.saturating_sub(1);
+                    store.1 = now + chase::config().burst_interval;
+                }
+            }
             if run.class.id == 3 {
                 units::hunter_weapon(&mut commands, me, p.tags);
             }
@@ -4192,9 +4391,10 @@ pub(super) fn cast_abilities(
             }
             legendary_events::cast(&mut run, def, &p, primary, repeated);
             run.proc_runtime.parent = p.cast_id;
+            if !repeated && p.tags.contains(super::spell_engine::Tags::SPELL) { run.siege.casts = run.siege.casts.wrapping_add(1); }
             super::items::legendary::casting::after_cast(&mut run, def, &p, primary, repeated);
             run.proc_runtime.parent = 0;
-            if ordinal.is_some() {
+            if ordinal.is_some_and(|n| n != 0) {
                 if let Some(other) = super::arcane_repeats::extra_spell(&run, i, p.tags, &mut rng) {
                     casts.push_back((other, None, true));
                 }
@@ -4207,7 +4407,11 @@ pub(super) fn cast_abilities(
             if fired && def.key == "mongoose_bite" {
                 run.extra_spells.dodge_until = 0.0;
             }
-            run.abilities[i].cd = if fired { p.cooldown } else { 0.2 };
+            run.abilities[i].cd = if fired {
+                if run.legendary.has(chase::TESTAMENT) && chase::power_skill_for(&run, original_def) {
+                    chase::config().minimum_cast_interval
+                } else { p.cooldown }
+            } else { 0.2 };
             let bit = 1u64 << i.min(63);
             if fired {
                 run.retrying &= !bit;
@@ -4220,6 +4424,8 @@ pub(super) fn cast_abilities(
             }
         }
     }
+    let foe_positions: Vec<_> = all_foes.iter().map(|f| (f.e, f.pos)).collect();
+    healing.flush_chase(&mut run, hpos, &foe_positions, &mut hits);
 }
 
 /// Ground areas tick, and totems fight, until they run out.
@@ -4545,9 +4751,10 @@ pub(super) fn tick_areas(
 /// Land every hit due: damage and its number, the over-time part, crowd control, the marks, and
 /// death with its loot.
 pub(super) fn apply_hits(
-    (mut splash_index, ranks, mut dot_factors): (
+    (mut splash_index, ranks, mut dot_factors, mut special_states): (
         Local<super::splash_index::SplashIndex>, Query<&super::enemies::Rank>,
         Local<super::dot_admission::FactorCache>,
+        Query<&mut super::monster_specials::Runtime>,
     ),
     protection: Query<&super::special_mobs::Protection>,
     taunts: Query<&super::talent_runtime::Taunted>,
@@ -4838,7 +5045,7 @@ pub(super) fn apply_hits(
                     e: Entity,
                     pos: Vec3,
                     en: &mut Enemy,
-                    origin: Origin| {
+                    origin: Origin, rng: &mut Rng| {
         if origin == Origin::Skill {
             super::items::legendary::periodic::death(run, e, en, pos);
         }
@@ -4852,7 +5059,9 @@ pub(super) fn apply_hits(
             super::talent_runtime::on_death(run, en, pos);
         }
         en.dead = true;
+        chase::steal(run, ranks.get(e).copied().unwrap_or(enemies::Rank::Normal), rng, pos);
         en.hp = 0.0;
+        super::monster_specials::player::death(commands, run, en, pos);
         en.dots.clear();
         enemies::mark_dying(commands, e);
         loot.write(Loot {
@@ -4873,6 +5082,9 @@ pub(super) fn apply_hits(
 
     let expedition_defenses = run.expeditions.clone();
     let expedition_map = run.expedition_map;
+    let mod_positions: Vec<_> = enemies.iter().filter(|(_, _, _, en, ..)| !en.dead && en.hp > 0.0)
+        .map(|(e, _, tf, ..)| (e, tf.translation)).collect();
+    let mut mod_hits = Vec::new();
     for mut h in all {
         let Some(run) = super::multiplayer::player_run(&mut run, players.as_deref_mut(), h.owner)
         else {
@@ -4909,6 +5121,9 @@ pub(super) fn apply_hits(
         if en.dead {
             continue;
         }
+        let isolated = run.monster_mods.rank(now).has(super::enemies::Rank::Predator) && !mod_positions.iter().any(|(other, pos)| *other != e
+            && flat(*pos - tf.translation).length_squared() <= super::monster_specials::config().predator_radius.powi(2));
+        super::monster_specials::player::before_hit(run, &mut h, &en, isolated, &mut mod_hits);
         let full = en.hp >= en.max_hp;
         let controls_before = [en.slow_t, en.root_t, en.stun_t, en.fear_t, en.weaken_t];
         let was_rooted = en.root_t > 0.0;
@@ -4949,6 +5164,8 @@ pub(super) fn apply_hits(
             en.boss,
             super::training::actor(en.def),
         );
+        let target_rank = ranks.get(e).copied().unwrap_or(super::enemies::Rank::Normal);
+        let armour = armour * special_states.get(e).map_or(1.0, |s| s.armour(target_rank));
         if !h.can_proc() {
             if !tags.contains(engine::Tags::MINION | engine::Tags::DAMAGE) {
                 mods.leech = 0.0;
@@ -4978,28 +5195,38 @@ pub(super) fn apply_hits(
         let protection_multiplier = 1.0 - protection.get(e).map_or(0.0, |p| p.0);
         let elite_multiplier = if ranks
             .get(e)
-            .is_ok_and(|r| *r == super::enemies::Rank::Elite)
+            .is_ok_and(|r| r.has(super::enemies::Rank::Elite))
         {
             1.0 - expedition_defenses.elites.damage_reduction
         } else {
             1.0
         };
-        let dmg = engine::damage_on_target(raw, en.hp, en.max_hp, en.boss, h.effect)
+        let mut dmg = engine::damage_on_target(raw, en.hp, en.max_hp, en.boss, h.effect)
             * (1.0 - final_reduction)
             * elite_multiplier
+            * run.monster_pressure
+            * ranks.get(e).map_or(1.0, |rank| super::monster_stats::Bonuses(*rank).damage_taken(tags))
             * protection_multiplier
             * taunts.get(e).map_or(1.0, |taunt| taunt.damage_multiplier(now));
+        if let Ok(mut state) = special_states.get_mut(e) {
+            let roll = if target_rank.has(super::enemies::Rank::Riposte) { rng.f32() } else { 1.0 };
+            dmg = state.defend(target_rank, dmg, tags, now, roll);
+            if state.avoided { fx.impact(e, 17); continue; }
+            state.hurt(target_rank, dmg, en.hp, en.max_hp, tags, now);
+        }
         let can_apply_dot = h.dot > 0.0 || h.direct_dot.is_some()
             || (h.can_proc() && (mods.bleed > 0.0 || mods.ignite > 0.0 || mods.poison > 0.0
                 || super::talent_runtime::applies_dots_on_hit(run) || !run.legendary.grants.is_empty()
                 || !run.legendary.equipped.is_empty()))
             || tags.contains(engine::Tags::MINION | engine::Tags::DAMAGE);
-        let dot_covered = can_apply_dot && super::dot_admission::covered_cached(run, &en, super::dot_admission::Target {
+        let dot_covered = can_apply_dot && !special_states.get(e).is_ok_and(|s| s.forecast_uncertain(target_rank))
+            && super::dot_admission::covered_cached(run, &en, super::dot_admission::Target {
             entity: e,
             hp: (en.hp - dmg).max(0.0),
             armour,
             resistances: resistance,
-            multiplier: (1.0 - final_reduction) * elite_multiplier * protection_multiplier,
+            multiplier: (1.0 - final_reduction) * elite_multiplier * protection_multiplier * run.monster_pressure,
+            mod_bonuses: super::monster_stats::Bonuses(ranks.get(e).copied().unwrap_or(super::enemies::Rank::Normal)),
             debuffs: debuffs.as_deref(),
             taunt: taunts.get(e).ok(),
         }, &mut item_mods, &mut dot_factors);
@@ -5027,7 +5254,7 @@ pub(super) fn apply_hits(
             let major = en.boss
                 || ranks
                     .get(e)
-                    .is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss));
+                    .is_ok_and(|r| r.is_boss() || r.has(super::enemies::Rank::Elite));
             let target_kind = if en.boss {
                 "Boss"
             } else if major {
@@ -5070,7 +5297,8 @@ pub(super) fn apply_hits(
                     }
                 }
             }
-            super::items::combat::leech(run, effective * mods.leech);
+            if h.meter_source != Some("Hands of Sacrilege") { super::items::combat::leech(run, effective * mods.leech); }
+            super::monster_specials::player::after_hit(run, &h, &mut en, effective, tags);
             if h.can_proc() {
                 super::items::combat::record_hit_from(run, h.skill, mods.tags, h.cast_id);
             }
@@ -5284,7 +5512,7 @@ pub(super) fn apply_hits(
             }
             legendary_events::killed(run, e, tf.translation, h.origin, &mut rng);
             run.record.spell_kill(h.skill);
-            kill(&mut commands, run, e, tf.translation, &mut en, h.origin);
+            kill(&mut commands, run, e, tf.translation, &mut en, h.origin, &mut rng);
             units::kill_unit(&mut store);
             marks.clear();
         }
@@ -5311,6 +5539,7 @@ pub(super) fn apply_hits(
         let mut last_parent = 0;
         let (max_hp, boss) = (en.max_hp, en.boss);
         let rooted = en.root_t > 0.0;
+        let target_rank = ranks.get(e).copied().unwrap_or(super::enemies::Rank::Normal);
         let resistance =
             expedition_defenses.resistances(en.def.level, boss, super::training::actor(en.def));
         let (armour, final_reduction) = expedition_defenses.defenses(
@@ -5319,10 +5548,11 @@ pub(super) fn apply_hits(
             boss,
             super::training::actor(en.def),
         );
+        let armour = armour * special_states.get(e).map_or(1.0, |s| s.armour(target_rank));
         let protection_multiplier = 1.0 - protection.get(e).map_or(0.0, |p| p.0);
         let elite_multiplier = if ranks
             .get(e)
-            .is_ok_and(|r| *r == super::enemies::Rank::Elite)
+            .is_ok_and(|r| r.has(super::enemies::Rank::Elite))
         {
             1.0 - expedition_defenses.elites.damage_reduction
         } else {
@@ -5363,7 +5593,7 @@ pub(super) fn apply_hits(
                             run.spell_modifiers.entries(),
                         )
                     });
-                let amount =
+                let mut amount =
                     engine::on_hit::damage(tick_damage, remaining_hp, max_hp, boss, armour, mods)
                         * debuffs.as_deref().map_or(1.0, |state| {
                             state.multiplier(
@@ -5377,8 +5607,14 @@ pub(super) fn apply_hits(
                         * (1.0 - resistance.reduction(tags))
                         * (1.0 - final_reduction)
                         * elite_multiplier
+                        * run.monster_pressure
+                        * ranks.get(e).map_or(1.0, |rank| super::monster_stats::Bonuses(*rank).damage_taken(tags))
                         * protection_multiplier
                         * taunts.get(e).map_or(1.0, |taunt| taunt.damage_multiplier(now));
+                if let Ok(mut state) = special_states.get_mut(e) {
+                    amount = state.defend(target_rank, amount, tags | engine::Tags::DOT, now, 1.0);
+                    state.hurt(target_rank, amount, remaining_hp, max_hp, tags, now);
+                }
                 dealt += amount;
                 *periodic_numbers
                     .entry((d.owner, fx.periodic_color(tags)))
@@ -5392,7 +5628,7 @@ pub(super) fn apply_hits(
                 let major = boss
                     || ranks
                         .get(e)
-                        .is_ok_and(|r| matches!(r, super::enemies::Rank::Elite | super::enemies::Rank::Boss));
+                        .is_ok_and(|r| r.is_boss() || r.has(super::enemies::Rank::Elite));
                 let target_kind = if boss {
                     "Boss"
                 } else if major {
@@ -5490,7 +5726,7 @@ pub(super) fn apply_hits(
                     super::procs::parent(run, last_parent);
                     legendary_events::killed(run, e, tf.translation, last_origin, &mut rng);
                     run.record.spell_kill(last_skill);
-                    kill(&mut commands, run, e, tf.translation, &mut en, last_origin);
+                    kill(&mut commands, run, e, tf.translation, &mut en, last_origin, &mut rng);
                 }
                 units::kill_unit(&mut store);
                 marks.clear();
@@ -5512,6 +5748,7 @@ pub(super) fn apply_hits(
         }
         en.dots.retain(|d| d.left > 0.0);
     }
+    pending.0.extend(mod_hits.into_iter().map(|h| (now, h)));
     share_kills(&mut run, players.as_deref_mut(), &party_kills);
     run.proc_runtime.parent = 0;
     if let Some(players) = players.as_deref_mut() {

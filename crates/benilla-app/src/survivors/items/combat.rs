@@ -137,6 +137,7 @@ pub(in crate::survivors) fn leech(run: &mut Run, raw: f32) -> f32 {
         run.item_runtime.leech_used = 0.0;
     }
     let available = (run.stats().max_hp * 0.20 - run.item_runtime.leech_used).max(0.0);
+    let total = (raw * (1.0 + run.equipment.healing)).max(0.0).min(available);
     let recovery = (raw * (1.0 + run.equipment.healing))
         .max(0.0)
         .min(available)
@@ -145,7 +146,12 @@ pub(in crate::survivors) fn leech(run: &mut Run, raw: f32) -> f32 {
         return 0.0;
     }
     run.hp += recovery;
-    run.item_runtime.leech_used += recovery;
+    super::legendary::chase::queue_heal(run, None, total);
+    if run.legendary.has(super::legendary::chase::HUNGER) {
+        run.legendary.chase.hunger += (total - recovery).max(0.0);
+        run.item_runtime.leech_used += total;
+    } else if run.legendary.has(super::legendary::chase::HANDS) { run.item_runtime.leech_used += total; }
+    else { run.item_runtime.leech_used += recovery; }
     recovery
 }
 /// Normalize first to keep large finite configuration weights and luck from overflowing.

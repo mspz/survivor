@@ -12,6 +12,7 @@ pub(in crate::survivors) enum DropTarget {
     Bag(usize),
     BagBackground,
     DungeonUpgrade,
+    Recraft,
 }
 #[derive(Component, Clone, Copy)]
 enum Action {

@@ -64,19 +64,38 @@ pub(super) fn scale(effect: Effect, value: f32, level: u32) -> f32 {
     }
 }
 
-pub(super) fn quality_weights(weights: [f64; 3], level: u32, magic_find: f32) -> [f64; 3] {
-    let progression = f64::from(level.clamp(1, 100) - 1) / 59.0;
+// Level 60 doubles the rarity bonus; dungeon levels keep improving it up to the loot cap.
+pub(super) fn find_multiplier(level: u32, magic_find: f32) -> f64 {
+    let progression =
+        f64::from(level.clamp(1, super::super::dungeon_config::MAX_REWARD_LEVEL) - 1) / 59.0;
     let find = if magic_find.is_finite() {
         f64::from(magic_find.max(0.0))
     } else {
         0.0
     };
-    let bonus = 1.0 + find;
+    (1.0 + progression) * (1.0 + find)
+}
+
+pub(super) fn quality_weights(weights: [f64; 3], level: u32, magic_find: f32) -> [f64; 3] {
+    let progression =
+        f64::from(level.clamp(1, super::super::dungeon_config::MAX_REWARD_LEVEL) - 1) / 59.0;
+    let bonus = find_multiplier(level, magic_find);
     [
         weights[0],
         weights[1] * (0.25 + progression) * bonus,
         weights[2] * (0.01 + progression * progression * 2.0) * bonus,
     ]
+}
+
+// With the default 1% base: 1% at 20, 6% at 60, and 15% at 110, before player MF.
+pub(super) fn legendary_find_multiplier(level: u32, magic_find: f32) -> f64 {
+    let level = level.clamp(20, super::super::dungeon_config::MAX_REWARD_LEVEL);
+    let progression = if level <= 60 {
+        1.0 + f64::from(level - 20) * 5.0 / 40.0
+    } else {
+        6.0 + f64::from(level - 60) * 9.0 / 50.0
+    };
+    progression * find_multiplier(1, magic_find)
 }
 
 #[cfg(test)]
@@ -87,7 +106,7 @@ mod tests {
     fn maximum_dungeon_rewards_keep_growing_beyond_one_hundred() {
         let maximum = super::super::super::data::DUNGEON_ITEM_LEVEL
             + super::super::super::dungeon_mods::MAX_BONUS;
-        assert_eq!(maximum, 110);
+        assert_eq!(maximum, 116);
         assert!(factor(maximum) > factor(100));
         assert!(scale(Effect::Armour, 10.0, maximum) > scale(Effect::Armour, 10.0, 100));
     }
@@ -187,5 +206,24 @@ mod tests {
         assert_eq!(found[1], high[1] * 2.0);
         assert_eq!(found[2], high[2] * 2.0);
         assert_eq!(quality_weights([1.0, 0.0, 0.0], 60, 100.0), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn dungeon_quality_keeps_improving_above_one_hundred_and_respects_the_loot_cap() {
+        let mut previous = 0.0;
+        for level in [1, 20, 60, 65, 100, 110, 200] {
+            let weights = quality_weights([65.0, 30.0, 5.0], level, 0.0);
+            let epic_chance = weights[2] / weights.iter().sum::<f64>();
+            assert!(epic_chance > previous);
+            previous = epic_chance;
+        }
+        assert_eq!(find_multiplier(60, 0.0), 2.0);
+        assert_eq!(find_multiplier(60, 1.0), 4.0);
+        assert_eq!(find_multiplier(60, f32::NAN), 2.0);
+        assert_eq!(find_multiplier(60, -1.0), 2.0);
+        assert_eq!(
+            quality_weights([65.0, 30.0, 5.0], 200, 0.0),
+            quality_weights([65.0, 30.0, 5.0], u32::MAX, 0.0)
+        );
     }
 }

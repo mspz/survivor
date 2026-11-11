@@ -219,6 +219,8 @@ struct RarityWeights {
 #[derive(Clone, Resource, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
+    #[serde(skip)]
+    chase_map: Option<usize>,
     version: u32,
     pub boss_drop_chance: f32,
     rarities: RarityWeights,
@@ -257,6 +259,7 @@ impl Config {
             bases: bases.bases,
             affixes: affixes.affixes,
             craft_luck: 0.0,
+            chase_map: None,
         }
         .validate()
     }
@@ -529,6 +532,13 @@ impl Config {
         item.level = target;
         Ok(item)
     }
+    pub(in crate::survivors) fn generate_dungeon_reward(
+        &self, map: usize, level: u32, class_id: u8, magic_find: f32, rng: &mut Rng,
+    ) -> Result<Item, String> {
+        let mut config = self.clone();
+        config.chase_map = Some(map);
+        config.generate_reward(level, class_id, magic_find, rng)
+    }
     #[cfg(test)]
     fn generate_for_target(&self, level: u32, class_id: u8, rng: &mut Rng) -> Result<Item, String> {
         self.roll_for_target(level, class_id, 0.0, rng)
@@ -575,12 +585,9 @@ impl Config {
                 [0.0, 0.0, 1.0, 0.0]
             };
         }
-        let find = if magic_find.is_finite() {
-            f64::from(magic_find.max(0.0))
-        } else {
-            0.0
-        };
-        let chance = (self.rarities.legendary / 100.0 * (1.0 + find)).clamp(0.0, 1.0);
+        let chance = (self.rarities.legendary / 100.0
+            * item_level::legendary_find_multiplier(level, magic_find))
+        .clamp(0.0, 1.0);
         if chance >= 1.0 || total == 0.0 {
             return [0.0, 0.0, 0.0, self.rarities.legendary];
         }
@@ -598,6 +605,7 @@ impl Config {
         magic_find: f32,
         rng: &mut Rng,
     ) -> Result<Item, String> {
+        let loot_level = level.clamp(1, super::super::dungeon_config::MAX_REWARD_LEVEL);
         let level = level.clamp(1, MAX_ITEM_LEVEL);
         let class = super::super::data::CLASSES
             .iter()
@@ -607,6 +615,7 @@ impl Config {
             .iter()
             .filter(|d| {
                 level >= d.min_drop_level()
+                    && legendary::chase::weight(d.id, self.chase_map) > 0.0
                     && legendary::eligible(d.id, class_id)
                     && self.bases.iter().any(|b| {
                         b.slot == d.slot
@@ -616,7 +625,7 @@ impl Config {
                     })
             })
             .collect();
-        let mut weights = self.rarity_weights(level, magic_find);
+        let mut weights = self.rarity_weights(loot_level, magic_find);
         if pool.is_empty() {
             weights[3] = 0.0;
             if weights.iter().sum::<f64>() == 0.0 {
@@ -633,7 +642,8 @@ impl Config {
             if pool.is_empty() {
                 return Err("No compatible legendary".into());
             }
-            Some(pool[rng.index(pool.len())])
+            let weights: Vec<_> = pool.iter().map(|d| legendary::chase::weight(d.id, self.chase_map)).collect();
+            Some(pool[weighted_index(&weights, rng.f32()).ok_or("No unique weight")?])
         } else {
             None
         };
@@ -899,6 +909,21 @@ impl Config {
 mod tests {
     use super::*;
     #[test]
+    fn chase_dungeon_rewards_are_exclusive_and_survive_saved_equipment_validation() {
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights { normal: 0.0, magic: 0.0, epic: 0.0, legendary: 100.0 };
+        for (map, expected) in [(17,405),(18,401),(19,411),(20,404),(21,403),(22,402)] {
+            let item=config.generate_dungeon_reward(map,65,1,0.0,&mut Rng(0)).unwrap();
+            assert_eq!(item.legendary.as_ref().unwrap().unique,expected);
+            assert_eq!(item.level,65);
+            let saved: Item=toml::from_str(&toml::to_string(&item).unwrap()).unwrap();
+            assert!(legendary::validate_item(&saved));
+            assert!(saved.valid_equipment());
+        }
+        let regular=config.generate_reward(65,1,0.0,&mut Rng(0)).unwrap();
+        assert!(legendary::chase::dungeon(regular.legendary.unwrap().unique).is_none());
+    }
+    #[test]
     fn dropped_weapon_damage_never_mixes_with_intelligence_weapon_affixes() {
         let mut config = Config::builtin();
         config.rarities = RarityWeights { normal: 0.0, magic: 0.0, epic: 1.0, legendary: 0.0 };
@@ -926,7 +951,8 @@ mod tests {
     }
     #[test]
     fn fully_modified_dungeons_award_level_seventy_seven_and_preserve_it_in_saves() {
-        let config = Config::builtin();
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights { normal: 0.0, magic: 0.0, epic: 1.0, legendary: 0.0 };
         let base = config.generate_reward(65, 1, 0.0, &mut Rng(876)).unwrap();
         let upgraded = config.generate_reward(77, 1, 0.0, &mut Rng(876)).unwrap();
         assert_eq!(upgraded.level, 77);
@@ -938,7 +964,8 @@ mod tests {
     }
     #[test]
     fn dungeon_rewards_raise_real_item_power_and_survive_save_and_equipment_rules() {
-        let config = Config::builtin();
+        let mut config = Config::builtin();
+        config.rarities = RarityWeights { normal: 0.0, magic: 0.0, epic: 1.0, legendary: 0.0 };
         for &map in super::super::super::data::DUNGEONS {
             let level = super::super::reward_item_level(map, 60, false);
             assert_eq!(level, 65);
@@ -1448,22 +1475,51 @@ mod tests {
         assert_eq!(toml::to_string(&decoded).unwrap(), expected);
     }
     #[test]
-    fn legendary_chance_starts_at_item_level_twenty_then_scales_with_find() {
+    fn legendary_chance_starts_at_twenty_then_scales_with_level_and_find() {
         let config = Config::builtin();
         for level in [1, 10, 19] {
             assert_eq!(config.rarity_weights(level, 100.0)[3], 0.0);
         }
-        for level in [20, 60, 100] {
-            for (find, expected) in [
-                (0.0, 0.05),
-                (0.1, 0.055),
-                (1.0, 0.10),
-                (10.0, 0.55),
-                (100.0, 1.0),
+        let mut previous = 0.0;
+        for (level, level_multiplier) in [
+            (20, 1.0),
+            (60, 6.0),
+            (80, 9.6),
+            (100, 13.2),
+            (110, 15.0),
+            (200, 31.2),
+        ] {
+            let base = config.rarity_weights(level, 0.0);
+            let chance = base[3] / base.iter().sum::<f64>();
+            assert!(chance > previous);
+            previous = chance;
+            for (find, find_multiplier) in [
+                (0.0, 1.0),
+                (0.1, 1.1),
+                (1.0, 2.0),
+                (10.0, 11.0),
+                (100.0, 101.0),
             ] {
                 let weights = config.rarity_weights(level, find);
+                let expected = config.rarities.legendary / 100.0 * find_multiplier * level_multiplier;
+                let expected = expected.min(1.0);
                 assert!((weights[3] / weights.iter().sum::<f64>() - expected).abs() < 1e-8);
             }
+        }
+    }
+    #[test]
+    fn generated_dungeon_rewards_use_the_full_level_for_unique_chance() {
+        let config = Config::builtin();
+        for (level, expected) in [(60, 0.06), (110, 0.15)] {
+            let mut rng = Rng(11060);
+            let mut uniques = 0;
+            for _ in 0..4000 {
+                let item = config.generate_reward(level, 1, 0.0, &mut rng).unwrap();
+                assert_eq!(item.level, level);
+                uniques += usize::from(item.rarity == Rarity::Legendary);
+            }
+            assert!((uniques as f64 / 4000.0 - expected).abs() < 0.025,
+                "level {level}: {uniques}/4000 uniques");
         }
     }
     #[test]
@@ -1583,7 +1639,7 @@ mod tests {
     #[test]
     fn split_tables_apply_base_settings_and_affix_ranges_independently() {
         let bases = DEFAULT_BASES.replace("boss_drop_chance = 0.5", "boss_drop_chance = 0.25");
-        let affixes = DEFAULT_AFFIXES.replace("max = 40", "max = 41");
+        let affixes = DEFAULT_AFFIXES.replace("max = 80", "max = 81");
         let config = Config::parse_parts(&bases, &affixes).unwrap();
         assert_eq!(config.boss_drop_chance, 0.25);
         assert_eq!(
@@ -1593,11 +1649,11 @@ mod tests {
                 .find(|a| a.id == "stamina")
                 .unwrap()
                 .max,
-            41.0
+            81.0
         );
         assert!(Config::parse_parts(
             DEFAULT_BASES,
-            &DEFAULT_AFFIXES.replace("max = 40", "max = -1")
+            &DEFAULT_AFFIXES.replace("max = 80", "max = -1")
         )
         .is_err());
     }
